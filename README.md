@@ -9,6 +9,8 @@
 - **Shared live term + freeze** — ένα μόνο WebGL xterm renderάρει το τρέχον block· όταν τελειώσει, το output γίνεται freeze σε colored & **επιλέξιμο HTML** (copy-paste σαν text editor σε όλα τα blocks). Έτσι κρατάμε ένα WebGL context όσα blocks κι αν υπάρχουν.
 - **AI Assistant sidebar** — chat με πρόσβαση στο ιστορικό των blocks + cwd. Δύο transports: `ANTHROPIC_API_KEY` → Anthropic API· αλλιώς fallback στο τοπικό `claude` CLI (Claude Code), χωρίς key.
 - **Macro buttons** — π.χ. *Git Smart Commit*: αναλύει το output του προηγούμενου block (ή ένα fresh `git status`) και **προτείνει** την εντολή στο input field (ο χρήστης εγκρίνει & πατά Enter — όχι αυτόματη εκτέλεση).
+- **Smart PR button** — ένα stateful κουμπί που οδηγεί ένα branch σε όλο τον κύκλο ζωής του PR: *Create → Check → Update → loop μέχρι merge*. Στο Update ο agent διαβάζει τα review comments, λύνει τα ζητούμενα και κάνει commit + push· το state (PR number + phase) κρατιέται per branch και persistάρεται. Χρειάζεται το `gh` CLI (authed).
+- **Syntax highlighting** — τα code blocks renderάρονται με **Shiki** (theme *Material Palenight*).
 
 ## Αρχιτεκτονική
 
