@@ -67,8 +67,8 @@ src-tauri/src/
 
 - **Full-screen / alt-screen προγράμματα** (vim, htop, less, REPLs) δεν ταιριάζουν στο block model — χρειάζονται ένα raw fallback pane (μελλοντικά).
 - **Multi-line εντολές** στο input υποστηρίζονται με Shift+Enter, αλλά το PSReadLine Enter-handler κάνει AcceptLine πάντα — σύνθετα multi-line constructs μπορεί να σπάσουν.
-- **Tab completion** δεν προωθείται προς το shell (το input είναι κανονικό text field).
-- Ένα session (`"main"`). Ο `ShellController` δέχεται `sessionId`, οπότε multi-tab = πολλαπλά instances (επόμενο βήμα).
+- **Tab completion** προωθείται πλέον στο shell μέσω persistent pwsh runspace (`TabExpansion2`).
+- Multi-tab projects υποστηρίζονται (ένα `ShellController` ανά project), με resizable panels.
 
 ## Σημειώσεις ασφάλειας
 
