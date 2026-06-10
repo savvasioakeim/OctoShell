@@ -1,0 +1,18 @@
+# Frontend
+node_modules/
+dist/
+*.local
+
+# Rust / Tauri
+src-tauri/target/
+src-tauri/gen/
+
+# Env / secrets
+.env
+.env.*
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

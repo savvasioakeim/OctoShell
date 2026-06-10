@@ -1,0 +1,57 @@
+@import "@xterm/xterm/css/xterm.css";
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+/* surfaces: ink(frame) · card(blocks) · well(code) — see tailwind.config.js */
+
+/* Larger base so the whole UI reads comfortably (matches the user's VS Code at
+   18px). All rem-based Tailwind sizes/spacing scale from this. */
+html {
+  font-size: 17px;
+}
+
+/* Frozen (finished) block output: selectable, wrapping, monospaced. Font + line
+   height MUST match the live xterm (see ShellController) so a command looks
+   identical while running and once finished. */
+.block-frozen {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+  font-size: 15px;
+  line-height: 20px;
+}
+
+/* Reserve scrollbar space always, so a block's width never jumps when the feed
+   scrollbar appears (a width change mid-command would reflow & garble output). */
+.octo-feed {
+  scrollbar-gutter: stable;
+}
+
+/* The live xterm inside a running block should size to our height, no inner scroll. */
+.xterm .xterm-viewport {
+  overflow-y: hidden !important;
+}
+
+/* Shiki-highlighted code: drop Shiki's own (lighter) background so tokens sit on
+   our darker `well`, and wrap long lines instead of overflowing. */
+.octo-code pre.shiki {
+  margin: 0;
+  background: transparent !important;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+/* Thin dark scrollbars. */
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: #3a3f58;
+  border-radius: 4px;
+}

@@ -1,0 +1,31 @@
+[package]
+name = "octoshell"
+version = "0.1.0"
+description = "OctoShell — a power-user terminal workspace"
+authors = ["OctoShell"]
+edition = "2021"
+rust-version = "1.77"
+
+# The library is what Tauri's mobile/desktop entrypoints link against.
+[lib]
+name = "octoshell_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-notification = "2"
+portable-pty = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+# Server-side AI calls; rustls avoids a system OpenSSL dependency on Windows.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
