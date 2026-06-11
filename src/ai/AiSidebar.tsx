@@ -34,18 +34,29 @@ function truncate(s: string, n = 400): string {
 }
 
 /** A compact, model-readable digest of a project's recent activity. */
-function summarizeBlocks(blocks: Block[], max = 6): string {
+function summarizeBlocks(blocks: Block[], max = 8): string {
   const recent = blocks.slice(-max).map((b) => {
     if (b.kind === "command") {
-      return `$ ${b.command}  [${b.status}${b.exitCode ? ` ${b.exitCode}` : ""}]\n${truncate(b.outputText, 200)}`;
+      return `$ ${b.command}  [${b.status}${b.exitCode ? ` ${b.exitCode}` : ""}]\n${truncate(b.outputText, 300)}`;
     }
     if (b.kind === "agentText") {
       const who = b.role === "user" ? "🧑 user" : `🤖 ${b.provider ?? "agent"}`;
-      return `${who}: ${truncate(b.text, 300)}`;
+      return `${who}: ${truncate(b.text, 500)}`;
     }
-    return `🔧 ${b.toolName}: ${truncate(b.toolInput, 120)}${b.result ? `\n→ ${truncate(b.result, 150)}` : ""}`;
+    return `🔧 ${b.toolName}: ${truncate(b.toolInput, 160)}${b.result ? `\n→ ${truncate(b.result, 300)}` : ""}`;
   });
   return recent.join("\n");
+}
+
+/** The agent's last written reply in a project — its own report of what it just
+ *  did (PR URLs, commit hashes, "done" claims). Passed verbatim into a live-watch
+ *  continuation so the orchestrator trusts it instead of re-verifying. */
+function lastAgentReport(blocks: Block[], max = 1500): string {
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    const b = blocks[i];
+    if (b.kind === "agentText" && b.role === "assistant") return truncate(b.text, max);
+  }
+  return "(ο agent δεν άφησε γραπτή αναφορά)";
 }
 
 /** Subscribe to every project's store and re-render on any change. */
@@ -167,6 +178,8 @@ export function AiSidebar({ tabs, activeId, onSelect, width }: Props) {
         "- Prefer dispatching to idle agents; don't interrupt a busy one unless the user asks.",
         "- Propose multiple actions (one array, multiple objects) to fan work across projects in parallel.",
         "- Emit the block ONLY when proposing real work. For plain questions, just answer — no block.",
+        "- TRUST the agents' reported results in the context. Never dispatch a task whose only purpose is to re-verify or re-confirm something an agent already reported done (e.g. don't ask 'did the PR get created?' if the agent said it created it). Read the context, believe it, and only dispatch a genuinely NEW next step.",
+        "- You are talking to the USER, not to the agents. Your prose is shown to the user; the agents only ever receive the exact `prompt` text inside a dispatch. So write your replies as updates to the user, and make dispatch prompts fully self-contained.",
         ...(autoRun
           ? ["- AUTONOMOUS MODE: your actions run automatically (no user click). Don't ask for confirmation — just propose them and they execute."]
           : []),
@@ -264,11 +277,18 @@ export function AiSidebar({ tabs, activeId, onSelect, width }: Props) {
       }
       autoStepsRef.current += 1;
       consumedContinuationRef.current = true;
+      const proj = tabs.find((p) => p.name.toLowerCase().trim() === name.toLowerCase().trim());
+      const report = proj ? lastAgentReport(proj.controller.getSnapshot().blocks) : "";
       void ask(
-        `👁 (live watch) Ο agent στο «${name}» ολοκλήρωσε ένα turn. Δες το τελευταίο αποτέλεσμα στο context και προχώρα το πλάνο: αν υπάρχει επόμενο βήμα, κάνε dispatch το επόμενο action· αν όλα ολοκληρώθηκαν, πες το καθαρά ΧΩΡΙΣ actions block.`,
+        [
+          `👁 (live watch) Ο agent στο «${name}» μόλις ολοκλήρωσε ένα turn. Η ΑΥΘΕΝΤΙΚΗ τελευταία αναφορά του agent:`,
+          `"""\n${report}\n"""`,
+          "ΕΜΠΙΣΤΕΨΟΥ αυτή την αναφορά ως αλήθεια. Μην κάνεις dispatch task για να «επαληθεύσεις» κάτι που ο agent ήδη ανέφερε ως ολοκληρωμένο (π.χ. αν λέει ότι άνοιξε το PR, ΑΝΟΙΧΤΗΚΕ).",
+          "Αν απομένει πραγματικά επόμενο βήμα, κάνε dispatch ΜΟΝΟ αυτό. Αν όλα ολοκληρώθηκαν, απάντησε στον ΧΡΗΣΤΗ (όχι στον agent) με μια σύντομη επιβεβαίωση και ΧΩΡΙΣ actions block.",
+        ].join("\n"),
       );
     },
-    [ask],
+    [ask, tabs],
   );
 
   // Auto-run proposed actions (when enabled) and detect plan completion. Runs on
