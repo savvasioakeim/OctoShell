@@ -155,7 +155,11 @@ export function AiSidebar({ tabs, activeId, onSelect, width }: Props) {
         const status = `agent: ${snap?.agentBusy ? "running" : "idle"}, shell: ${snap?.busy ? "busy" : "idle"}`;
         const activeMark = p.id === activeId ? " (active)" : "";
         const body = snap && snap.blocks.length ? summarizeBlocks(snap.blocks) : "(no activity yet)";
-        return `## ${p.name} — ${snap?.cwd || "(home)"} [${status}]${activeMark}\n${body}`;
+        // The agent's last written report in full — the authoritative outcome the
+        // orchestrator must trust (PR URLs, hashes, done-claims).
+        const report = snap?.blocks.length ? lastAgentReport(snap.blocks, 1000) : "";
+        const reportLine = report ? `\n📋 agent's last report: ${report}` : "";
+        return `## ${p.name} — ${snap?.cwd || "(home)"} [${status}]${activeMark}\n${body}${reportLine}`;
       })
       .join("\n\n");
     const names = tabs.map((p) => p.name).join(", ") || "(none)";
@@ -277,18 +281,14 @@ export function AiSidebar({ tabs, activeId, onSelect, width }: Props) {
       }
       autoStepsRef.current += 1;
       consumedContinuationRef.current = true;
-      const proj = tabs.find((p) => p.name.toLowerCase().trim() === name.toLowerCase().trim());
-      const report = proj ? lastAgentReport(proj.controller.getSnapshot().blocks) : "";
+      // Keep this message SHORT — the agent's actual report lives in the freshly
+      // rebuilt system digest below (which never accumulates), so embedding it
+      // here would bloat the thread every turn (and overflow the CLI prompt).
       void ask(
-        [
-          `👁 (live watch) Ο agent στο «${name}» μόλις ολοκλήρωσε ένα turn. Η ΑΥΘΕΝΤΙΚΗ τελευταία αναφορά του agent:`,
-          `"""\n${report}\n"""`,
-          "ΕΜΠΙΣΤΕΨΟΥ αυτή την αναφορά ως αλήθεια. Μην κάνεις dispatch task για να «επαληθεύσεις» κάτι που ο agent ήδη ανέφερε ως ολοκληρωμένο (π.χ. αν λέει ότι άνοιξε το PR, ΑΝΟΙΧΤΗΚΕ).",
-          "Αν απομένει πραγματικά επόμενο βήμα, κάνε dispatch ΜΟΝΟ αυτό. Αν όλα ολοκληρώθηκαν, απάντησε στον ΧΡΗΣΤΗ (όχι στον agent) με μια σύντομη επιβεβαίωση και ΧΩΡΙΣ actions block.",
-        ].join("\n"),
+        `👁 (live watch) Ο agent στο «${name}» ολοκλήρωσε ένα turn. Διάβασε την τελευταία του αναφορά στο context των projects, ΕΜΠΙΣΤΕΨΟΥ την, και προχώρα το πλάνο: dispatch ΜΟΝΟ το πραγματικό επόμενο βήμα — ή, αν ολοκληρώθηκαν όλα, απάντησε σύντομα στον χρήστη ΧΩΡΙΣ actions block.`,
       );
     },
-    [ask, tabs],
+    [ask],
   );
 
   // Auto-run proposed actions (when enabled) and detect plan completion. Runs on
@@ -350,6 +350,12 @@ export function AiSidebar({ tabs, activeId, onSelect, width }: Props) {
     }
   }, [tabs, ask, onSelect]);
 
+  // How many watched agents are currently working — the compact live status.
+  const watchingNow = liveWatch
+    ? tabs.filter((p) => watchedRef.current.has(p.id) && snaps.get(p.id)?.agentBusy).length
+    : 0;
+  const watchStep = autoStepsRef.current;
+
   return (
     <aside className="flex shrink-0 flex-col bg-panel" style={{ width }}>
       <div className="flex items-center justify-between border-b border-edge px-3 py-2">
@@ -366,12 +372,24 @@ export function AiSidebar({ tabs, activeId, onSelect, width }: Props) {
           </button>
           <button
             onClick={() => setLiveWatch((v) => !v)}
-            title={liveWatch ? "Live watch: συνεχίζει μόνος του όταν τελειώνει ένας agent" : "Live watch off"}
-            className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${
+            title={
+              liveWatch
+                ? "Live watch: συνεχίζει μόνος του όταν τελειώνει ένας agent"
+                : "Live watch off"
+            }
+            className={`flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium ${
               liveWatch ? "bg-emerald-500/20 text-emerald-300" : "border border-edge text-muted hover:bg-edge/50"
             }`}
           >
-            👁 Watch
+            {liveWatch && watchingNow > 0 && (
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />
+            )}
+            👁{" "}
+            {liveWatch
+              ? watchingNow > 0
+                ? `${watchingNow} δουλεύει${watchStep > 0 ? ` · #${watchStep}` : ""}`
+                : "Watch"
+              : "Watch"}
           </button>
         </div>
       </div>
@@ -393,6 +411,11 @@ export function AiSidebar({ tabs, activeId, onSelect, width }: Props) {
                 <button onClick={() => onSelect(p.id)} className="flex-1 truncate text-left text-gray-200">
                   {p.name}
                 </button>
+                {watchedRef.current.has(p.id) && (
+                  <span title="Υπό παρακολούθηση (live watch)" className="text-[10px] text-emerald-300/80">
+                    👁
+                  </span>
+                )}
                 <span className="text-[10px] text-muted">
                   {running ? "agent…" : snap?.busy ? "shell…" : "idle"}
                 </span>
@@ -419,13 +442,10 @@ export function AiSidebar({ tabs, activeId, onSelect, width }: Props) {
         )}
         {messages.map((m, i) => {
           if (m.role === "user") {
-            // Live-watch continuations are auto-generated — show them subtly.
+            // Live-watch continuations are internal plumbing — collapse them to a
+            // tiny breadcrumb (expandable for debugging) so they aren't noise.
             if (m.content.startsWith("👁")) {
-              return (
-                <div key={i} className="px-1 text-[11px] italic text-muted/80">
-                  {m.content}
-                </div>
-              );
+              return <WatchTick key={i} content={m.content} />;
             }
             return (
               <div key={i} className="whitespace-pre-wrap break-words rounded bg-edge/60 px-2 py-1.5">
@@ -499,6 +519,28 @@ export function AiSidebar({ tabs, activeId, onSelect, width }: Props) {
         </div>
       </div>
     </aside>
+  );
+}
+
+/** A collapsed breadcrumb for an internal live-watch continuation — one muted
+ *  line, click to reveal the full prompt (debugging only). */
+function WatchTick({ content }: { content: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="px-1">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="text-[10px] text-muted/60 hover:text-muted"
+        title="Εσωτερικό βήμα live watch — κλικ για λεπτομέρειες"
+      >
+        👁 live watch · συνέχεια {open ? "▾" : "▸"}
+      </button>
+      {open && (
+        <div className="mt-1 whitespace-pre-wrap break-words rounded bg-well/40 px-2 py-1 text-[10px] text-muted/70">
+          {content}
+        </div>
+      )}
+    </div>
   );
 }
 

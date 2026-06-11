@@ -109,12 +109,20 @@ fn build_transcript(messages: &[ChatMessage]) -> String {
 }
 
 fn chat_via_cli(messages: Vec<ChatMessage>, system: Option<String>) -> Result<String, String> {
+    use std::io::Write;
+
     let prompt = build_transcript(&messages);
 
+    // The prompt goes over STDIN, not argv. A long orchestration thread can be
+    // tens of KB, and Windows caps a process command line at ~32 KB — passing the
+    // transcript as an argument blew up with "filename or extension is too long"
+    // (os error 206). stdin has no such limit. (`claude --print` reads the prompt
+    // from stdin when none is given positionally.)
     let mut cmd = Command::new(CLAUDE_BIN);
-    cmd.arg("--print") // headless: print response and exit
-        .arg(prompt)
-        .stdin(Stdio::null()); // avoid the "waiting for stdin" delay
+    cmd.arg("--print")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
 
     if let Some(sys) = system {
         if !sys.is_empty() {
@@ -129,9 +137,19 @@ fn chat_via_cli(messages: Vec<ChatMessage>, system: Option<String>) -> Result<St
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
 
-    let out = cmd.output().map_err(|e| {
+    let mut child = cmd.spawn().map_err(|e| {
         format!("could not launch `{CLAUDE_BIN}` (is Claude Code installed and on PATH?): {e}")
     })?;
+
+    // Write the prompt, then close stdin (drop) so claude sees EOF and proceeds.
+    {
+        let mut stdin = child.stdin.take().ok_or("could not open claude stdin")?;
+        stdin
+            .write_all(prompt.as_bytes())
+            .map_err(|e| format!("failed writing prompt to claude: {e}"))?;
+    }
+
+    let out = child.wait_with_output().map_err(|e| e.to_string())?;
 
     if !out.status.success() {
         return Err(format!(
