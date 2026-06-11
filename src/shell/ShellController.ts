@@ -2,9 +2,9 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { SerializeAddon } from "@xterm/addon-serialize";
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { ansiToHtml, base64ToBytes, stripAnsi } from "../util/ansi";
+import { ansiToHtml, stripAnsi } from "../util/ansi";
 import { KEY, loadJSON, removeKey, saveJSON } from "../util/persist";
 import { notify } from "../util/notify";
 import { parseAgentLine, type AgentProvider } from "../agents/providers";
@@ -16,6 +16,13 @@ export type BlockStatus = "running" | "success" | "error";
 
 /** Input routing: a typed line either runs in the shell or is sent to the agent. */
 export type Mode = "shell" | "agent";
+
+/** A control marker sent (as JSON) over the PTY stream channel, interleaved in
+ *  order with the raw output bytes. */
+type PtyControl =
+  | { t: "end"; code: number }
+  | { t: "cwd"; cwd: string }
+  | { t: "ready" };
 
 interface BaseBlock {
   id: string;
@@ -265,19 +272,32 @@ export class ShellController {
 
   /** Wire PTY events and spawn the shell. Call once before first render. */
   async init(cwd = ""): Promise<void> {
+    // One channel carries everything for this session, IN ORDER: raw output
+    // bytes (ArrayBuffer) on the hot path — no base64 — and the control markers
+    // (JSON objects) that delimit commands. Routing them together means a
+    // command-end can never overtake the output bytes it follows.
+    const stream = new Channel<ArrayBuffer | PtyControl>();
+    stream.onmessage = (msg) => {
+      if (msg instanceof ArrayBuffer) {
+        this.onOutput(new Uint8Array(msg));
+        return;
+      }
+      switch (msg.t) {
+        case "end":
+          this.finishCurrent(msg.code ?? 0);
+          break;
+        case "cwd":
+          this.cwd = msg.cwd ?? this.cwd;
+          this.emit();
+          break;
+        case "ready":
+          this.busy = false;
+          this.emit();
+          break;
+      }
+    };
+
     this.unlisteners.push(
-      await listen<{ id: string; data: string }>("pty://output", (e) => {
-        if (e.payload.id === this.sessionId) this.onOutput(base64ToBytes(e.payload.data));
-      }),
-      await listen<{ id: string; code: number }>("pty://command-end", (e) => {
-        if (e.payload.id === this.sessionId) this.finishCurrent(e.payload.code);
-      }),
-      await listen<{ id: string; cwd: string }>("pty://cwd", (e) => {
-        if (e.payload.id === this.sessionId) { this.cwd = e.payload.cwd; this.emit(); }
-      }),
-      await listen<{ id: string }>("pty://ready", (e) => {
-        if (e.payload.id === this.sessionId) { this.busy = false; this.emit(); }
-      }),
       await listen<{ id: string; data: string }>("agent://event", (e) => {
         if (e.payload.id === this.sessionId) this.onAgentEvent(e.payload.data);
       }),
@@ -285,7 +305,7 @@ export class ShellController {
         if (e.payload.id === this.sessionId) this.onAgentDone(e.payload.error, e.payload.code);
       }),
     );
-    await invoke("open_new_tab", { id: this.sessionId, cwd });
+    await invoke("open_new_tab", { id: this.sessionId, cwd, onOutput: stream });
     this.hydrate();
   }
 

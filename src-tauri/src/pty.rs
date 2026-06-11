@@ -6,10 +6,17 @@
 //! code — the same technique Warp and VS Code use. A per-session
 //! [`SemanticParser`] consumes the raw PTY stream and emits structured events:
 //!
-//!   * `pty://output`      — command output bytes (base64), only between C and D
-//!   * `pty://command-end` — `{ id, code }` when a command finishes
-//!   * `pty://cwd`         — `{ id, cwd }` when the working directory changes
-//!   * `pty://ready`       — the shell is idle and ready for the next command
+//! All per-session stream events ride ONE Tauri `Channel` (so order is preserved
+//! between output and the markers that follow it):
+//!   * `Raw(bytes)`        — command output, only between C and D. Binary, so
+//!     heavy output never pays a base64 encode/decode (large chunks ride the
+//!     channel's fetch transport).
+//!   * `{t:"end",code}`    — a command finished, with its exit code
+//!   * `{t:"cwd",cwd}`     — the working directory changed
+//!   * `{t:"ready"}`       — the shell is idle and ready for the next command
+//!
+//! `pty://exit` (session ended) stays a normal event — it fires once, after the
+//! read loop ends, so it can't race anything.
 //!
 //! The blocking PTY read happens on a dedicated OS thread per session so heavy
 //! output never stalls the async runtime or the UI.
@@ -22,6 +29,7 @@ use std::thread;
 use base64::{engine::general_purpose::STANDARD, Engine};
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
+use tauri::ipc::{Channel, InvokeResponseBody};
 use tauri::{AppHandle, Emitter, State};
 
 /// PowerShell shell-integration script, injected at startup via `-EncodedCommand`.
@@ -63,24 +71,6 @@ pub struct PtyManager {
 }
 
 #[derive(Clone, Serialize)]
-struct OutputPayload {
-    id: String,
-    data: String, // base64
-}
-
-#[derive(Clone, Serialize)]
-struct EndPayload {
-    id: String,
-    code: i32,
-}
-
-#[derive(Clone, Serialize)]
-struct CwdPayload {
-    id: String,
-    cwd: String,
-}
-
-#[derive(Clone, Serialize)]
 struct IdPayload {
     id: String,
 }
@@ -99,7 +89,13 @@ fn shell_args(shell: &str) -> CommandBuilder {
 }
 
 impl PtyManager {
-    pub fn open(&self, app: AppHandle, id: String, cwd: String) -> Result<(), String> {
+    pub fn open(
+        &self,
+        app: AppHandle,
+        id: String,
+        cwd: String,
+        on_output: Channel<InvokeResponseBody>,
+    ) -> Result<(), String> {
         // Replace any existing session with this id (e.g. after a dev hot-reload),
         // so we never leave an orphaned shell + reader thread behind.
         if let Some(mut old) = self.sessions.lock().unwrap().remove(&id) {
@@ -148,7 +144,7 @@ impl PtyManager {
         );
 
         let sessions = self.sessions.clone();
-        thread::spawn(move || run_reader(app, sessions, id, reader));
+        thread::spawn(move || run_reader(app, sessions, id, reader, on_output));
         Ok(())
     }
 
@@ -181,11 +177,35 @@ fn run_reader(
     sessions: Arc<Mutex<HashMap<String, PtySession>>>,
     id: String,
     mut reader: Box<dyn Read + Send>,
+    on_output: Channel<InvokeResponseBody>,
 ) {
     let mut parser = SemanticParser::new();
-    let mut buf = [0u8; 8192];
+    // A larger read buffer lets the OS coalesce heavy output into fewer, bigger
+    // reads — so we make fewer (but larger) channel sends, which the IPC layer
+    // streams as binary (no base64).
+    let mut buf = [0u8; 65536];
+    // Output bytes accumulated within a read, sent as ONE binary chunk. Flushed
+    // before any control event so the command's bytes stay correctly ordered
+    // relative to its end marker.
+    let mut pending: Vec<u8> = Vec::new();
     // Optional raw-stream dump for debugging (set OCTO_PTY_LOG to enable).
     let dbg_path = std::env::var_os("OCTO_PTY_LOG").map(|_| std::env::temp_dir().join("octoshell_pty.log"));
+
+    // Output (binary) AND control events (small JSON) BOTH ride this one channel.
+    // The channel preserves send order across its messages, so a `command-end`
+    // can never overtake the final output chunk it follows — which a separate
+    // event transport could (the fetch path for big chunks is async). On the JS
+    // side an ArrayBuffer is output; a JSON object is a control event.
+    let flush = |pending: &mut Vec<u8>| -> bool {
+        if pending.is_empty() {
+            return true;
+        }
+        on_output
+            .send(InvokeResponseBody::Raw(std::mem::take(pending)))
+            .is_ok()
+    };
+    let send_ctrl = |json: String| -> bool { on_output.send(InvokeResponseBody::Json(json)).is_ok() };
+
     loop {
         match reader.read(&mut buf) {
             Ok(0) => break,
@@ -194,22 +214,32 @@ fn run_reader(
                     debug_dump(p, &id, &buf[..n]);
                 }
                 for ev in parser.feed(&buf[..n]) {
-                    let ok = match ev {
-                        Sem::Output(bytes) => app.emit(
-                            "pty://output",
-                            OutputPayload { id: id.clone(), data: STANDARD.encode(bytes) },
-                        ),
-                        Sem::CommandEnd(code) => {
-                            app.emit("pty://command-end", EndPayload { id: id.clone(), code })
+                    if let Sem::Output(bytes) = ev {
+                        if pending.is_empty() {
+                            pending = bytes;
+                        } else {
+                            pending.extend_from_slice(&bytes);
                         }
-                        Sem::Cwd(cwd) => {
-                            app.emit("pty://cwd", CwdPayload { id: id.clone(), cwd })
-                        }
-                        Sem::Ready => app.emit("pty://ready", IdPayload { id: id.clone() }),
-                    };
-                    if ok.is_err() {
+                        continue;
+                    }
+                    // A control event: emit accumulated output first, in order.
+                    if !flush(&mut pending) {
                         return; // WebView gone
                     }
+                    let ok = match ev {
+                        Sem::Output(_) => unreachable!(),
+                        Sem::CommandEnd(code) => send_ctrl(format!(r#"{{"t":"end","code":{code}}}"#)),
+                        Sem::Cwd(cwd) => {
+                            send_ctrl(serde_json::json!({ "t": "cwd", "cwd": cwd }).to_string())
+                        }
+                        Sem::Ready => send_ctrl(r#"{"t":"ready"}"#.to_string()),
+                    };
+                    if !ok {
+                        return; // WebView gone
+                    }
+                }
+                if !flush(&mut pending) {
+                    return;
                 }
             }
             Err(_) => break,
@@ -406,8 +436,9 @@ pub fn open_new_tab(
     manager: State<'_, PtyManager>,
     id: String,
     cwd: String,
+    on_output: Channel<InvokeResponseBody>,
 ) -> Result<(), String> {
-    manager.open(app, id, cwd)
+    manager.open(app, id, cwd, on_output)
 }
 
 #[tauri::command]

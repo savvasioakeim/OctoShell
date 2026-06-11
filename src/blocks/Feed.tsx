@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+  type RefObject,
+} from "react";
 import type { Block, ShellController } from "../shell/ShellController";
 import { TerminalBlock } from "./TerminalBlock";
 import { AgentTextBlockView, AgentToolBlockView } from "./AgentBlock";
@@ -91,19 +99,31 @@ export function Feed({ blocks, controller, altScreen, interacting }: Props) {
             </div>
           )}
           {blocks.map((b) => {
-            if (b.kind === "agentText") return <AgentTextBlockView key={b.id} block={b} />;
-            if (b.kind === "agentTool") return <AgentToolBlockView key={b.id} block={b} />;
-            const running = b.status === "running";
+            const running =
+              (b.kind === "command" || b.kind === "agentTool") && b.status === "running";
+            const node =
+              b.kind === "agentText" ? (
+                <AgentTextBlockView block={b} />
+              ) : b.kind === "agentTool" ? (
+                <AgentToolBlockView block={b} />
+              ) : (
+                <TerminalBlock
+                  block={b}
+                  interactive={altScreen && b.status === "running"}
+                  interacting={interacting && b.status === "running"}
+                  onLiveHost={controller.attachLiveHost.bind(controller)}
+                  onFocusLive={() => controller.focusLive()}
+                  onAskAi={(blk) => controller.onAskAi(blk)}
+                />
+              );
+            // The running block hosts the live xterm — it must always stay
+            // mounted. Settled blocks are virtualized: unmounted while off-screen
+            // (their height preserved) so memory/DOM stay flat with long history.
+            if (running) return <div key={b.id}>{node}</div>;
             return (
-              <TerminalBlock
-                key={b.id}
-                block={b}
-                interactive={altScreen && running}
-                interacting={interacting && running}
-                onLiveHost={controller.attachLiveHost.bind(controller)}
-                onFocusLive={() => controller.focusLive()}
-                onAskAi={(blk) => controller.onAskAi(blk)}
-              />
+              <VirtualBlock key={b.id} root={scrollRef}>
+                {node}
+              </VirtualBlock>
             );
           })}
         </div>
@@ -123,6 +143,51 @@ export function Feed({ blocks, controller, altScreen, interacting }: Props) {
           <span>↓ {newCount > 0 ? "νέα" : "Κάτω"}</span>
         </button>
       )}
+    </div>
+  );
+}
+
+/**
+ * Virtualization by occlusion: a settled block unmounts its content while it's
+ * scrolled far out of view, leaving a placeholder of the same height so scroll
+ * position and total height never shift. It re-mounts before scrolling back into
+ * view (generous rootMargin). This keeps the live DOM small even with hundreds
+ * of historical blocks — finished blocks are static, so unmount/remount is safe.
+ */
+function VirtualBlock({
+  root,
+  children,
+}: {
+  root: RefObject<HTMLDivElement>;
+  children: ReactNode;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [visible, setVisible] = useState(true);
+  const heightRef = useRef(0);
+
+  // Remember the rendered height so the placeholder can hold the same space.
+  useLayoutEffect(() => {
+    if (visible && ref.current) {
+      const h = ref.current.getBoundingClientRect().height;
+      if (h > 0) heightRef.current = h;
+    }
+  });
+
+  useEffect(() => {
+    const el = ref.current;
+    const rootEl = root.current;
+    if (!el || !rootEl) return;
+    const io = new IntersectionObserver(([e]) => setVisible(e.isIntersecting), {
+      root: rootEl,
+      rootMargin: "800px 0px", // mount well before it enters the viewport
+    });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [root]);
+
+  return (
+    <div ref={ref} style={visible ? undefined : { height: heightRef.current }}>
+      {visible ? children : null}
     </div>
   );
 }

@@ -33,6 +33,7 @@ export const KEY = {
   assistant: "octoshell.assistant",
   layout: "octoshell.layout",
   groups: "octoshell.groups",
+  actions: "octoshell.actions",
   blocks: (id: string) => `octoshell.blocks.${id}`,
   agent: (id: string) => `octoshell.agent.${id}`,
   model: (id: string) => `octoshell.model.${id}`,
