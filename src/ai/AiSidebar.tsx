@@ -10,6 +10,11 @@ type ActionState = "done" | "dismissed" | "error";
 
 const client = new AiClient();
 
+/** Max consecutive auto-continuations in live watch before pausing — a backstop
+ *  against an agent/assistant ping-pong that never settles. Reset by any manual
+ *  message. */
+const MAX_AUTO_STEPS = 15;
+
 export interface ProjectRef {
   id: string;
   name: string;
@@ -73,8 +78,48 @@ export function AiSidebar({ tabs, activeId, onSelect, width }: Props) {
   const [actionState, setActionState] = useState<Record<string, ActionState>>(() =>
     loadJSON<Record<string, ActionState>>(KEY.actions, {}),
   );
+  // Autonomy toggles (persisted). `autoRun`: proposed actions run without a click.
+  // `liveWatch`: after a dispatch, keep driving the plan — each time a watched
+  // agent finishes a turn, the assistant is auto-pinged to take the next step.
+  const flags0 = loadJSON<{ autoRun?: boolean; liveWatch?: boolean }>(KEY.orchestrator, {});
+  const [autoRun, setAutoRun] = useState(!!flags0.autoRun);
+  const [liveWatch, setLiveWatch] = useState(!!flags0.liveWatch);
+
   const logRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  // Project ids the orchestrator dispatched to and is now watching.
+  const watchedRef = useRef<Set<string>>(new Set());
+  // Last-seen agentBusy per project, to detect a busy→idle (turn finished) edge.
+  const prevBusyRef = useRef<Map<string, boolean>>(new Map());
+  // Action keys already auto-run, so the auto-run effect fires each once.
+  const autoRanRef = useRef<Set<string>>(new Set());
+  // Auto-continuation steps since the last manual message — a runaway backstop.
+  const autoStepsRef = useRef(0);
+  // True between firing a watch continuation and consuming its reply (so a reply
+  // with no actions can end the watch — "plan complete").
+  const consumedContinuationRef = useRef(false);
+  // Latest liveWatch, read inside the stable runAction callback.
+  const liveWatchRef = useRef(liveWatch);
+  liveWatchRef.current = liveWatch;
+
+  useEffect(() => {
+    saveJSON(KEY.orchestrator, { autoRun, liveWatch });
+    if (!liveWatch) {
+      watchedRef.current.clear();
+      prevBusyRef.current.clear();
+      autoStepsRef.current = 0;
+    } else {
+      // Turning watch on mid-flight: adopt any agent that's already running, so a
+      // task dispatched before flipping the toggle still gets followed.
+      for (const p of tabs) {
+        if (p.controller.getSnapshot().agentBusy) {
+          watchedRef.current.add(p.id);
+          prevBusyRef.current.set(p.id, true);
+        }
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoRun, liveWatch]);
 
   useEffect(() => {
     logRef.current?.scrollTo(0, logRef.current.scrollHeight);
@@ -122,10 +167,18 @@ export function AiSidebar({ tabs, activeId, onSelect, width }: Props) {
         "- Prefer dispatching to idle agents; don't interrupt a busy one unless the user asks.",
         "- Propose multiple actions (one array, multiple objects) to fan work across projects in parallel.",
         "- Emit the block ONLY when proposing real work. For plain questions, just answer — no block.",
+        ...(autoRun
+          ? ["- AUTONOMOUS MODE: your actions run automatically (no user click). Don't ask for confirmation — just propose them and they execute."]
+          : []),
+        ...(liveWatch
+          ? [
+              "- LIVE WATCH is on: after an agent finishes a turn you'll automatically be pinged to continue. Drive the whole task to completion across turns — each ping, evaluate the latest result and dispatch the NEXT concrete step (e.g. for a PR flow: make the change & open the PR, then on the next turn review/fix, then verify). When everything is truly complete, say so plainly and emit NO actions block — that ends the loop.",
+            ]
+          : []),
       ].join("\n"),
       `# Open projects\n${sections}`,
     ].join("\n\n");
-  }, [tabs, snaps, activeId]);
+  }, [tabs, snaps, activeId, autoRun, liveWatch]);
 
   const ask = useCallback(
     async (userText: string) => {
@@ -177,6 +230,11 @@ export function AiSidebar({ tabs, activeId, onSelect, width }: Props) {
       if (a.kind === "dispatch") {
         p.controller.setMode("agent");
         p.controller.runAgent(a.prompt);
+        // In live watch, follow this agent so we can continue when it finishes.
+        if (liveWatchRef.current) {
+          watchedRef.current.add(p.id);
+          prevBusyRef.current.set(p.id, true); // it's about to be busy
+        }
       } else {
         p.controller.cancelAgent();
       }
@@ -190,6 +248,73 @@ export function AiSidebar({ tabs, activeId, onSelect, width }: Props) {
     setActionState((s) => ({ ...s, [key]: "dismissed" }));
   }, []);
 
+  /** A watched agent finished a turn — ping the assistant to continue the plan. */
+  const continueAfterAgent = useCallback(
+    (name: string) => {
+      if (autoStepsRef.current >= MAX_AUTO_STEPS) {
+        watchedRef.current.clear();
+        setMessages((m) => [
+          ...m,
+          {
+            role: "assistant",
+            content: `⏹️ Σταμάτησα το live watch (όριο ${MAX_AUTO_STEPS} αυτόματων βημάτων). Πες μου «συνέχισε» αν θες κι άλλο.`,
+          },
+        ]);
+        return;
+      }
+      autoStepsRef.current += 1;
+      consumedContinuationRef.current = true;
+      void ask(
+        `👁 (live watch) Ο agent στο «${name}» ολοκλήρωσε ένα turn. Δες το τελευταίο αποτέλεσμα στο context και προχώρα το πλάνο: αν υπάρχει επόμενο βήμα, κάνε dispatch το επόμενο action· αν όλα ολοκληρώθηκαν, πες το καθαρά ΧΩΡΙΣ actions block.`,
+      );
+    },
+    [ask],
+  );
+
+  // Auto-run proposed actions (when enabled) and detect plan completion. Runs on
+  // every new assistant message; each action fires at most once (autoRanRef).
+  useEffect(() => {
+    const i = messages.length - 1;
+    const m = messages[i];
+    if (!m || m.role !== "assistant") return;
+    const { actions } = parseActions(m.content);
+
+    if (autoRun) {
+      actions.forEach((a, j) => {
+        const key = `${i}:${j}`;
+        if (!actionState[key] && !autoRanRef.current.has(key)) {
+          autoRanRef.current.add(key);
+          runAction(key, a);
+        }
+      });
+    }
+
+    // A watch continuation that proposes nothing = the plan is complete → stop.
+    if (consumedContinuationRef.current) {
+      consumedContinuationRef.current = false;
+      if (actions.length === 0) {
+        watchedRef.current.clear();
+        autoStepsRef.current = 0;
+      }
+    }
+  }, [messages, autoRun, actionState, runAction]);
+
+  // Live watch: when a watched agent goes busy→idle, continue the plan. No dep
+  // array — it inspects the freshest snapshots on each render (the snapshot store
+  // re-renders us whenever an agent's busy state flips).
+  useEffect(() => {
+    for (const p of tabs) {
+      if (!watchedRef.current.has(p.id)) continue;
+      const busy = !!snaps.get(p.id)?.agentBusy;
+      const prev = prevBusyRef.current.get(p.id) ?? false;
+      prevBusyRef.current.set(p.id, busy);
+      if (prev && !busy && liveWatch && !thinking) {
+        continueAfterAgent(p.name);
+        break; // one continuation per settle
+      }
+    }
+  });
+
   // Route every project's per-block "Ask AI" button to this one assistant.
   useEffect(() => {
     for (const p of tabs) {
@@ -199,6 +324,7 @@ export function AiSidebar({ tabs, activeId, onSelect, width }: Props) {
           block.status === "error"
             ? `Στο project "${p.name}" αυτή η εντολή απέτυχε (exit ${block.exitCode}). Τι πήγε στραβά και πώς το διορθώνω;\n\n$ ${block.command}\n${truncate(block.outputText)}`
             : `Στο project "${p.name}", εξήγησε το output:\n\n$ ${block.command}\n${truncate(block.outputText)}`;
+        autoStepsRef.current = 0;
         void ask(q);
       };
     }
@@ -206,7 +332,29 @@ export function AiSidebar({ tabs, activeId, onSelect, width }: Props) {
 
   return (
     <aside className="flex shrink-0 flex-col bg-panel" style={{ width }}>
-      <div className="border-b border-edge px-3 py-2 text-sm font-semibold text-accent">🐙 Workspace Assistant</div>
+      <div className="flex items-center justify-between border-b border-edge px-3 py-2">
+        <span className="text-sm font-semibold text-accent">🐙 Workspace Assistant</span>
+        <div className="flex items-center gap-1">
+          <button
+            onClick={() => setAutoRun((v) => !v)}
+            title={autoRun ? "Auto-run: τα actions τρέχουν χωρίς επιβεβαίωση" : "Confirm: κάθε action θέλει κλικ"}
+            className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${
+              autoRun ? "bg-amber-500/20 text-amber-300" : "border border-edge text-muted hover:bg-edge/50"
+            }`}
+          >
+            {autoRun ? "🔓 Auto" : "🔒 Confirm"}
+          </button>
+          <button
+            onClick={() => setLiveWatch((v) => !v)}
+            title={liveWatch ? "Live watch: συνεχίζει μόνος του όταν τελειώνει ένας agent" : "Live watch off"}
+            className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${
+              liveWatch ? "bg-emerald-500/20 text-emerald-300" : "border border-edge text-muted hover:bg-edge/50"
+            }`}
+          >
+            👁 Watch
+          </button>
+        </div>
+      </div>
 
       {/* Agents overview — status + jump + cancel across all projects. */}
       <div className="border-b border-edge px-3 py-2">
@@ -251,6 +399,14 @@ export function AiSidebar({ tabs, activeId, onSelect, width }: Props) {
         )}
         {messages.map((m, i) => {
           if (m.role === "user") {
+            // Live-watch continuations are auto-generated — show them subtly.
+            if (m.content.startsWith("👁")) {
+              return (
+                <div key={i} className="px-1 text-[11px] italic text-muted/80">
+                  {m.content}
+                </div>
+              );
+            }
             return (
               <div key={i} className="whitespace-pre-wrap break-words rounded bg-edge/60 px-2 py-1.5">
                 {m.content}
@@ -314,7 +470,7 @@ export function AiSidebar({ tabs, activeId, onSelect, width }: Props) {
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
                 const v = input.trim();
-                if (v) { void ask(v); setInput(""); }
+                if (v) { autoStepsRef.current = 0; void ask(v); setInput(""); }
               }
             }}
             placeholder="Ρώτησε για όλα τα projects…"
