@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { ShellController } from "./shell/ShellController";
@@ -9,6 +9,7 @@ import { AiSidebar } from "./ai/AiSidebar";
 import { MacroBar } from "./macros/MacroBar";
 import { SmartPrButton } from "./macros/SmartPrButton";
 import { ProjectSidebar } from "./projects/ProjectSidebar";
+import { CablesRail } from "./projects/CablesRail";
 import { Titlebar } from "./chrome/Titlebar";
 import { KEY, loadJSON, saveJSON } from "./util/persist";
 
@@ -34,6 +35,19 @@ export interface GitStat {
   added: number;
   removed: number;
 }
+
+export interface Group {
+  id: string;
+  name: string;
+  color: string;
+}
+
+interface GroupsState {
+  groups: Group[];
+  assign: Record<string, string>; // projectId → groupId
+}
+
+export const GROUP_COLORS = ["#82AAFF", "#C792EA", "#4ade80", "#f78c6c", "#f07178", "#7fdbca", "#ffcb6b", "#ff5370"];
 
 // One-shot probe: "<branch>|<git diff --shortstat HEAD>". Empty branch ⇒ not a repo.
 const GIT_PROBE =
@@ -132,11 +146,85 @@ export function App({ initial }: { initial: ShellController }) {
   }, [tabs]);
 
   const gitStats = useGitStats(tabs);
+  // Measured project-row Y centers (from ProjectSidebar) so the rail aligns.
+  const [rowYs, setRowYs] = useState<Record<string, number>>({});
 
-  // Restore previously-open projects once, on startup. Dedup by folder so an
-  // accumulated/duplicated saved list never spawns dozens of PTYs + WebGL
-  // contexts (which would freeze the app). One tab per unique cwd.
+  // Project groups (workspace-global), persisted.
+  const [groupsState, setGroupsState] = useState<GroupsState>(() =>
+    loadJSON<GroupsState>(KEY.groups, { groups: [], assign: {} }),
+  );
+  useEffect(() => { saveJSON(KEY.groups, groupsState); }, [groupsState]);
+
+  const createGroup = (name: string): string => {
+    const id = crypto.randomUUID();
+    setGroupsState((s) => ({
+      ...s,
+      groups: [...s.groups, { id, name: name.trim() || "Ομάδα", color: GROUP_COLORS[s.groups.length % GROUP_COLORS.length] }],
+    }));
+    return id;
+  };
+  const assignGroup = (projectId: string, groupId: string | null) =>
+    setGroupsState((s) => {
+      const assign = { ...s.assign };
+      if (groupId) assign[projectId] = groupId;
+      else delete assign[projectId];
+      return { ...s, assign };
+    });
+
+  const setGroupColor = (groupId: string, color: string) =>
+    setGroupsState((s) => ({ ...s, groups: s.groups.map((g) => (g.id === groupId ? { ...g, color } : g)) }));
+  const renameGroup = (groupId: string, name: string) =>
+    setGroupsState((s) => ({
+      ...s,
+      groups: s.groups.map((g) => (g.id === groupId ? { ...g, name: name.trim() || g.name } : g)),
+    }));
+  const deleteGroup = (groupId: string) =>
+    setGroupsState((s) => {
+      const assign = { ...s.assign };
+      for (const k of Object.keys(assign)) if (assign[k] === groupId) delete assign[k];
+      return { groups: s.groups.filter((g) => g.id !== groupId), assign };
+    });
+  const reorderGroup = (dragId: string, targetId: string, pos: "before" | "after") => {
+    if (dragId === targetId) return;
+    setGroupsState((s) => {
+      const from = s.groups.findIndex((g) => g.id === dragId);
+      if (from < 0) return s;
+      const arr = [...s.groups];
+      const [moved] = arr.splice(from, 1);
+      let to = arr.findIndex((g) => g.id === targetId);
+      if (to < 0) return s;
+      if (pos === "after") to += 1;
+      arr.splice(to, 0, moved);
+      return { ...s, groups: arr };
+    });
+  };
+
+  // Drag-to-reorder a project relative to another (order persists via the
+  // projects effect, which saves in `tabs` order).
+  const reorderProject = (dragId: string, targetId: string, pos: "before" | "after") => {
+    if (dragId === targetId) return;
+    setTabs((prev) => {
+      const from = prev.findIndex((t) => t.id === dragId);
+      if (from < 0) return prev;
+      const arr = [...prev];
+      const [moved] = arr.splice(from, 1);
+      let to = arr.findIndex((t) => t.id === targetId);
+      if (to < 0) return prev;
+      if (pos === "after") to += 1;
+      arr.splice(to, 0, moved);
+      return arr;
+    });
+  };
+
+  // Restore previously-open projects ONCE. The ref guard is essential: React
+  // Fast Refresh (HMR) re-runs effects while preserving state, so without it
+  // every code edit would re-append the saved projects → duplicate tabs (each
+  // spawning its own PTY + WebGL context). Dedup by folder too, and never add a
+  // cwd that's already open — belt and suspenders against duplicates.
+  const didRestore = useRef(false);
   useEffect(() => {
+    if (didRestore.current) return;
+    didRestore.current = true;
     const saved = loadJSON<SavedProject[]>(KEY.projects, []);
     const seen = new Set<string>();
     const unique = saved.filter((p) => p.cwd && !seen.has(p.cwd) && (seen.add(p.cwd), true));
@@ -148,7 +236,12 @@ export function App({ initial }: { initial: ShellController }) {
         await controller.init(p.cwd);
         restored.push({ id: p.id, name: p.name, cwd: p.cwd, controller });
       }
-      if (!cancelled && restored.length) setTabs((t) => [...t, ...restored]);
+      if (!cancelled && restored.length) {
+        setTabs((t) => {
+          const have = new Set(t.map((x) => x.cwd));
+          return [...t, ...restored.filter((r) => !have.has(r.cwd))];
+        });
+      }
       if (!cancelled) setHydrated(true);
     })();
     return () => { cancelled = true; };
@@ -212,6 +305,14 @@ export function App({ initial }: { initial: ShellController }) {
     <div className="flex h-full flex-col">
       <Titlebar />
       <div className="flex flex-1 overflow-hidden">
+        <CablesRail
+          tabs={tabs.map((t) => ({ id: t.id, name: t.name, controller: t.controller }))}
+          activeId={active.id}
+          onSelect={setActiveId}
+          groups={groupsState.groups}
+          assign={groupsState.assign}
+          rowYs={rowYs}
+        />
         <ProjectSidebar
           tabs={tabs.map((t) => ({ id: t.id, name: t.name }))}
           activeId={active.id}
@@ -220,6 +321,17 @@ export function App({ initial }: { initial: ShellController }) {
           onNew={newProject}
           width={layout.left}
           stats={gitStats}
+          groups={groupsState.groups}
+          assign={groupsState.assign}
+          onAssign={assignGroup}
+          onCreateGroup={createGroup}
+          onReorder={reorderProject}
+          onReorderGroup={reorderGroup}
+          onSetGroupColor={setGroupColor}
+          onRenameGroup={renameGroup}
+          onDeleteGroup={deleteGroup}
+          palette={GROUP_COLORS}
+          onLayout={setRowYs}
         />
         <ResizeHandle
           onDrag={(dx) => setLayout((l) => ({ ...l, left: clamp(l.left + dx, 160, 460) }))}

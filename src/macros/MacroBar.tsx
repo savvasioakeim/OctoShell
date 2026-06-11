@@ -111,9 +111,12 @@ export function MacroBar({ controller }: { controller: ShellController }) {
           title={m.title}
           disabled={busy !== null}
           onClick={() => run(m)}
-          className="whitespace-nowrap rounded-md bg-edge/70 px-2.5 py-1 text-xs hover:bg-accent/30 disabled:opacity-50"
+          className="whitespace-nowrap rounded-md bg-edge/70 px-2.5 py-1 text-xs hover:bg-accent/30 disabled:opacity-70"
         >
-          {busy === m.label ? "…" : m.label}
+          <span className="inline-flex items-center gap-1.5">
+            {busy === m.label && <span className="octo-spinner" aria-hidden />}
+            {m.label}
+          </span>
         </button>
       ))}
 
@@ -138,9 +141,12 @@ export function MacroBar({ controller }: { controller: ShellController }) {
                     title={m.title}
                     disabled={busy !== null}
                     onClick={() => run(m)}
-                    className="block w-full whitespace-nowrap px-3 py-1.5 text-left text-xs text-gray-200 hover:bg-edge disabled:opacity-50"
+                    className="block w-full whitespace-nowrap px-3 py-1.5 text-left text-xs text-gray-200 hover:bg-edge disabled:opacity-70"
                   >
-                    {busy === m.label ? "…" : m.label}
+                    <span className="inline-flex items-center gap-1.5">
+                      {busy === m.label && <span className="octo-spinner" aria-hidden />}
+                      {m.label}
+                    </span>
                   </button>
                 </li>
               ))}

@@ -32,6 +32,7 @@ export const KEY = {
   projects: "octoshell.projects",
   assistant: "octoshell.assistant",
   layout: "octoshell.layout",
+  groups: "octoshell.groups",
   blocks: (id: string) => `octoshell.blocks.${id}`,
   agent: (id: string) => `octoshell.agent.${id}`,
   model: (id: string) => `octoshell.model.${id}`,

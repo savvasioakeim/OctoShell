@@ -108,16 +108,13 @@ claude -p --output-format stream-json --model <ollama-model>
 
 ---
 
-## 6. Agent grouping — «cables / tentacles» rail
-- [ ] 🟠 ⏱️L Νέα **στενή στήλη αριστερά από τους agents** με vertical «καλώδια» (σαν traces μητρικής· μελλοντικά → πλοκάμια 🐙).
-- [ ] Groups με **όνομα**, οπτικά διακριτά μεταξύ τους.
-- [ ] Κάθε καλώδιο = κατάσταση agent με χρώμα:
-  - **γκρι** = idle
-  - **μπλε** = κάνει κάτι / τρέχει εντολή
-  - **πράσινο** = ολοκλήρωσε
-  - **κόκκινο** = error
-- [ ] Data model για groups + persistence (ποιο project ανήκει πού).
-- [ ] (Design-only μελλοντικό) animation/καμπύλες πλοκαμιών.
+## 6. Agent grouping — «cables / tentacles» rail ✅ ΕΓΙΝΕ (`src/projects/CablesRail.tsx`)
+- [x] 🟠 ⏱️L **Στενή στήλη αριστερά** — SVG πλοκάμι (gradient μωβ→teal) με «κεφαλή» 🐙 + κόμβο ανά agent σε κυματιστή καμπύλη.
+- [x] Groups με **όνομα**, οπτικά διακριτά (group headers, χρωματιστά· επιλογή χρώματος από δεξί κλικ).
+- [x] Κάθε κόμβος = status agent: **fill** = γκρι(idle)/μπλε(τρέχει,pulse)/πράσινο(done)/κόκκινο(error)· **ring** = χρώμα ομάδας.
+- [x] Data model για groups + persistence (`KEY.groups`: groups[] + project→group).
+- [x] **DnD**: reorder projects & groups, μετακίνηση project σε ομάδα (drop σε header/row). Δεξί κλικ context menus (assign/new/rename/color/delete). `dragDropEnabled:false` στο Tauri ώστε να δουλεύει το HTML5 DnD.
+- [x] Tentacle καμπύλες (smooth S-curves) + glow + pulse.
 
 **Γνώμη:** Αυτό είναι η **οπτική ταυτότητα** του OctoShell — ξεχωρίζει από Conductor/Warp. Πολύ καλή ιδέα. Τα χρώματα status ταιριάζουν 1:1 με τα υπάρχοντα states (`agentBusy`/`busy`/last block status), οπότε το logic υπάρχει· το βάρος είναι στο group model + το SVG/CSS των traces. Effort μεγάλο λόγω design, αλλά υψηλή αξία brand.
 
