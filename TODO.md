@@ -1,7 +1,23 @@
 # OctoShell — TODO / Roadmap
 
-> Λίστα εργασιών. Καμία αλλαγή κώδικα ακόμα — πρώτα συμφωνία σε προτεραιότητες.
-> Legend: 🔴 μεγάλο impact · 🟠 μεσαίο · 🟢 μικρό · ⏱️ effort (S/M/L)
+> Ενεργή ανάπτυξη. Legend: 🔴 μεγάλο impact · 🟠 μεσαίο · 🟢 μικρό · ⏱️ effort (S/M/L)
+
+---
+
+## 🔭 ΚΑΤΑΣΤΑΣΗ & ΕΠΟΜΕΝΑ (διάβασε πρώτα μετά από compact)
+
+**Ολοκληρωμένα:** smart scroll · Tab-completion runspace · custom titlebar · notifications · Run-tests macro · model switcher (per-provider) · **provider abstraction Claude↔Gemini** (πλήρες, schema verified+fixed) · resizable panels · Shiki highlighting · markdown renderer (agent feed + assistant) · MacroBar redesign · diff badges · **Smart PR button** (Create→Check→Resolve→Update, tested σε PR #1) · **Cables/tentacles rail** + named groups + DnD + alignment · **git-worktree isolation** (+ nesting κάτω από το parent) · cursorBlink/lazy-freeze · Palenight palette.
+
+**Μένουν (μεγάλα):**
+- 🔴 **Assistant orchestrator** (#4) — ο βοηθός να δίνει tasks σε agents, με confirmation. (Το τελευταίο μεγάλο.)
+- 🔴 **Heavy-output transport** (#1) — binary channel, για βαριά builds (όταν χρειαστεί).
+- 🟡 **Virtualize feed** (#1) — πολλά blocks (lazy-freeze το καλύπτει εν μέρει).
+- **Codex / Goose providers** (#4) — όχι installed· Goose = δρόμος για free/local LLMs (Ollama).
+- ⏸️ Approval UI (αντί `--dangerously-skip-permissions`/yolo) · token streaming · custom app icon.
+
+**Εκκρεμή από συζήτηση:**
+- 🐙 **Tentacles redesign** — ο χρήστης έχει συγκεκριμένο όραμα για το rail (θα το εξηγήσει· δύσκολο με πολλά worktrees/projects στην ίδια ομάδα). Το τρέχον rail είναι v1.
+- Μικρά Gemini: το `update_topic` (internal planning tool του Gemini) φαίνεται ως tool-block «θόρυβος» — προαιρετικό filter· ripgrep δεν είναι installed (Gemini πέφτει σε GrepTool fallback).
 
 ---
 
@@ -47,14 +63,16 @@
 
 ## 4. Agent δυνατότητες
 - [x] 🟠 ⏱️M **Model switcher** ✅ ΕΓΙΝΕ. Chip «⚙ Default/Opus/Sonnet/Haiku» στο InputBar (agent mode) → `setAgentModel`, persisted per-project (`KEY.model`), περνά ως `--model` από το επόμενο turn. (Πλήρης provider abstraction ακόμα ανοιχτή.)
-- [ ] 🔴 ⏱️L **Agent provider abstraction** (claude ↔ gemini ↔ codex ↔ …) με εναλλαγή. Θέλει interface `AgentProvider` (build-args / parse-stream → normalized events: assistant text, tool_use, tool_result, session id, done). Cross-provider δεν γίνεται `--resume` — κάνουμε **seed** τον νέο provider με το transcript (το persistence το επιτρέπει).
+- [x] 🔴 ⏱️L **Agent provider abstraction** ✅ ΕΓΙΝΕ (claude ↔ gemini). `src/agents/providers.ts` normalizer· `agent.rs` per-provider args (gemini: `-p -o stream-json --approval-mode yolo --skip-trust [-m] [--resume latest]`, μέσω `cmd /c` στα Windows)· provider chip 🐙/✦ + per-provider model list· persisted (`KEY.provider`)· gemini deltas → ένα block· switch μηδενίζει session+model· error block μόνο σε exit≠0 (τα gemini warnings σιωπούν)· block header δείχνει τον σωστό provider.
+  - **Gemini schema (verified live):** `init{session_id}` · `message{role,content,delta,thought?}` (thoughts skipped) · `tool_use{tool_name,tool_id,parameters}` · `tool_result{tool_id,status,output}` · `result{status,stats}`. Models: `gemini-3.1-pro-preview` / `gemini-3-flash-preview` / `gemini-3.1-flash-lite` (+auto).
+  - TODO: Codex/Goose (όχι installed)· φίλτρο για `update_topic` αν θεωρηθεί θόρυβος.
 - [ ] 🔴 ⏱️L **Assistant → orchestrator**: ο βοηθός να μπορεί να **δίνει εντολές/tasks** σε άλλους agents, όχι μόνο να βλέπει. Σχέδιο: ο assistant προτείνει «workspace actions» (π.χ. send prompt σε agent X, cancel Y) → ο χρήστης επιβεβαιώνει → η app τις εκτελεί. (Safety: confirm πριν dispatch.)
 
 ### Providers — ranked (από research, verified με sources)
 Στόχος: solid με τους 3 πιο γνωστούς (Claude/Gemini/OpenAI) αφού θα το χρησιμοποιούν κι άλλοι χρήστες.
 
 1. ✅ **Claude Code** (`claude`) — έτοιμο. `-p --output-format stream-json --verbose`, `--resume`, `--dangerously-skip-permissions`.
-2. [ ] 🥇 **Gemini CLI** (`gemini`) — ο πιο εύκολος 2ος. Headless `-p`/`--prompt`· `--output-format stream-json` → 6 events `init/message(delta)/tool_use/tool_result/error/result` ≈ **σχεδόν 1:1** με τα δικά μας. **Drop-in: EASY-MED.** ⚠️ Πριν: hands-on spike για **resume σε headless**, **yolo/approval flag**, και **field-level schema** (3 κενά μη-επιβεβαιωμένα).
+2. [x] 🥇 **Gemini CLI** (`gemini`) ✅ ΕΓΙΝΕ — schema verified live, parser fixed, δουλεύει end-to-end (βλ. #4 παραπάνω).
 3. [ ] 🥈 **OpenAI Codex CLI** (`codex`) — `codex exec`· `--json`/`--experimental-json` → JSONL αλλά με `thread/turn/item` envelope (όχι 1:1) → χρειάζεται **adapter**. `codex exec resume [ID]`/`--last`, `--yolo` (`--dangerously-bypass-approvals-and-sandbox`), `--ask-for-approval`/`--sandbox`. **Drop-in: MED.** (= ο OpenAI provider που θες «ποτέ δεν ξέρεις».)
 4. [ ] 🥉 **opencode** (`opencode run`) — `--format json` (schema **μη-documented**, μόνο 3rd-party), `--continue`/`--session`/`--fork` (reports για bugs), `--dangerously-skip-permissions` (ίδιο όνομα). **Drop-in: MED-HARD.** Bonus: υποστηρίζει local/OpenAI-compatible models → γέφυρα για free LLMs (βλ. #4b).
 5. [ ] ❓ Ανεξερεύνητα: **Qwen Code** (fork Gemini, *ίσως* κληρονομεί stream-json), **Amp**, **Goose**, **Crush**, **Aider** (edit-tool, όχι ίδιο agent μοντέλο).
@@ -123,7 +141,7 @@ claude -p --output-format stream-json --model <ollama-model>
 ## 7. Παράλληλοι agents & QoL workflow (έμπνευση: Conductor)
 > Το Conductor είναι Mac-only & χωρίς Gemini/local — άρα Windows + multi/local-provider = ήδη δική μας διαφοροποίηση. Παίρνουμε επιλεκτικά, κρατάμε terminal-first.
 
-- [ ] 🔴 ⏱️L **Git-worktree isolation ανά agent run** — κάθε agent παίρνει αυτόματα δικό του `git worktree` + branch, ώστε παράλληλοι agents να μην μπλέκονται/συγκρούονται. Το #1 take από Conductor. (Tauri → shell out `git worktree add/remove`.) Ταιριάζει με τα tentacles: πολλά χέρια, χωρίς conflicts.
+- [x] 🔴 ⏱️L **Git-worktree isolation** ✅ ΕΓΙΝΕ. Κουμπί «🌿 New worktree» (sidebar footer) → `git worktree add -b <branch>` στο `.octoshell/worktrees/<branch>` (locally ignored via `.git/info/exclude`) + ανοίγει νέο project tab εκεί· cleanup (`git worktree remove`) όταν κλείνει το project. Όλο μέσω `run_capture` (frontend, χωρίς Rust). Verified backend create/list/remove. TODO μελλοντικά: αυτόματο worktree ανά agent run· UI για merge/PR από worktree.
 - [x] 🟠 ⏱️S **Notifications** ✅ ΕΓΙΝΕ (agent-done). `tauri-plugin-notification` + `src/util/notify.ts`· firing στο `onAgentDone` με όνομα project, μόνο όταν το παράθυρο **δεν** είναι focused. TODO: notification και όταν ο agent χρειάζεται input (μετά το approval UI).
 
 ### Macros (quality-of-life — επεκτείνουν την MacroBar· υπάρχει ήδη `run_capture` + agent dispatch)
@@ -145,13 +163,10 @@ claude -p --output-format stream-json --model <ollama-model>
 
 ---
 
-## 📌 Προτεινόμενη σειρά υλοποίησης (γνώμη μου)
-1. **Smart scroll** (#2) — γρήγορο, καθημερινό pain point.
-2. **Tab completion runspace** (#1 perf) — μεγαλύτερο μετρημένο win.
-3. **QoL: Run tests macro + notifications** — εύκολα, αποδοτικά, χαμηλό ρίσκο. (Smart PR button = λίγο μετά, MEDIUM.)
-4. **Custom titlebar + UI polish** (#3 + #5) μαζί — οπτικό αναβάθμισμα.
-5. **Agent provider abstraction → model/provider switch** (#4.1, #4.2).
-6. **Git-worktree isolation** (#7) — μαζί/μετά το parallel-agents θεμέλιο.
-7. **Cables/groups rail** (#6) — το signature feature.
-8. **Heavy-output transport** (#1) όποτε χρειαστεί σε βαριά builds.
-9. **Assistant orchestrator** (#4.3) — τελευταίο, με confirmation.
+## 📌 Σειρά για ό,τι ΑΠΟΜΕΝΕΙ (τα 1–7 του αρχικού πλάνου έγιναν)
+1. **Assistant orchestrator** (#4) — ο βοηθός δίνει tasks σε agents, με confirmation πριν dispatch. Το επόμενο μεγάλο.
+2. **Tentacles redesign** (#6) — αφού ο χρήστης εξηγήσει το όραμά του.
+3. **Heavy-output transport / virtualize feed** (#1) — perf, όταν χρειαστεί σε βαριά builds/πολλά blocks.
+4. **Codex / Goose providers** (#4) — Goose = free/local LLMs μέσω Ollama (απόφαση: Δρόμος Β).
+5. **Approval UI** — αντικαθιστά `--dangerously-skip-permissions`/yolo· ξεκλειδώνει «agent χρειάζεται input» notifications.
+6. Λοιπά: token streaming, custom app icon, per-project test-script override, merge/PR-from-worktree UI.

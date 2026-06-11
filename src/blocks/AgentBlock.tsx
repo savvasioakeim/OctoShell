@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { AgentTextBlock, AgentToolBlock } from "../shell/ShellController";
 import { CodeBlock } from "./CodeBlock";
 import { Markdown } from "./Markdown";
+import { PROVIDERS } from "../agents/providers";
 
 /** Tool result collapses past this height with an inner scrollbar. */
 const RESULT_MAX_PX = 280;
@@ -13,6 +14,7 @@ function fmtTime(ts: number): string {
 /** A user prompt or an assistant reply. */
 export function AgentTextBlockView({ block }: { block: AgentTextBlock }) {
   const isUser = block.role === "user";
+  const prov = PROVIDERS.find((p) => p.value === block.provider) ?? PROVIDERS[0];
   return (
     <div
       className={`rounded-lg border px-3 py-2 ${
@@ -21,7 +23,7 @@ export function AgentTextBlockView({ block }: { block: AgentTextBlock }) {
     >
       <div className="mb-1 flex items-center gap-2 text-[11px]">
         <span className={isUser ? "font-semibold text-gray-300" : "font-semibold text-accent"}>
-          {isUser ? "🧑 you" : "🐙 claude"}
+          {isUser ? "🧑 you" : `${prov.icon} ${prov.label.toLowerCase()}`}
         </span>
         <span className="text-muted">{fmtTime(block.startedAt)}</span>
       </div>

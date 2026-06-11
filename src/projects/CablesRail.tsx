@@ -6,6 +6,8 @@ export interface RailTab {
   id: string;
   name: string;
   controller: ShellController;
+  /** If set, this is a worktree nested under that parent project. */
+  parentId?: string;
 }
 
 interface Props {
@@ -81,14 +83,23 @@ export function CablesRail({ tabs, activeId, onSelect, groups, assign, rowYs }: 
   const snaps = useAllSnapshots(tabs);
 
   // Order: ungrouped first, then each non-empty group — matching the sidebar.
-  const ordered: { t: RailTab; group: Group | null }[] = [];
-  tabs.filter((t) => !groups.some((g) => g.id === assign[t.id])).forEach((t) => ordered.push({ t, group: null }));
+  // Each top-level project is followed by its nested worktree children.
+  const isChild = (t: RailTab) => !!t.parentId && tabs.some((p) => p.id === t.parentId);
+  const childrenOf = (id: string) => tabs.filter((t) => t.parentId === id && isChild(t));
+  const ordered: { t: RailTab; group: Group | null; child: boolean }[] = [];
+  const pushWithKids = (t: RailTab, group: Group | null) => {
+    ordered.push({ t, group, child: false });
+    childrenOf(t.id).forEach((c) => ordered.push({ t: c, group, child: true }));
+  };
+  tabs
+    .filter((t) => !isChild(t) && !groups.some((g) => g.id === assign[t.id]))
+    .forEach((t) => pushWithKids(t, null));
   const groupStarts = new Set<number>();
   groups.forEach((g) => {
-    const members = tabs.filter((t) => assign[t.id] === g.id);
+    const members = tabs.filter((t) => !isChild(t) && assign[t.id] === g.id);
     if (members.length) {
       groupStarts.add(ordered.length);
-      members.forEach((t) => ordered.push({ t, group: g }));
+      members.forEach((t) => pushWithKids(t, g));
     }
   });
 
@@ -144,7 +155,7 @@ export function CablesRail({ tabs, activeId, onSelect, groups, assign, rowYs }: 
               key={p.t.id}
               cx={p.x}
               cy={p.y}
-              r={isActive ? 6.5 : 5}
+              r={isActive ? 6.5 : p.child ? 3.5 : 5}
               fill={color} // fill = status
               stroke={p.group ? p.group.color : "#15181F"} // ring = group
               strokeWidth={2}

@@ -36,5 +36,6 @@ export const KEY = {
   blocks: (id: string) => `octoshell.blocks.${id}`,
   agent: (id: string) => `octoshell.agent.${id}`,
   model: (id: string) => `octoshell.model.${id}`,
+  provider: (id: string) => `octoshell.provider.${id}`,
   pr: (id: string) => `octoshell.pr.${id}`,
 };

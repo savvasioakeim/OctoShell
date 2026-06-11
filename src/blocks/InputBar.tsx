@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { Mode, ShellController } from "../shell/ShellController";
 import { kindLabel, longestCommonPrefix, requestCompletion, type CMatch } from "../shell/completion";
+import { PROVIDERS, type AgentProvider } from "../agents/providers";
 
 interface Props {
   controller: ShellController;
@@ -18,19 +19,28 @@ interface Props {
   agentBusy: boolean;
   /** Selected agent model (null = CLI default). */
   agentModel: string | null;
+  /** Which agent CLI drives this project. */
+  agentProvider: AgentProvider;
 }
 
-// Models offered for the agent. `value` is passed to `claude --model` (these are
-// the aliases the CLI accepts). The `claude` CLI has no headless "list models"
-// command, so this is curated; if the account lacks one, that turn errors
-// visibly. (A truly per-account list isn't exposed by the CLI's subscription.)
-const MODELS: { label: string; value: string | null }[] = [
-  { label: "Default", value: null },
-  { label: "Fable", value: "fable" },
-  { label: "Opus", value: "opus" },
-  { label: "Sonnet", value: "sonnet" },
-  { label: "Haiku", value: "haiku" },
-];
+// Models offered per provider (`value` → the CLI's `--model`/`-m`). Curated:
+// neither CLI exposes a headless "list models" command, so an unavailable name
+// just errors visibly on that turn. Gemini names are the ones this build reports.
+const MODELS_BY_PROVIDER: Record<AgentProvider, { label: string; value: string | null }[]> = {
+  claude: [
+    { label: "Default", value: null },
+    { label: "Fable", value: "fable" },
+    { label: "Opus", value: "opus" },
+    { label: "Sonnet", value: "sonnet" },
+    { label: "Haiku", value: "haiku" },
+  ],
+  gemini: [
+    { label: "Default (auto)", value: null },
+    { label: "3 Pro", value: "gemini-3.1-pro-preview" },
+    { label: "3 Flash", value: "gemini-3-flash-preview" },
+    { label: "3 Flash Lite", value: "gemini-3.1-flash-lite" },
+  ],
+};
 
 interface MenuState {
   items: CMatch[];
@@ -53,7 +63,7 @@ const INPUT_MAX_PX = 220;
  * candidate menu opens. Shift+Enter inserts a newline, Ctrl+C interrupts, ↑/↓
  * navigate history (or the completion menu when open).
  */
-export function InputBar({ controller, cwd, busy, value, altScreen, interacting, mode, agentBusy, agentModel }: Props) {
+export function InputBar({ controller, cwd, busy, value, altScreen, interacting, mode, agentBusy, agentModel, agentProvider }: Props) {
   const ref = useRef<HTMLTextAreaElement>(null);
   const selectedRef = useRef<HTMLLIElement>(null);
   const pendingCursor = useRef<number | null>(null);
@@ -61,9 +71,12 @@ export function InputBar({ controller, cwd, busy, value, altScreen, interacting,
   const [histIdx, setHistIdx] = useState<number>(-1);
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [modelMenu, setModelMenu] = useState(false);
+  const [providerMenu, setProviderMenu] = useState(false);
 
   const agent = mode === "agent";
-  const modelLabel = MODELS.find((m) => m.value === agentModel)?.label ?? "Default";
+  const prov = PROVIDERS.find((p) => p.value === agentProvider) ?? PROVIDERS[0];
+  const models = MODELS_BY_PROVIDER[agentProvider];
+  const modelLabel = models.find((m) => m.value === agentModel)?.label ?? "Default";
 
   // Keep focus in the input as state changes — except while the keyboard belongs
   // to the embedded terminal (full-screen app, or the user clicked in).
@@ -228,6 +241,39 @@ export function InputBar({ controller, cwd, busy, value, altScreen, interacting,
         {agent && (
           <div className="relative">
             <button
+              onClick={() => setProviderMenu((o) => !o)}
+              title="Agent provider (CLI)"
+              className="flex items-center gap-1 rounded border border-edge px-1.5 py-0.5 text-[11px] text-muted hover:bg-edge hover:text-gray-200"
+            >
+              {prov.icon} {prov.label}
+            </button>
+            {providerMenu && (
+              <ul
+                className="absolute bottom-full left-0 z-30 mb-1 overflow-hidden rounded-lg border border-edge bg-panel shadow-lg"
+                style={{ minWidth: "7rem" }}
+              >
+                {PROVIDERS.map((p) => (
+                  <li key={p.value}>
+                    <button
+                      onClick={() => { controller.setAgentProvider(p.value); setProviderMenu(false); }}
+                      className={`flex w-full items-center gap-1.5 px-2 py-1 text-left text-xs hover:bg-edge ${
+                        p.value === agentProvider ? "text-accent" : "text-gray-200"
+                      }`}
+                    >
+                      <span>{p.icon}</span>
+                      <span className="flex-1">{p.label}</span>
+                      {p.value === agentProvider && <span>✓</span>}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+
+        {agent && (
+          <div className="relative">
+            <button
               onClick={() => setModelMenu((o) => !o)}
               title="Μοντέλο agent (ισχύει από το επόμενο turn)"
               className="flex items-center gap-1 rounded border border-edge px-1.5 py-0.5 text-[11px] text-muted hover:bg-edge hover:text-gray-200"
@@ -239,7 +285,7 @@ export function InputBar({ controller, cwd, busy, value, altScreen, interacting,
                 className="absolute bottom-full left-0 z-30 mb-1 overflow-hidden rounded-lg border border-edge bg-panel shadow-lg"
                 style={{ minWidth: "8rem" }}
               >
-                {MODELS.map((m) => (
+                {models.map((m) => (
                   <li key={m.label}>
                     <button
                       onClick={() => { controller.setAgentModel(m.value); setModelMenu(false); }}

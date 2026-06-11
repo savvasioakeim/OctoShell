@@ -18,12 +18,16 @@ interface Tab {
   name: string;
   cwd: string;
   controller: ShellController;
+  /** Set when this project is an isolated git worktree: which repo to clean up
+   *  on close, and which project it was branched from (for nested display). */
+  worktree?: { repoRoot: string; parentId: string };
 }
 
 interface SavedProject {
   id: string;
   name: string;
   cwd: string;
+  worktree?: { repoRoot: string; parentId: string };
 }
 
 function basename(path: string): string {
@@ -234,7 +238,7 @@ export function App({ initial }: { initial: ShellController }) {
       for (const p of unique) {
         const controller = new ShellController(p.id);
         await controller.init(p.cwd);
-        restored.push({ id: p.id, name: p.name, cwd: p.cwd, controller });
+        restored.push({ id: p.id, name: p.name, cwd: p.cwd, controller, worktree: p.worktree });
       }
       if (!cancelled && restored.length) {
         setTabs((t) => {
@@ -255,7 +259,7 @@ export function App({ initial }: { initial: ShellController }) {
     const seen = new Set<string>();
     const saved: SavedProject[] = tabs
       .filter((t) => t.id !== initial.sessionId && t.cwd && !seen.has(t.cwd) && (seen.add(t.cwd), true))
-      .map((t) => ({ id: t.id, name: t.name, cwd: t.cwd }));
+      .map((t) => ({ id: t.id, name: t.name, cwd: t.cwd, worktree: t.worktree }));
     saveJSON(KEY.projects, saved);
   }, [tabs, hydrated, initial.sessionId]);
 
@@ -272,10 +276,70 @@ export function App({ initial }: { initial: ShellController }) {
     setActiveId(tab.id);
   };
 
+  const newWorktree = async (branch: string) => {
+    const src = tabs.find((t) => t.id === activeId) ?? tabs[0];
+    if (!src.cwd) { src.controller.setInput("# Άνοιξε πρώτα ένα git project (το home δεν είναι repo)"); return; }
+    const branchName = branch.trim().replace(/[^A-Za-z0-9._/-]/g, "-").replace(/^-+|-+$/g, "");
+    if (!branchName) return;
+    const dirName = branchName.replace(/\//g, "-");
+    // Resolve the MAIN worktree, ignore the managed folder locally, create the
+    // worktree + branch, and print its path (or ERR:…). One pwsh round-trip.
+    const script =
+      "$main=(git worktree list --porcelain|Where-Object{$_ -like 'worktree *'}|Select-Object -First 1);" +
+      "if(-not $main){Write-Output 'ERR:not a git repo';return};" +
+      "$main=($main.Substring(9).Trim() -replace '\\\\','/');" +
+      `$wt="$main/.octoshell/worktrees/${dirName}";` +
+      "$excl=\"$main/.git/info/exclude\";" +
+      "if((Test-Path $excl) -and -not (Select-String -Path $excl -Pattern 'octoshell' -Quiet)){Add-Content -Path $excl -Value '.octoshell/'};" +
+      `$r=git -C "$main" worktree add -b "${branchName}" "$wt" 2>&1;` +
+      `if($LASTEXITCODE -ne 0){$r=git -C "$main" worktree add "$wt" "${branchName}" 2>&1};` +
+      "if($LASTEXITCODE -ne 0){Write-Output ('ERR:'+($r -join ' '))}else{Write-Output $wt}";
+    let out = "";
+    try {
+      out = (await invoke<string>("run_capture", { cwd: src.cwd, command: script })).trim();
+    } catch (e) {
+      out = "ERR:" + e;
+    }
+    const last = out.split(/\r?\n/).pop()?.trim() ?? "";
+    if (!last || last.startsWith("ERR:")) {
+      src.controller.setInput(`# Worktree error: ${last.replace(/^ERR:/, "") || "unknown"}`);
+      return;
+    }
+    const wtPath = last;
+    const repoRoot = wtPath.split("/.octoshell/")[0];
+    const controller = new ShellController(crypto.randomUUID());
+    await controller.init(wtPath);
+    const tab: Tab = {
+      id: controller.sessionId,
+      name: dirName,
+      cwd: wtPath,
+      controller,
+      worktree: { repoRoot, parentId: src.id },
+    };
+    // Insert right after the parent (and its existing worktrees) so it nests.
+    setTabs((t) => {
+      const arr = [...t];
+      let idx = arr.findIndex((x) => x.id === src.id);
+      if (idx < 0) { arr.push(tab); return arr; }
+      idx += 1;
+      while (idx < arr.length && arr[idx].worktree?.parentId === src.id) idx += 1;
+      arr.splice(idx, 0, tab);
+      return arr;
+    });
+    setActiveId(tab.id);
+  };
+
   const closeProject = (id: string) => {
     setTabs((prev) => {
       if (prev.length <= 1) return prev;
       const tab = prev.find((t) => t.id === id);
+      // Isolated worktree → remove it from git (best-effort) on close.
+      if (tab?.worktree) {
+        invoke("run_capture", {
+          cwd: tab.worktree.repoRoot,
+          command: `git worktree remove "${tab.cwd}" --force 2>&1`,
+        }).catch(() => {});
+      }
       tab?.controller.forget();
       tab?.controller.dispose();
       const remaining = prev.filter((t) => t.id !== id);
@@ -306,7 +370,7 @@ export function App({ initial }: { initial: ShellController }) {
       <Titlebar />
       <div className="flex flex-1 overflow-hidden">
         <CablesRail
-          tabs={tabs.map((t) => ({ id: t.id, name: t.name, controller: t.controller }))}
+          tabs={tabs.map((t) => ({ id: t.id, name: t.name, controller: t.controller, parentId: t.worktree?.parentId }))}
           activeId={active.id}
           onSelect={setActiveId}
           groups={groupsState.groups}
@@ -314,11 +378,12 @@ export function App({ initial }: { initial: ShellController }) {
           rowYs={rowYs}
         />
         <ProjectSidebar
-          tabs={tabs.map((t) => ({ id: t.id, name: t.name }))}
+          tabs={tabs.map((t) => ({ id: t.id, name: t.name, parentId: t.worktree?.parentId }))}
           activeId={active.id}
           onSelect={setActiveId}
           onClose={closeProject}
           onNew={newProject}
+          onNewWorktree={newWorktree}
           width={layout.left}
           stats={gitStats}
           groups={groupsState.groups}
@@ -359,7 +424,7 @@ export function App({ initial }: { initial: ShellController }) {
 
 /** Center column: top bar (cwd + macros) · feed · input — for one session. */
 function CenterPanel({ controller }: { controller: ShellController }) {
-  const { blocks, cwd, busy, input, altScreen, interacting, mode, agentBusy, agentModel } = useShell(controller);
+  const { blocks, cwd, busy, input, altScreen, interacting, mode, agentBusy, agentModel, agentProvider } = useShell(controller);
 
   return (
     <section className="flex flex-1 flex-col overflow-hidden">
@@ -380,6 +445,7 @@ function CenterPanel({ controller }: { controller: ShellController }) {
         mode={mode}
         agentBusy={agentBusy}
         agentModel={agentModel}
+        agentProvider={agentProvider}
       />
     </section>
   );

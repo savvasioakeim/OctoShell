@@ -56,27 +56,59 @@ impl AgentManager {
         cwd: String,
         resume: Option<String>,
         model: Option<String>,
+        provider: Option<String>,
     ) -> Result<(), String> {
         // One active turn per session: replace any in-flight run.
         if let Some(mut old) = self.runs.lock().unwrap().remove(&id) {
             let _ = old.kill();
         }
 
-        let mut cmd = Command::new(CLAUDE_BIN);
-        cmd.arg("--print")
-            .arg(&prompt)
-            .arg("--output-format")
-            .arg("stream-json")
-            .arg("--verbose")
-            // Run autonomously: tools (Bash, Edit, …) execute without an
-            // interactive approval prompt that would otherwise hang headless.
-            .arg("--dangerously-skip-permissions");
-        if let Some(r) = &resume {
-            cmd.arg("--resume").arg(r);
+        let provider = provider.as_deref().unwrap_or("claude").to_string();
+        let resumed = resume.as_deref().map(|r| !r.is_empty()).unwrap_or(false);
+
+        // Per-provider argument list (the binary is chosen below). Both stream
+        // newline-delimited JSON and run tools autonomously (yolo / skip-perms).
+        let mut args: Vec<String> = Vec::new();
+        if provider == "gemini" {
+            args.extend([
+                "-p".into(), prompt.clone(),
+                "-o".into(), "stream-json".into(),
+                "--approval-mode".into(), "yolo".into(),
+                "--skip-trust".into(),
+            ]);
+            if let Some(m) = &model { args.push("-m".into()); args.push(m.clone()); }
+            // gemini --resume takes "latest"/index (per project dir), not an id.
+            if resumed { args.push("--resume".into()); args.push("latest".into()); }
+        } else {
+            args.extend([
+                "--print".into(), prompt.clone(),
+                "--output-format".into(), "stream-json".into(),
+                "--verbose".into(),
+                "--dangerously-skip-permissions".into(),
+            ]);
+            if let Some(r) = &resume { args.push("--resume".into()); args.push(r.clone()); }
+            if let Some(m) = &model { args.push("--model".into()); args.push(m.clone()); }
         }
-        if let Some(m) = &model {
-            cmd.arg("--model").arg(m);
-        }
+
+        // On Windows, gemini is an npm shim (.cmd/.ps1) → run via cmd.exe;
+        // claude is a real .exe. Elsewhere, invoke the binary directly.
+        #[cfg(windows)]
+        let mut cmd = if provider == "gemini" {
+            let mut c = Command::new("cmd");
+            c.arg("/c").arg("gemini").args(&args);
+            c
+        } else {
+            let mut c = Command::new(CLAUDE_BIN);
+            c.args(&args);
+            c
+        };
+        #[cfg(not(windows))]
+        let mut cmd = {
+            let mut c = Command::new(if provider == "gemini" { "gemini" } else { CLAUDE_BIN });
+            c.args(&args);
+            c
+        };
+
         if !cwd.is_empty() {
             cmd.current_dir(&cwd);
         }
@@ -92,7 +124,7 @@ impl AgentManager {
         }
 
         let mut child = cmd.spawn().map_err(|e| {
-            format!("could not launch `{CLAUDE_BIN}` (is Claude Code installed and on PATH?): {e}")
+            format!("could not launch the `{provider}` agent CLI (installed & on PATH?): {e}")
         })?;
         let stdout = child.stdout.take().ok_or("no stdout pipe")?;
         let stderr = child.stderr.take().ok_or("no stderr pipe")?;
@@ -165,8 +197,9 @@ pub fn agent_send(
     cwd: String,
     resume: Option<String>,
     model: Option<String>,
+    provider: Option<String>,
 ) -> Result<(), String> {
-    manager.send(app, id, prompt, cwd, resume, model)
+    manager.send(app, id, prompt, cwd, resume, model, provider)
 }
 
 #[tauri::command]

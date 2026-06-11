@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { GitStat, Group } from "../App";
 
 export interface ProjectTab {
   id: string;
   name: string;
+  /** If set, this project is a worktree nested under that parent project. */
+  parentId?: string;
 }
 
 interface Props {
@@ -12,6 +14,7 @@ interface Props {
   onSelect: (id: string) => void;
   onClose: (id: string) => void;
   onNew: () => void;
+  onNewWorktree: (branch: string) => void;
   width: number;
   stats: Map<string, GitStat>;
   groups: Group[];
@@ -39,10 +42,11 @@ type Ctx = { x: number; y: number; kind: "project" | "group" | "blank"; id?: str
  */
 export function ProjectSidebar(props: Props) {
   const {
-    tabs, activeId, onSelect, onClose, onNew, width, stats,
+    tabs, activeId, onSelect, onClose, onNew, onNewWorktree, width, stats,
     groups, assign, onAssign, onReorder, onReorderGroup, onLayout,
   } = props;
 
+  const [wtInput, setWtInput] = useState<string | null>(null);
   const [dragId, setDragId] = useState<string | null>(null);
   const [over, setOver] = useState<{ id: string; pos: "before" | "after" } | null>(null);
   const [dragGroup, setDragGroup] = useState<string | null>(null);
@@ -90,7 +94,11 @@ export function ProjectSidebar(props: Props) {
   }, [measure]);
 
   const groupOf = (id: string) => groups.find((g) => g.id === assign[id]) ?? null;
-  const ungrouped = tabs.filter((t) => !groupOf(t.id));
+  // Worktrees nest under their parent; everything else is top-level.
+  const isChild = (t: ProjectTab) => !!t.parentId && tabs.some((p) => p.id === t.parentId);
+  const childrenOf = (id: string) => tabs.filter((t) => t.parentId === id && isChild(t));
+  const topLevel = tabs.filter((t) => !isChild(t));
+  const ungrouped = topLevel.filter((t) => !groupOf(t.id));
   const endDrag = () => { setDragId(null); setOver(null); setDragGroup(null); setOverGroup(null); };
   const openCtx = (e: React.MouseEvent, kind: Ctx["kind"], id?: string) => {
     e.preventDefault();
@@ -99,43 +107,48 @@ export function ProjectSidebar(props: Props) {
     if (kind === "group") setRename(groups.find((g) => g.id === id)?.name ?? "");
   };
 
-  const renderRow = (t: ProjectTab) => {
+  const renderRow = (t: ProjectTab, child = false) => {
     const active = t.id === activeId;
     const stat = stats.get(t.id);
+    const style: React.CSSProperties = {};
+    if (child) { style.marginLeft = 12; style.borderLeft = "2px solid #2c3142"; }
+    if (over?.id === t.id) {
+      style.boxShadow = over.pos === "before" ? "inset 0 2px 0 #7E57C2" : "inset 0 -2px 0 #7E57C2";
+    }
     return (
       <div
         key={t.id}
         ref={(el) => { if (el) rowRefs.current.set(t.id, el); else rowRefs.current.delete(t.id); }}
-        draggable
+        draggable={!child}
         onClick={() => onSelect(t.id)}
         onContextMenu={(e) => openCtx(e, "project", t.id)}
         onDragStart={(e) => { setDragId(t.id); e.dataTransfer.effectAllowed = "move"; }}
         onDragEnd={endDrag}
         onDragOver={(e) => {
-          if (!dragId || dragId === t.id) return;
+          if (!dragId || dragId === t.id || child) return;
           e.preventDefault();
           const r = e.currentTarget.getBoundingClientRect();
           setOver({ id: t.id, pos: e.clientY < r.top + r.height / 2 ? "before" : "after" });
         }}
         onDrop={(e) => {
           e.preventDefault();
-          if (dragId && dragId !== t.id) {
+          if (!child && dragId && dragId !== t.id) {
             onReorder(dragId, t.id, over?.pos ?? "before");
             onAssign(dragId, groupOf(t.id)?.id ?? null);
           }
           endDrag();
         }}
-        style={
-          over?.id === t.id
-            ? { boxShadow: over.pos === "before" ? "inset 0 2px 0 #7E57C2" : "inset 0 -2px 0 #7E57C2" }
-            : undefined
-        }
+        style={Object.keys(style).length ? style : undefined}
         className={`group cursor-pointer rounded px-2 py-1.5 transition-colors ${
           dragId === t.id ? "opacity-50" : ""
         } ${active ? "bg-accent/25 text-gray-100" : "text-muted hover:bg-edge/60"}`}
       >
         <div className="flex items-center gap-2 text-sm">
-          <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${active ? "bg-accent" : "bg-edge"}`} />
+          {child ? (
+            <span className="shrink-0 text-[11px]" title="git worktree">🌿</span>
+          ) : (
+            <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${active ? "bg-accent" : "bg-edge"}`} />
+          )}
           <span className="flex-1 truncate">{t.name}</span>
           {tabs.length > 1 && (
             <button
@@ -198,6 +211,14 @@ export function ProjectSidebar(props: Props) {
     </div>
   );
 
+  // A top-level project followed by its nested worktree children.
+  const renderProject = (t: ProjectTab) => (
+    <Fragment key={t.id}>
+      {renderRow(t)}
+      {childrenOf(t.id).map((c) => renderRow(c, true))}
+    </Fragment>
+  );
+
   return (
     <nav ref={navRef} className="relative flex shrink-0 flex-col bg-panel" style={{ width }}>
       <div className="flex items-center gap-2 border-b border-edge px-3 py-2.5">
@@ -212,25 +233,49 @@ export function ProjectSidebar(props: Props) {
         >
           Projects
         </div>
-        {ungrouped.map(renderRow)}
+        {ungrouped.map(renderProject)}
 
         {groups.map((g) => {
-          const members = tabs.filter((t) => assign[t.id] === g.id);
+          const members = topLevel.filter((t) => assign[t.id] === g.id);
           return (
             <div key={g.id} className="pt-2">
               {renderGroupHeader(g)}
-              {members.map(renderRow)}
+              {members.map(renderProject)}
             </div>
           );
         })}
       </div>
 
-      <button
-        onClick={onNew}
-        className="m-2 rounded-lg border border-accent/60 bg-accent/25 px-3 py-2 text-sm font-semibold text-gray-100 transition-colors hover:bg-accent/30"
-      >
-        ＋ New project
-      </button>
+      <div className="m-2 space-y-1.5">
+        {wtInput !== null ? (
+          <input
+            autoFocus
+            value={wtInput}
+            onChange={(e) => setWtInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && wtInput.trim()) { onNewWorktree(wtInput); setWtInput(null); }
+              else if (e.key === "Escape") setWtInput(null);
+            }}
+            onBlur={() => setWtInput(null)}
+            placeholder="branch name… (Enter)"
+            className="w-full rounded-md border border-edge bg-ink px-2 py-1.5 text-xs text-gray-100 outline-none focus:border-accent placeholder:text-muted/60"
+          />
+        ) : (
+          <button
+            onClick={() => setWtInput("")}
+            title="Φτιάξε isolated git worktree (νέο branch) από το ενεργό project"
+            className="w-full rounded-md border border-edge px-3 py-1.5 text-xs text-muted transition-colors hover:border-accent/50 hover:text-gray-100"
+          >
+            🌿 New worktree
+          </button>
+        )}
+        <button
+          onClick={onNew}
+          className="w-full rounded-lg border border-accent/60 bg-accent/25 px-3 py-2 text-sm font-semibold text-gray-100 transition-colors hover:bg-accent/30"
+        >
+          ＋ New project
+        </button>
+      </div>
 
       {ctx && <ContextMenu ctx={ctx} close={() => setCtx(null)} {...props} rename={rename} setRename={setRename} />}
     </nav>

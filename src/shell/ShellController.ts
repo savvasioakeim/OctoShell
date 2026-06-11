@@ -7,6 +7,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { ansiToHtml, base64ToBytes, stripAnsi } from "../util/ansi";
 import { KEY, loadJSON, removeKey, saveJSON } from "../util/persist";
 import { notify } from "../util/notify";
+import { parseAgentLine, type AgentProvider } from "../agents/providers";
 
 /** Keep at most this many historical blocks per session in storage. */
 const MAX_PERSISTED_BLOCKS = 80;
@@ -39,6 +40,8 @@ export interface AgentTextBlock extends BaseBlock {
   kind: "agentText";
   role: "user" | "assistant";
   text: string;
+  /** Which agent produced this (assistant messages) — for the block header. */
+  provider?: AgentProvider;
 }
 
 /** One tool the agent invoked (e.g. a Bash command) and its result. */
@@ -69,6 +72,8 @@ export interface ShellSnapshot {
   agentBusy: boolean;
   /** Selected agent model (null = CLI default), applied from the next turn. */
   agentModel: string | null;
+  /** Which agent CLI drives this project. */
+  agentProvider: AgentProvider;
   /** True while the running command is in the terminal's alternate screen
    *  buffer (vim, htop, less, a REPL, `git rebase -i`…). The running block then
    *  becomes a full interactive terminal. */
@@ -121,8 +126,13 @@ export class ShellController {
   /** Selected model for this project's agent (null = CLI default). Applies from
    *  the NEXT turn — `claude --model` can't change a turn already in flight. */
   private agentModel: string | null = null;
+  /** Which agent CLI drives this project (claude / gemini). */
+  private agentProvider: AgentProvider = "claude";
   /** Maps a tool_use id to the AgentToolBlock id, so its result can update it. */
   private agentTools = new Map<string, string>();
+  /** The currently-open assistant text block id, so streaming deltas (gemini)
+   *  append to it instead of creating a block per chunk. */
+  private streamingTextId: string | null = null;
 
   private rowHeightPx = 17;
   private resizeQueued = false;
@@ -156,6 +166,7 @@ export class ShellController {
     mode: "shell",
     agentBusy: false,
     agentModel: null,
+    agentProvider: "claude",
   };
 
   constructor(public readonly sessionId: string) {
@@ -246,6 +257,7 @@ export class ShellController {
       mode: this.mode,
       agentBusy: this.agentBusy,
       agentModel: this.agentModel,
+      agentProvider: this.agentProvider,
     };
     this.listeners.forEach((l) => l());
     this.scheduleSave();
@@ -270,7 +282,7 @@ export class ShellController {
         if (e.payload.id === this.sessionId) this.onAgentEvent(e.payload.data);
       }),
       await listen<{ id: string; code: number; error?: string }>("agent://done", (e) => {
-        if (e.payload.id === this.sessionId) this.onAgentDone(e.payload.error);
+        if (e.payload.id === this.sessionId) this.onAgentDone(e.payload.error, e.payload.code);
       }),
     );
     await invoke("open_new_tab", { id: this.sessionId, cwd });
@@ -283,6 +295,7 @@ export class ShellController {
     if (saved.length) this.blocks = saved;
     this.agentSessionId = loadJSON<string | null>(KEY.agent(this.sessionId), null);
     this.agentModel = loadJSON<string | null>(KEY.model(this.sessionId), null);
+    this.agentProvider = loadJSON<AgentProvider>(KEY.provider(this.sessionId), "claude");
     if (saved.length || this.agentSessionId || this.agentModel) this.emit();
   }
 
@@ -300,6 +313,7 @@ export class ShellController {
     saveJSON(KEY.blocks(this.sessionId), settled.slice(-MAX_PERSISTED_BLOCKS));
     saveJSON(KEY.agent(this.sessionId), this.agentSessionId);
     saveJSON(KEY.model(this.sessionId), this.agentModel);
+    saveJSON(KEY.provider(this.sessionId), this.agentProvider);
   }
 
   /** Choose the model for this project's agent (null = CLI default). */
@@ -309,12 +323,26 @@ export class ShellController {
     this.emit();
   }
 
+  /** Switch the agent CLI (claude ↔ gemini). Resets the session id since a
+   *  session can't carry across providers; the next turn starts fresh. */
+  setAgentProvider(provider: AgentProvider): void {
+    if (provider === this.agentProvider) return;
+    this.agentProvider = provider;
+    this.agentSessionId = null;
+    this.agentModel = null; // model names are provider-specific
+    saveJSON(KEY.provider(this.sessionId), provider);
+    saveJSON(KEY.agent(this.sessionId), null);
+    saveJSON(KEY.model(this.sessionId), null);
+    this.emit();
+  }
+
   /** Forget this session's persisted history (e.g. when the project is closed). */
   forget(): void {
     if (this.saveTimer) clearTimeout(this.saveTimer);
     removeKey(KEY.blocks(this.sessionId));
     removeKey(KEY.agent(this.sessionId));
     removeKey(KEY.model(this.sessionId));
+    removeKey(KEY.provider(this.sessionId));
   }
 
   /** Clear the visible feed (keeps the agent conversation thread alive). */
@@ -513,12 +541,14 @@ export class ShellController {
     this.inputValue = "";
     this.emit();
 
+    this.streamingTextId = null;
     invoke("agent_send", {
       id: this.sessionId,
       prompt: text,
       cwd: this.cwd,
       resume: this.agentSessionId,
       model: this.agentModel,
+      provider: this.agentProvider,
     }).catch((err) => {
       this.onAgentDone(String(err));
     });
@@ -528,60 +558,62 @@ export class ShellController {
     invoke("agent_cancel", { id: this.sessionId }).catch(() => {});
   }
 
-  /** Parse one stream-json line from claude and append/update blocks. */
+  /** Parse one stream-json line (provider-specific) into normalized events and
+   *  append/update blocks. Streaming text deltas (gemini) accumulate into one
+   *  assistant block; complete messages (claude) each get their own. */
   private onAgentEvent(data: string): void {
-    let ev: any;
-    try {
-      ev = JSON.parse(data);
-    } catch {
-      return;
-    }
-    if (typeof ev?.session_id === "string") this.agentSessionId = ev.session_id;
+    const events = parseAgentLine(this.agentProvider, data);
+    if (!events.length) return;
     const now = Date.now();
 
-    if (ev.type === "assistant") {
-      for (const c of ev.message?.content ?? []) {
-        if (c.type === "text" && c.text?.trim()) {
-          this.blocks.push({ id: crypto.randomUUID(), kind: "agentText", role: "assistant", text: c.text, startedAt: now });
-        } else if (c.type === "tool_use") {
+    for (const e of events) {
+      if (e.session) {
+        this.agentSessionId = e.session;
+      } else if (e.text !== undefined) {
+        const open = this.blocks.find((b) => b.id === this.streamingTextId);
+        if (e.delta && open && open.kind === "agentText") {
+          open.text += e.text;
+        } else {
           const id = crypto.randomUUID();
-          this.agentTools.set(c.id, id);
-          const input =
-            c.name === "Bash" && typeof c.input?.command === "string"
-              ? c.input.command
-              : JSON.stringify(c.input ?? {}, null, 2);
-          this.blocks.push({ id, kind: "agentTool", toolName: c.name ?? "tool", toolInput: input, status: "running", startedAt: now });
+          this.streamingTextId = e.delta ? id : null;
+          this.blocks.push({ id, kind: "agentText", role: "assistant", text: e.text, startedAt: now, provider: this.agentProvider });
         }
-      }
-    } else if (ev.type === "user") {
-      for (const c of ev.message?.content ?? []) {
-        if (c.type !== "tool_result") continue;
-        const blockId = this.agentTools.get(c.tool_use_id);
-        const block = this.blocks.find((b) => b.id === blockId);
+      } else if (e.tool) {
+        this.streamingTextId = null;
+        const id = crypto.randomUUID();
+        this.agentTools.set(e.tool.id, id);
+        this.blocks.push({ id, kind: "agentTool", toolName: e.tool.name, toolInput: e.tool.input, status: "running", startedAt: now });
+      } else if (e.result) {
+        const block = this.blocks.find((b) => b.id === this.agentTools.get(e.result!.id));
         if (block && block.kind === "agentTool") {
-          block.result = normalizeToolContent(c.content);
-          block.isError = !!c.is_error;
-          block.status = c.is_error ? "error" : "success";
+          block.result = e.result.content;
+          block.isError = e.result.isError;
+          block.status = e.result.isError ? "error" : "success";
         }
       }
     }
     this.emit();
   }
 
-  private onAgentDone(error?: string): void {
+  private onAgentDone(error?: string, code = 0): void {
     this.agentBusy = false;
+    this.streamingTextId = null;
     // Any tool still "running" means the turn was cut short.
     for (const b of this.blocks) {
       if (b.kind === "agentTool" && b.status === "running") b.status = "error";
     }
     this.agentTools.clear();
-    if (error) {
+    // Only surface stderr as an error block on a real failure — many CLIs (e.g.
+    // gemini) print harmless warnings to stderr while exiting 0.
+    const failed = code !== 0;
+    if (failed && error) {
       this.blocks.push({
         id: crypto.randomUUID(),
         kind: "agentText",
         role: "assistant",
         text: `⚠️ ${error}`,
         startedAt: Date.now(),
+        provider: this.agentProvider,
       });
     }
     this.emit();
@@ -589,8 +621,8 @@ export class ShellController {
     // Ping the user if they've tabbed away — "fan out & walk away".
     const where = this.displayName || "OctoShell";
     notify(
-      error ? `🐙 ${where}: ο agent σταμάτησε` : `🐙 ${where}: ο agent τελείωσε`,
-      error ? error : "Το turn ολοκληρώθηκε.",
+      failed ? `🐙 ${where}: ο agent σταμάτησε` : `🐙 ${where}: ο agent τελείωσε`,
+      failed && error ? error : "Το turn ολοκληρώθηκε.",
     );
   }
 
@@ -617,15 +649,4 @@ export class ShellController {
     this.liveTerm.dispose();
     this.liveHost.remove();
   }
-}
-
-/** A tool_result `content` is either a string or an array of content parts. */
-function normalizeToolContent(content: unknown): string {
-  if (typeof content === "string") return content;
-  if (Array.isArray(content)) {
-    return content
-      .map((p: any) => (typeof p === "string" ? p : p?.type === "text" ? p.text : ""))
-      .join("");
-  }
-  return "";
 }
