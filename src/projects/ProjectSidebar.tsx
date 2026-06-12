@@ -616,18 +616,32 @@ function Board({
 /** Right-click menu — content depends on what was clicked. */
 function ContextMenu({
   ctx, close, groups, assign, onAssign, onCreateGroup, onSetGroupColor, onRenameGroup,
-  onDeleteGroup, onClose, tabs, palette, rename, setRename,
+  onDeleteGroup, onClose, onSelect, tabs, palette, rename, setRename,
 }: Props & {
   ctx: Ctx;
   close: () => void;
   rename: string;
   setRename: (s: string) => void;
 }) {
+  const [task, setTask] = useState("");
   const newGroup = (assignTo?: string) => {
     const id = onCreateGroup(`Ομάδα ${groups.length + 1}`);
     if (assignTo) onAssign(assignTo, id);
     close();
   };
+
+  // The project this menu is for (if any), and whether its agent is running.
+  const projTab = ctx.kind === "project" ? tabs.find((t) => t.id === ctx.id) : undefined;
+  const projRunning = !!projTab?.controller.getSnapshot().agentBusy;
+  /** Dispatch the typed task to a controller (user-initiated → node pulse only). */
+  const dispatch = (controllers: { setMode: (m: "agent") => void; runAgent: (p: string) => void }[], focus?: string) => {
+    const p = task.trim();
+    if (!p || !controllers.length) return;
+    controllers.forEach((c) => { c.setMode("agent"); c.runAgent(p); });
+    if (focus) onSelect(focus);
+    close();
+  };
+  const groupMembers = ctx.kind === "group" ? tabs.filter((t) => !t.parentId && assign[t.id] === ctx.id) : [];
 
   return (
     <>
@@ -644,6 +658,29 @@ function ContextMenu({
 
         {ctx.kind === "project" && ctx.id && (
           <>
+            <div className="px-3 py-0.5 text-[10px] uppercase tracking-wider text-muted">Agent</div>
+            <div className="px-2 py-1">
+              <input
+                value={task}
+                onChange={(e) => setTask(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && projTab) dispatch([projTab.controller], ctx.id);
+                  else if (e.key === "Escape") close();
+                }}
+                placeholder="⚡ Ανάθεσε task στον agent…"
+                className="w-full rounded bg-ink px-2 py-1 text-xs text-gray-100 outline-none placeholder:text-muted/60"
+                autoFocus
+              />
+            </div>
+            {projRunning && (
+              <button
+                className="w-full px-3 py-1.5 text-left text-red-300 hover:bg-edge"
+                onClick={() => { projTab?.controller.cancelAgent(); close(); }}
+              >
+                ✕ Ακύρωση agent
+              </button>
+            )}
+            <div className="my-1 border-t border-edge" />
             <div className="px-3 py-0.5 text-[10px] uppercase tracking-wider text-muted">Ομάδα</div>
             <button className="w-full px-3 py-1.5 text-left text-gray-200 hover:bg-edge" onClick={() => newGroup(ctx.id)}>
               ＋ Νέα ομάδα (με αυτό)
@@ -677,6 +714,27 @@ function ContextMenu({
 
         {ctx.kind === "group" && ctx.id && (
           <>
+            {groupMembers.length > 0 && (
+              <>
+                <div className="px-3 py-0.5 text-[10px] uppercase tracking-wider text-muted">
+                  Agent · όλη η ομάδα ({groupMembers.length})
+                </div>
+                <div className="px-2 py-1">
+                  <input
+                    value={task}
+                    onChange={(e) => setTask(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") dispatch(groupMembers.map((m) => m.controller));
+                      else if (e.key === "Escape") close();
+                    }}
+                    placeholder="⚡ Task σε όλα τα projects…"
+                    className="w-full rounded bg-ink px-2 py-1 text-xs text-gray-100 outline-none placeholder:text-muted/60"
+                    autoFocus
+                  />
+                </div>
+                <div className="my-1 border-t border-edge" />
+              </>
+            )}
             <div className="px-3 py-0.5 text-[10px] uppercase tracking-wider text-muted">Ομάδα</div>
             <div className="px-2 py-1">
               <input
@@ -688,7 +746,6 @@ function ContextMenu({
                 }}
                 placeholder="Όνομα ομάδας"
                 className="w-full rounded bg-ink px-2 py-1 text-xs text-gray-100 outline-none"
-                autoFocus
               />
             </div>
             <div className="flex flex-wrap gap-1.5 px-3 py-1.5">
