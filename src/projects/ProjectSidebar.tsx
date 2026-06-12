@@ -229,6 +229,11 @@ export function ProjectSidebar(props: Props) {
   const childrenOf = (id: string) => tabs.filter((t) => t.parentId === id && isChild(t));
   const topLevel = tabs.filter((t) => !isChild(t));
   const ungrouped = topLevel.filter((t) => !groupOf(t.id));
+  // The group the active project belongs to (via its parent if it's a worktree),
+  // so we can faintly tint the whole group while one of its projects is active.
+  const activeTab = tabs.find((t) => t.id === activeId);
+  const activeAnchorId = activeTab && isChild(activeTab) ? activeTab.parentId! : activeId;
+  const activeGroupId = assign[activeAnchorId] || null;
   const endDrag = () => { setDragId(null); setOver(null); setDragGroup(null); setOverGroup(null); };
   const openCtx = (e: React.MouseEvent, kind: Ctx["kind"], id?: string) => {
     e.preventDefault();
@@ -414,7 +419,11 @@ export function ProjectSidebar(props: Props) {
               const members = topLevel.filter((t) => assign[t.id] === g.id);
               const isCollapsed = gCollapsed.has(g.id);
               return (
-                <div key={g.id} className="pt-2">
+                <div
+                  key={g.id}
+                  className="rounded-lg pt-2 pb-1 transition-colors"
+                  style={activeGroupId === g.id ? { background: "rgba(126,87,194,0.09)" } : undefined}
+                >
                   {renderGroupHeader(g, isCollapsed, () => toggleGroup(g.id))}
                   {!isCollapsed && members.map((t) => renderProject(t, 2))}
                 </div>
