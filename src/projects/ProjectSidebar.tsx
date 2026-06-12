@@ -91,18 +91,21 @@ function useAllSnapshots(tabs: ProjectTab[]): Map<string, ShellSnapshot> {
 // Board geometry — a PCB-style spine with right-angle branches (group → project
 // → worktree). All x's are px from the content's left edge; y's are measured.
 // ---------------------------------------------------------------------------
-const SPINE_X = 9; // the vertical bus
-const PROJECT_X = 44; // project nodes branch right off the spine (long trace)
-const WT_X = 74; // worktrees branch right off their project (long trace too)
+const SPINE_X = 9; // the clean vertical bus
+// Node x and row left-padding BY DEPTH (1-indexed). The spine connects only to
+// depth-1 junctions (ungrouped projects + group nodes); deeper levels branch off
+// their parent node, so groups read as distinct sub-trees.
+//   depth 1 = ungrouped project / group node
+//   depth 2 = grouped project / worktree of an ungrouped project
+//   depth 3 = worktree of a grouped project
+const X = [0, 30, 52, 74];
+const PAD_X = [0, 40, 62, 84];
 const GROUP_R = 5;
 const NODE_R = 4.5;
 const WT_R = 3.5;
 const TRACE = "#3a3f58"; // neutral trace (ungrouped / spine)
 const WT_TRACE = "#5b7fb0"; // worktree branch hue
 const FLOW = "#b794f6"; // orchestrator "tentacle reaching" current (accent)
-
-// Row left padding so labels clear their node, per level.
-const PAD = { group: 18, project: 52, worktree: 84 } as const;
 
 type Geo = { rows: Record<string, number>; groups: Record<string, number> };
 
@@ -232,32 +235,33 @@ export function ProjectSidebar(props: Props) {
 
   const renderRow = (
     t: ProjectTab,
-    child = false,
+    depth: number,
     toggle?: { collapsed: boolean; onToggle: () => void },
   ) => {
     const active = t.id === activeId;
     const stat = stats.get(t.id);
-    const style: React.CSSProperties = { paddingLeft: child ? PAD.worktree : PAD.project };
+    const isWt = !!t.parentId; // a worktree row (not draggable, gets the 🌿)
+    const style: React.CSSProperties = { paddingLeft: PAD_X[depth] ?? PAD_X[PAD_X.length - 1] };
     if (over?.id === t.id) {
       style.boxShadow = over.pos === "before" ? "inset 0 2px 0 #7E57C2" : "inset 0 -2px 0 #7E57C2";
     }
     return (
       <div
         key={t.id}
-        draggable={!child}
+        draggable={!isWt}
         onClick={() => onSelect(t.id)}
         onContextMenu={(e) => openCtx(e, "project", t.id)}
         onDragStart={(e) => { setDragId(t.id); e.dataTransfer.effectAllowed = "move"; }}
         onDragEnd={endDrag}
         onDragOver={(e) => {
-          if (!dragId || dragId === t.id || child) return;
+          if (!dragId || dragId === t.id || isWt) return;
           e.preventDefault();
           const r = e.currentTarget.getBoundingClientRect();
           setOver({ id: t.id, pos: e.clientY < r.top + r.height / 2 ? "before" : "after" });
         }}
         onDrop={(e) => {
           e.preventDefault();
-          if (!child && dragId && dragId !== t.id) {
+          if (!isWt && dragId && dragId !== t.id) {
             onReorder(dragId, t.id, over?.pos ?? "before");
             onAssign(dragId, groupOf(t.id)?.id ?? null);
           }
@@ -274,7 +278,7 @@ export function ProjectSidebar(props: Props) {
           ref={(el) => { if (el) rowRefs.current.set(t.id, el); else rowRefs.current.delete(t.id); }}
           className="flex items-center gap-1.5 text-sm"
         >
-          {child && <span className="shrink-0 text-[11px]" title="git worktree">🌿</span>}
+          {isWt && <span className="shrink-0 text-[11px]" title="git worktree">🌿</span>}
           <span className="min-w-0 truncate">{t.name}</span>
           {toggle && (
             <button
@@ -334,7 +338,7 @@ export function ProjectSidebar(props: Props) {
         endDrag();
       }}
       style={{
-        paddingLeft: PAD.group,
+        paddingLeft: PAD_X[1],
         ...(overGroup?.id === g.id
           ? { boxShadow: overGroup.pos === "before" ? "inset 0 2px 0 #7E57C2" : "inset 0 -2px 0 #7E57C2" }
           : {}),
@@ -357,14 +361,14 @@ export function ProjectSidebar(props: Props) {
     </div>
   );
 
-  // A top-level project followed by its nested worktree children (collapsible).
-  const renderProject = (t: ProjectTab) => {
+  // A project at `depth` followed by its nested worktree children (collapsible).
+  const renderProject = (t: ProjectTab, depth: number) => {
     const kids = childrenOf(t.id);
     const isCollapsed = pCollapsed.has(t.id);
     return (
       <Fragment key={t.id}>
-        {renderRow(t, false, kids.length ? { collapsed: isCollapsed, onToggle: () => toggleProject(t.id) } : undefined)}
-        {!isCollapsed && kids.map((c) => renderRow(c, true))}
+        {renderRow(t, depth, kids.length ? { collapsed: isCollapsed, onToggle: () => toggleProject(t.id) } : undefined)}
+        {!isCollapsed && kids.map((c) => renderRow(c, depth + 1))}
       </Fragment>
     );
   };
@@ -394,13 +398,13 @@ export function ProjectSidebar(props: Props) {
           <div className="space-y-0.5">
             <div
               className="py-1 text-[10px] uppercase tracking-wider text-muted"
-              style={{ paddingLeft: PAD.group }}
+              style={{ paddingLeft: PAD_X[1] }}
               onDragOver={(e) => { if (dragId) e.preventDefault(); }}
               onDrop={(e) => { e.preventDefault(); if (dragId) onAssign(dragId, null); endDrag(); }}
             >
               Projects
             </div>
-            {ungrouped.map(renderProject)}
+            {ungrouped.map((t) => renderProject(t, 1))}
 
             {groups.map((g) => {
               const members = topLevel.filter((t) => assign[t.id] === g.id);
@@ -408,7 +412,7 @@ export function ProjectSidebar(props: Props) {
               return (
                 <div key={g.id} className="pt-2">
                   {renderGroupHeader(g, isCollapsed, () => toggleGroup(g.id))}
-                  {!isCollapsed && members.map(renderProject)}
+                  {!isCollapsed && members.map((t) => renderProject(t, 2))}
                 </div>
               );
             })}
@@ -484,30 +488,31 @@ function Board({
     return !!(s && s.agentBusy && s.agentOrchestrated);
   };
 
-  const projectNode = (t: ProjectTab) => {
+  type Parent = { x: number; y: number; route: (top: number) => string };
+  // Recursively emit a project/worktree node, its incoming trace, and (when the
+  // orchestrator is driving it) the full route from the spine top to it. `parent`
+  // is null for depth-1 items, which branch straight off the spine.
+  const emit = (t: ProjectTab, depth: number, parent: Parent | null) => {
     const y = geo.rows[t.id];
     if (y == null) return;
     ys.push(y);
+    const nx = X[depth] ?? X[X.length - 1];
     const g = groupOf(t.id);
-    const stroke = g ? g.color : TRACE;
-    // project branch: spine ⟶ project node
-    traces.push({ key: `t-${t.id}`, d: `M ${SPINE_X} ${y} H ${PROJECT_X}`, stroke, w: 3 });
-    if (orchestrated(t.id)) {
-      routeSpecs.push({ id: t.id, d: (top) => `M ${SPINE_X} ${top} V ${y} H ${PROJECT_X}` });
-    }
+    const stroke = g ? g.color : t.parentId ? WT_TRACE : TRACE;
+    const w = t.parentId ? 2.5 : 3;
+    // Incoming trace: horizontal off the spine (depth 1), else an elbow down from
+    // the parent node then right to this node.
+    const d = parent ? `M ${parent.x} ${parent.y} V ${y} H ${nx}` : `M ${SPINE_X} ${y} H ${nx}`;
+    traces.push({ key: `t-${t.id}`, d, stroke, w });
 
-    // worktrees: project ⟶ down ⟶ right (right-angle connector)
-    for (const c of childrenOf(t.id)) {
-      const cy = geo.rows[c.id];
-      if (cy == null) continue;
-      ys.push(cy);
-      traces.push({ key: `t-${c.id}`, d: `M ${PROJECT_X} ${y} V ${cy} H ${WT_X}`, stroke: WT_TRACE, w: 2.5 });
-      if (orchestrated(c.id)) {
-        routeSpecs.push({ id: c.id, d: (top) => `M ${SPINE_X} ${top} V ${y} H ${PROJECT_X} V ${cy} H ${WT_X}` });
-      }
-      nodes.push(node(c, cy, WT_X, WT_R, WT_TRACE));
-    }
-    nodes.push(node(t, y, PROJECT_X, NODE_R, stroke));
+    const route = (top: number) =>
+      parent ? `${parent.route(top)} V ${y} H ${nx}` : `M ${SPINE_X} ${top} V ${y} H ${nx}`;
+    if (orchestrated(t.id)) routeSpecs.push({ id: t.id, d: route });
+
+    nodes.push(node(t, y, nx, t.parentId ? WT_R : NODE_R, stroke));
+
+    const self: Parent = { x: nx, y, route };
+    for (const c of childrenOf(t.id)) emit(c, depth + 1, self);
   };
 
   function node(t: ProjectTab, cy: number, cx: number, r: number, ring: string) {
@@ -542,35 +547,36 @@ function Board({
     );
   }
 
-  // Ungrouped projects branch straight off the spine.
-  tabs
-    .filter((t) => !t.parentId && !groupOf(t.id))
-    .forEach(projectNode);
+  // Ungrouped projects branch straight off the spine (depth 1).
+  tabs.filter((t) => !t.parentId && !groupOf(t.id)).forEach((t) => emit(t, 1, null));
 
-  // Each group: a marker on the spine, then its projects.
+  // Each group: a node connected to the spine by a short stub; its member
+  // projects then hang off THAT node (so the group reads as a distinct sub-tree).
   for (const g of groups) {
     const gy = geo.groups[g.id];
     const members = tabs.filter((t) => !t.parentId && assign[t.id] === g.id);
-    if (gy != null && members.length) {
-      ys.push(gy);
-      nodes.push(
-        <circle
-          key={`g-${g.id}`}
-          cx={SPINE_X}
-          cy={gy}
-          r={GROUP_R}
-          fill={g.color}
-          stroke="#15181F"
-          strokeWidth={2}
-          style={{ filter: `drop-shadow(0 0 3px ${g.color})`, cursor: "pointer", pointerEvents: "auto" }}
-          onClick={() => members[0] && onSelect(members[0].id)}
-          onContextMenu={(e) => openCtx(e, "group", g.id)}
-        >
-          <title>{g.name}</title>
-        </circle>,
-      );
-    }
-    members.forEach(projectNode);
+    if (gy == null || !members.length) continue;
+    ys.push(gy);
+    const gx = X[1];
+    traces.push({ key: `gt-${g.id}`, d: `M ${SPINE_X} ${gy} H ${gx}`, stroke: g.color, w: 3 });
+    nodes.push(
+      <circle
+        key={`g-${g.id}`}
+        cx={gx}
+        cy={gy}
+        r={GROUP_R}
+        fill={g.color}
+        stroke="#15181F"
+        strokeWidth={2}
+        style={{ filter: `drop-shadow(0 0 3px ${g.color})`, cursor: "pointer", pointerEvents: "auto" }}
+        onClick={() => members[0] && onSelect(members[0].id)}
+        onContextMenu={(e) => openCtx(e, "group", g.id)}
+      >
+        <title>{g.name}</title>
+      </circle>,
+    );
+    const groupParent: Parent = { x: gx, y: gy, route: (top) => `M ${SPINE_X} ${top} V ${gy} H ${gx}` };
+    members.forEach((m) => emit(m, 2, groupParent));
   }
 
   const top = ys.length ? Math.min(...ys) : 0;
