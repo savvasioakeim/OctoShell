@@ -106,8 +106,10 @@ const WT_R = 3.5;
 const TRACE = "#3a3f58"; // neutral trace (ungrouped / spine)
 const WT_TRACE = "#5b7fb0"; // worktree branch hue
 const FLOW = "#b794f6"; // orchestrator "tentacle reaching" current (accent)
+const ROOT_Y = 13; // the spine's root node sits here; items start below it
+const ROOT_R = 5;
 
-type Geo = { rows: Record<string, number>; groups: Record<string, number> };
+type Geo = { rows: Record<string, number>; groups: Record<string, number>; height: number };
 
 /** An outline (no-fill) chevron: points right when collapsed, rotates down when
  *  open. Inherits color via currentColor. */
@@ -154,7 +156,7 @@ export function ProjectSidebar(props: Props) {
   const [overGroup, setOverGroup] = useState<{ id: string; pos: "before" | "after" } | null>(null);
   const [ctx, setCtx] = useState<Ctx | null>(null);
   const [rename, setRename] = useState("");
-  const [geo, setGeo] = useState<Geo>({ rows: {}, groups: {} });
+  const [geo, setGeo] = useState<Geo>({ rows: {}, groups: {}, height: 0 });
   // Collapsed groups (hide their projects) and projects (hide their worktrees),
   // so a busy workspace can be tidied. Persisted.
   const [collapsed, setCollapsed] = useState<{ groups: string[]; projects: string[] }>(() =>
@@ -187,7 +189,8 @@ export function ProjectSidebar(props: Props) {
     rafRef.current = requestAnimationFrame(() => {
       const box = contentRef.current;
       if (!box) return;
-      const top = box.getBoundingClientRect().top;
+      const rect = box.getBoundingClientRect();
+      const top = rect.top;
       const rows: Record<string, number> = {};
       const grps: Record<string, number> = {};
       rowRefs.current.forEach((el, id) => {
@@ -198,10 +201,11 @@ export function ProjectSidebar(props: Props) {
         const r = el.getBoundingClientRect();
         grps[id] = Math.round(r.top - top + r.height / 2);
       });
-      const key = JSON.stringify([rows, grps]);
+      const height = Math.round(rect.height);
+      const key = JSON.stringify([rows, grps, height]);
       if (key !== lastRef.current) {
         lastRef.current = key;
-        setGeo({ rows, groups: grps });
+        setGeo({ rows, groups: grps, height });
       }
     });
   }, []);
@@ -381,7 +385,7 @@ export function ProjectSidebar(props: Props) {
       </div>
 
       <div ref={scrollRef} className="flex-1 overflow-y-auto p-2" onContextMenu={(e) => openCtx(e, "blank")}>
-        <div ref={contentRef} className="relative">
+        <div ref={contentRef} className="relative min-h-full">
           <Board
             tabs={tabs}
             activeId={activeId}
@@ -395,7 +399,7 @@ export function ProjectSidebar(props: Props) {
             openCtx={openCtx}
           />
 
-          <div className="space-y-0.5">
+          <div className="space-y-0.5 pt-5">
             <div
               className="py-1 text-[10px] uppercase tracking-wider text-muted"
               style={{ paddingLeft: PAD_X[1] }}
@@ -579,11 +583,10 @@ function Board({
     members.forEach((m) => emit(m, 2, groupParent));
   }
 
-  const top = ys.length ? Math.min(...ys) : 0;
-  const spine =
-    ys.length >= 2 ? (
-      <line x1={SPINE_X} y1={top} x2={SPINE_X} y2={Math.max(...ys)} stroke={TRACE} strokeWidth={3} strokeLinecap="round" />
-    ) : null;
+  // The spine runs from the root node at the top all the way to the bottom of the
+  // content box (which is at least the viewport height), so it reaches the
+  // screen bottom even with few items.
+  const bottom = Math.max(geo.height, ys.length ? Math.max(...ys) + 16 : 0, ROOT_Y + 16);
 
   return (
     <svg className="pointer-events-none absolute inset-0 h-full w-full" style={{ overflow: "visible" }}>
@@ -595,7 +598,19 @@ function Board({
           <stop offset="100%" stopColor="#7fdbca" />
         </linearGradient>
       </defs>
-      {spine}
+      {/* Root node + the spine descending from it to the bottom. */}
+      <line x1={SPINE_X} y1={ROOT_Y} x2={SPINE_X} y2={bottom} stroke={TRACE} strokeWidth={3} strokeLinecap="round" />
+      <circle
+        cx={SPINE_X}
+        cy={ROOT_Y}
+        r={ROOT_R}
+        fill={FLOW}
+        stroke="#15181F"
+        strokeWidth={2}
+        style={{ filter: `drop-shadow(0 0 5px ${FLOW})` }}
+      >
+        <title>OctoShell</title>
+      </circle>
       {traces.map((s) => (
         <path key={s.key} d={s.d} fill="none" stroke={s.stroke} strokeWidth={s.w} strokeLinecap="round" strokeLinejoin="round" opacity={0.85} />
       ))}
@@ -605,7 +620,7 @@ function Board({
         <path
           key={`route-${rt.id}`}
           className="octo-route"
-          d={rt.d(top)}
+          d={rt.d(ROOT_Y)}
           fill="none"
           stroke="url(#octo-flow-grad)"
           strokeWidth={3}
