@@ -40,5 +40,6 @@ export const KEY = {
   agent: (id: string) => `octoshell.agent.${id}`,
   model: (id: string) => `octoshell.model.${id}`,
   provider: (id: string) => `octoshell.provider.${id}`,
+  approval: (id: string) => `octoshell.approval.${id}`,
   pr: (id: string) => `octoshell.pr.${id}`,
 };

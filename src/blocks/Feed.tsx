@@ -9,7 +9,7 @@ import {
 } from "react";
 import type { Block, ShellController } from "../shell/ShellController";
 import { TerminalBlock } from "./TerminalBlock";
-import { AgentTextBlockView, AgentToolBlockView } from "./AgentBlock";
+import { AgentApprovalBlockView, AgentTextBlockView, AgentToolBlockView } from "./AgentBlock";
 
 interface Props {
   blocks: Block[];
@@ -100,10 +100,13 @@ export function Feed({ blocks, controller, altScreen, interacting }: Props) {
           )}
           {blocks.map((b) => {
             const running =
-              (b.kind === "command" || b.kind === "agentTool") && b.status === "running";
+              ((b.kind === "command" || b.kind === "agentTool") && b.status === "running") ||
+              (b.kind === "agentApproval" && b.status === "pending");
             const node =
               b.kind === "agentText" ? (
                 <AgentTextBlockView block={b} />
+              ) : b.kind === "agentApproval" ? (
+                <AgentApprovalBlockView block={b} onRespond={(rid, allow) => controller.respondApproval(rid, allow)} />
               ) : b.kind === "agentTool" ? (
                 <AgentToolBlockView block={b} />
               ) : (

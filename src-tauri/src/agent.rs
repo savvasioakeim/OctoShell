@@ -22,6 +22,8 @@ use std::thread;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
+use crate::approval::ApprovalBridge;
+
 #[cfg(windows)]
 const CLAUDE_BIN: &str = "claude.exe";
 #[cfg(not(windows))]
@@ -57,6 +59,9 @@ impl AgentManager {
         resume: Option<String>,
         model: Option<String>,
         provider: Option<String>,
+        approval: bool,
+        approval_port: u16,
+        approval_script: Option<String>,
     ) -> Result<(), String> {
         // One active turn per session: replace any in-flight run.
         if let Some(mut old) = self.runs.lock().unwrap().remove(&id) {
@@ -85,8 +90,28 @@ impl AgentManager {
                 "--output-format".into(), "stream-json".into(),
                 "--verbose".into(),
                 "--include-partial-messages".into(), // token-by-token streaming
-                "--dangerously-skip-permissions".into(),
             ]);
+            // Approval mode: route sensitive tools to our permission MCP sidecar
+            // (which asks the user). Otherwise run fully autonomously.
+            if approval && approval_script.is_some() {
+                let script = approval_script.unwrap();
+                let mcp = serde_json::json!({
+                    "mcpServers": { "octo": {
+                        "command": "node",
+                        "args": [script],
+                        "env": { "OCTO_PORT": approval_port.to_string(), "OCTO_SESSION": id.clone() }
+                    } }
+                })
+                .to_string();
+                args.extend([
+                    "--permission-mode".into(), "default".into(),
+                    "--permission-prompt-tool".into(), "mcp__octo__approve".into(),
+                    "--mcp-config".into(), mcp,
+                    "--settings".into(), crate::approval::ASK_TOOLS.into(),
+                ]);
+            } else {
+                args.push("--dangerously-skip-permissions".into());
+            }
             if let Some(r) = &resume { args.push("--resume".into()); args.push(r.clone()); }
             if let Some(m) = &model { args.push("--model".into()); args.push(m.clone()); }
         }
@@ -193,14 +218,19 @@ impl AgentManager {
 pub fn agent_send(
     app: AppHandle,
     manager: State<'_, AgentManager>,
+    bridge: State<'_, ApprovalBridge>,
     id: String,
     prompt: String,
     cwd: String,
     resume: Option<String>,
     model: Option<String>,
     provider: Option<String>,
+    approval: Option<bool>,
 ) -> Result<(), String> {
-    manager.send(app, id, prompt, cwd, resume, model, provider)
+    manager.send(
+        app, id, prompt, cwd, resume, model, provider,
+        approval.unwrap_or(false), bridge.port(), bridge.script_path(),
+    )
 }
 
 #[tauri::command]

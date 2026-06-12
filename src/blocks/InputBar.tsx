@@ -29,6 +29,8 @@ interface Props {
   agentApiKey: boolean;
   /** Epoch seconds of the next subscription rate-limit reset, or null. */
   agentRateReset: number | null;
+  /** Per-tool approval mode (Claude only). */
+  agentApproval: boolean;
 }
 
 /** "3h 59m" until the given epoch-seconds reset (or "" if past/unknown). */
@@ -89,7 +91,7 @@ const INPUT_MAX_PX = 220;
  * candidate menu opens. Shift+Enter inserts a newline, Ctrl+C interrupts, ↑/↓
  * navigate history (or the completion menu when open).
  */
-export function InputBar({ controller, cwd, busy, value, altScreen, interacting, mode, agentBusy, agentModel, agentProvider, agentTokens, agentContext, agentApiKey, agentRateReset }: Props) {
+export function InputBar({ controller, cwd, busy, value, altScreen, interacting, mode, agentBusy, agentModel, agentProvider, agentTokens, agentContext, agentApiKey, agentRateReset, agentApproval }: Props) {
   const ref = useRef<HTMLTextAreaElement>(null);
   const selectedRef = useRef<HTMLLIElement>(null);
   const pendingCursor = useRef<number | null>(null);
@@ -327,6 +329,24 @@ export function InputBar({ controller, cwd, busy, value, altScreen, interacting,
               </ul>
             )}
           </div>
+        )}
+
+        {agent && agentProvider === "claude" && (
+          <button
+            onClick={() => controller.setAgentApproval(!agentApproval)}
+            title={
+              agentApproval
+                ? "Approval: ο agent ρωτά πριν από Bash/Edit/Write"
+                : "Auto: ο agent τρέχει χωρίς έγκριση"
+            }
+            className={`rounded border px-1.5 py-0.5 text-[11px] ${
+              agentApproval
+                ? "border-amber-400/50 bg-amber-500/15 text-amber-300"
+                : "border-edge text-muted hover:bg-edge hover:text-gray-200"
+            }`}
+          >
+            {agentApproval ? "🛡 Approve" : "⚡ Auto"}
+          </button>
         )}
 
         {agent && agentTokens && (agentTokens.input > 0 || agentTokens.output > 0) && (

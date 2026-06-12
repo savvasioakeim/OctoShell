@@ -1,8 +1,10 @@
 mod agent;
 mod ai;
+mod approval;
 mod pty;
 
 use agent::AgentManager;
+use approval::ApprovalBridge;
 use pty::{CompletionEngine, PtyManager};
 use tauri::Manager;
 
@@ -15,10 +17,13 @@ pub fn run() {
         .manage(PtyManager::default())
         .manage(AgentManager::default())
         .manage(CompletionEngine::default())
+        .manage(ApprovalBridge::default())
         .setup(|app| {
             // Pre-warm the Tab-completion runspace so the first Tab is instant.
             let engine = app.state::<CompletionEngine>().inner().clone();
             std::thread::spawn(move || engine.warm());
+            // Start the per-tool approval bridge (sidecar + localhost listener).
+            app.state::<ApprovalBridge>().start(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -32,6 +37,7 @@ pub fn run() {
             ai::ai_chat,
             agent::agent_send,
             agent::agent_cancel,
+            approval::approval_respond,
         ])
         .run(tauri::generate_context!())
         .expect("error while running OctoShell");

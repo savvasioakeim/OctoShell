@@ -412,7 +412,7 @@ export function App({ initial }: { initial: ShellController }) {
 
 /** Center column: top bar (cwd + macros) · feed · input — for one session. */
 function CenterPanel({ controller }: { controller: ShellController }) {
-  const { blocks, cwd, busy, input, altScreen, interacting, mode, agentBusy, agentModel, agentProvider, agentTokens, agentContext, agentApiKey, agentRateReset } = useShell(controller);
+  const { blocks, cwd, busy, input, altScreen, interacting, mode, agentBusy, agentModel, agentProvider, agentTokens, agentContext, agentApiKey, agentRateReset, agentApproval } = useShell(controller);
 
   return (
     <section className="flex flex-1 flex-col overflow-hidden">
@@ -438,6 +438,7 @@ function CenterPanel({ controller }: { controller: ShellController }) {
         agentContext={agentContext}
         agentApiKey={agentApiKey}
         agentRateReset={agentRateReset}
+        agentApproval={agentApproval}
       />
     </section>
   );

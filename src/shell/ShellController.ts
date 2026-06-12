@@ -62,7 +62,17 @@ export interface AgentToolBlock extends BaseBlock {
   isError?: boolean;
 }
 
-export type Block = CommandBlock | AgentTextBlock | AgentToolBlock;
+/** A pending (or resolved) per-tool approval the agent is waiting on. */
+export interface AgentApprovalBlock extends BaseBlock {
+  kind: "agentApproval";
+  requestId: string;
+  toolName: string;
+  /** Human-readable: the command for Bash, else pretty JSON. */
+  toolInput: string;
+  status: "pending" | "approved" | "denied";
+}
+
+export type Block = CommandBlock | AgentTextBlock | AgentToolBlock | AgentApprovalBlock;
 
 export function isCommandBlock(b: Block): b is CommandBlock {
   return b.kind === "command";
@@ -84,6 +94,10 @@ export interface ShellSnapshot {
   agentModel: string | null;
   /** Which agent CLI drives this project. */
   agentProvider: AgentProvider;
+  /** Per-tool approval mode (Claude only): the agent asks before sensitive tools. */
+  agentApproval: boolean;
+  /** True while ≥1 approval request is pending the user's decision. */
+  agentNeedsInput: boolean;
   /** Cumulative token usage for this session's agent (null until first turn ends
    *  or if the provider doesn't report it). */
   agentTokens: { input: number; output: number; costUsd: number } | null;
@@ -150,6 +164,8 @@ export class ShellController {
   private agentModel: string | null = null;
   /** Which agent CLI drives this project (claude / gemini). */
   private agentProvider: AgentProvider = "claude";
+  /** Per-tool approval mode (Claude only). */
+  private agentApproval = false;
   /** Running token total for this session's agent (null = none reported yet). */
   private agentTokens: { input: number; output: number; costUsd: number } | null = null;
   /** Latest context-window occupancy reported by the agent. */
@@ -198,6 +214,8 @@ export class ShellController {
     agentOrchestrated: false,
     agentModel: null,
     agentProvider: "claude",
+    agentApproval: false,
+    agentNeedsInput: false,
     agentTokens: null,
     agentContext: null,
     agentApiKey: false,
@@ -294,6 +312,8 @@ export class ShellController {
       agentOrchestrated: this.agentOrchestrated,
       agentModel: this.agentModel,
       agentProvider: this.agentProvider,
+      agentApproval: this.agentApproval,
+      agentNeedsInput: this.blocks.some((b) => b.kind === "agentApproval" && b.status === "pending"),
       agentTokens: this.agentTokens,
       agentContext: this.agentContext,
       agentApiKey: this.agentApiKey,
@@ -337,6 +357,12 @@ export class ShellController {
       await listen<{ id: string; code: number; error?: string }>("agent://done", (e) => {
         if (e.payload.id === this.sessionId) this.onAgentDone(e.payload.error, e.payload.code);
       }),
+      await listen<{ id: string; requestId: string; toolName: string; input: unknown; toolUseId: string }>(
+        "approval://request",
+        (e) => {
+          if (e.payload.id === this.sessionId) this.onApprovalRequest(e.payload);
+        },
+      ),
     );
     await invoke("open_new_tab", { id: this.sessionId, cwd, onOutput: stream });
     this.hydrate();
@@ -349,6 +375,7 @@ export class ShellController {
     this.agentSessionId = loadJSON<string | null>(KEY.agent(this.sessionId), null);
     this.agentModel = loadJSON<string | null>(KEY.model(this.sessionId), null);
     this.agentProvider = loadJSON<AgentProvider>(KEY.provider(this.sessionId), "claude");
+    this.agentApproval = loadJSON<boolean>(KEY.approval(this.sessionId), false);
     if (saved.length || this.agentSessionId || this.agentModel) this.emit();
   }
 
@@ -361,12 +388,55 @@ export class ShellController {
     // Never store an in-flight block (live command or unfinished tool) — only
     // settled history, so a restore never shows a perpetually "running" block.
     const settled = this.blocks.filter(
-      (b) => !((b.kind === "command" || b.kind === "agentTool") && b.status === "running"),
+      (b) =>
+        !((b.kind === "command" || b.kind === "agentTool") && b.status === "running") &&
+        !(b.kind === "agentApproval" && b.status === "pending"),
     );
     saveJSON(KEY.blocks(this.sessionId), settled.slice(-MAX_PERSISTED_BLOCKS));
     saveJSON(KEY.agent(this.sessionId), this.agentSessionId);
     saveJSON(KEY.model(this.sessionId), this.agentModel);
     saveJSON(KEY.provider(this.sessionId), this.agentProvider);
+    saveJSON(KEY.approval(this.sessionId), this.agentApproval);
+  }
+
+  /** Toggle per-tool approval (Claude only): asks before sensitive tools. */
+  setAgentApproval(on: boolean): void {
+    this.agentApproval = on;
+    saveJSON(KEY.approval(this.sessionId), on);
+    this.emit();
+  }
+
+  /** A pending tool-approval arrived from the agent — show it for a decision. */
+  private onApprovalRequest(p: { requestId: string; toolName: string; input: unknown }): void {
+    const inp = p.input as { command?: string } | undefined;
+    const toolInput =
+      p.toolName === "Bash" && typeof inp?.command === "string"
+        ? inp.command
+        : JSON.stringify(p.input ?? {}, null, 2);
+    this.blocks.push({
+      id: crypto.randomUUID(),
+      kind: "agentApproval",
+      requestId: p.requestId,
+      toolName: p.toolName,
+      toolInput,
+      status: "pending",
+      startedAt: Date.now(),
+    });
+    this.emit();
+    const where = this.displayName || "OctoShell";
+    notify(`🛡 ${where}: ο agent ζητά έγκριση`, `${p.toolName} — χρειάζεται το ✓ σου`);
+  }
+
+  /** Send the user's approve/deny decision back to the waiting agent. */
+  respondApproval(requestId: string, allow: boolean): void {
+    const block = this.blocks.find(
+      (b) => b.kind === "agentApproval" && b.requestId === requestId,
+    );
+    if (block && block.kind === "agentApproval") {
+      block.status = allow ? "approved" : "denied";
+    }
+    invoke("approval_respond", { requestId, allow }).catch(console.error);
+    this.emit();
   }
 
   /** Choose the model for this project's agent (null = CLI default). */
@@ -398,6 +468,7 @@ export class ShellController {
     removeKey(KEY.agent(this.sessionId));
     removeKey(KEY.model(this.sessionId));
     removeKey(KEY.provider(this.sessionId));
+    removeKey(KEY.approval(this.sessionId));
   }
 
   /** Clear the visible feed (keeps the agent conversation thread alive). */
@@ -607,6 +678,7 @@ export class ShellController {
       resume: this.agentSessionId,
       model: this.agentModel,
       provider: this.agentProvider,
+      approval: this.agentApproval,
     }).catch((err) => {
       this.onAgentDone(String(err));
     });
@@ -671,9 +743,11 @@ export class ShellController {
     this.agentBusy = false;
     this.agentOrchestrated = false;
     this.streamingTextId = null;
-    // Any tool still "running" means the turn was cut short.
+    // Any tool still "running" — or approval still pending — means the turn ended
+    // (or was cancelled) before resolving; settle them so the UI isn't stuck.
     for (const b of this.blocks) {
       if (b.kind === "agentTool" && b.status === "running") b.status = "error";
+      if (b.kind === "agentApproval" && b.status === "pending") b.status = "denied";
     }
     this.agentTools.clear();
     // Only surface stderr as an error block on a real failure — many CLIs (e.g.

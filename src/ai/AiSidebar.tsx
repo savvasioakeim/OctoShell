@@ -43,6 +43,9 @@ function summarizeBlocks(blocks: Block[], max = 8): string {
       const who = b.role === "user" ? "🧑 user" : `🤖 ${b.provider ?? "agent"}`;
       return `${who}: ${truncate(b.text, 500)}`;
     }
+    if (b.kind === "agentApproval") {
+      return `🛡 approval (${b.status}) ${b.toolName}: ${truncate(b.toolInput, 160)}`;
+    }
     return `🔧 ${b.toolName}: ${truncate(b.toolInput, 160)}${b.result ? `\n→ ${truncate(b.result, 300)}` : ""}`;
   });
   return recent.join("\n");
