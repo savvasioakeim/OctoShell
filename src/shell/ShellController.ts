@@ -84,6 +84,9 @@ export interface ShellSnapshot {
   agentModel: string | null;
   /** Which agent CLI drives this project. */
   agentProvider: AgentProvider;
+  /** Cumulative token usage for this session's agent (null until first turn ends
+   *  or if the provider doesn't report it). */
+  agentTokens: { input: number; output: number; costUsd: number } | null;
   /** True while the running command is in the terminal's alternate screen
    *  buffer (vim, htop, less, a REPL, `git rebase -i`…). The running block then
    *  becomes a full interactive terminal. */
@@ -140,6 +143,8 @@ export class ShellController {
   private agentModel: string | null = null;
   /** Which agent CLI drives this project (claude / gemini). */
   private agentProvider: AgentProvider = "claude";
+  /** Running token total for this session's agent (null = none reported yet). */
+  private agentTokens: { input: number; output: number; costUsd: number } | null = null;
   /** Maps a tool_use id to the AgentToolBlock id, so its result can update it. */
   private agentTools = new Map<string, string>();
   /** The currently-open assistant text block id, so streaming deltas (gemini)
@@ -180,6 +185,7 @@ export class ShellController {
     agentOrchestrated: false,
     agentModel: null,
     agentProvider: "claude",
+    agentTokens: null,
   };
 
   constructor(public readonly sessionId: string) {
@@ -272,6 +278,7 @@ export class ShellController {
       agentOrchestrated: this.agentOrchestrated,
       agentModel: this.agentModel,
       agentProvider: this.agentProvider,
+      agentTokens: this.agentTokens,
     };
     this.listeners.forEach((l) => l());
     this.scheduleSave();
@@ -357,6 +364,7 @@ export class ShellController {
     this.agentProvider = provider;
     this.agentSessionId = null;
     this.agentModel = null; // model names are provider-specific
+    this.agentTokens = null; // usage resets with the session
     saveJSON(KEY.provider(this.sessionId), provider);
     saveJSON(KEY.agent(this.sessionId), null);
     saveJSON(KEY.model(this.sessionId), null);
@@ -620,6 +628,14 @@ export class ShellController {
           block.isError = e.result.isError;
           block.status = e.result.isError ? "error" : "success";
         }
+      } else if (e.usage) {
+        // Accumulate the turn's usage into the session running total.
+        const t = this.agentTokens ?? { input: 0, output: 0, costUsd: 0 };
+        this.agentTokens = {
+          input: t.input + e.usage.input,
+          output: t.output + e.usage.output,
+          costUsd: t.costUsd + (e.usage.costUsd ?? 0),
+        };
       }
     }
     this.emit();

@@ -21,6 +21,8 @@ export interface NormEvent {
   tool?: { id: string; name: string; input: string };
   /** A tool's result, keyed back to the tool's id. */
   result?: { id: string; content: string; isError: boolean };
+  /** Token usage for the turn (from the provider's final result event). */
+  usage?: { input: number; output: number; costUsd?: number };
 }
 
 /** A tool_result `content` is either a string or an array of content parts. */
@@ -44,20 +46,30 @@ export function parseAgentLine(provider: AgentProvider, line: string): NormEvent
   return provider === "gemini" ? parseGemini(ev) : parseClaude(ev);
 }
 
-// --- Claude Code (claude --output-format stream-json) ---
+// --- Claude Code (claude --output-format stream-json --include-partial-messages) ---
+// Assistant TEXT arrives token-by-token via `stream_event` text deltas, so the
+// consolidated `assistant` event is used only for tool_use (its text would
+// duplicate the streamed deltas). `result` carries the turn's token usage.
 function parseClaude(ev: any): NormEvent[] {
   const out: NormEvent[] = [];
   if (typeof ev?.session_id === "string") out.push({ session: ev.session_id });
-  if (ev?.type === "assistant") {
+
+  if (ev?.type === "stream_event") {
+    const se = ev.event;
+    if (se?.type === "content_block_delta" && se.delta?.type === "text_delta" && se.delta.text) {
+      out.push({ text: se.delta.text, delta: true });
+    }
+    // message_start/stop, content_block_start/stop, thinking deltas → ignore.
+  } else if (ev?.type === "assistant") {
     for (const c of ev.message?.content ?? []) {
-      if (c.type === "text" && c.text?.trim()) out.push({ text: c.text });
-      else if (c.type === "tool_use") {
+      if (c.type === "tool_use") {
         const input =
           c.name === "Bash" && typeof c.input?.command === "string"
             ? c.input.command
             : JSON.stringify(c.input ?? {}, null, 2);
         out.push({ tool: { id: c.id, name: c.name ?? "tool", input } });
       }
+      // text is skipped here — it already streamed via stream_event deltas.
     }
   } else if (ev?.type === "user") {
     for (const c of ev.message?.content ?? []) {
@@ -67,6 +79,14 @@ function parseClaude(ev: any): NormEvent[] {
         });
       }
     }
+  } else if (ev?.type === "result" && ev.usage) {
+    out.push({
+      usage: {
+        input: (ev.usage.input_tokens ?? 0) + (ev.usage.cache_read_input_tokens ?? 0) + (ev.usage.cache_creation_input_tokens ?? 0),
+        output: ev.usage.output_tokens ?? 0,
+        costUsd: typeof ev.total_cost_usd === "number" ? ev.total_cost_usd : undefined,
+      },
+    });
   }
   return out;
 }
@@ -86,6 +106,9 @@ function parseGemini(ev: any): NormEvent[] {
     }
     // role "user" is just the echo of our own prompt → ignore.
   } else if (ev?.type === "tool_use") {
+    const name = ev.tool_name ?? ev.name ?? "tool";
+    // `update_topic` is Gemini's internal planning tool — noise, not real work.
+    if (name === "update_topic") return out;
     const params = ev.parameters ?? ev.args ?? ev.input ?? {};
     const input =
       typeof params === "string" ? params
@@ -94,7 +117,7 @@ function parseGemini(ev: any): NormEvent[] {
     out.push({
       tool: {
         id: String(ev.tool_id ?? ev.id ?? out.length),
-        name: ev.tool_name ?? ev.name ?? "tool",
+        name,
         input,
       },
     });
@@ -106,6 +129,26 @@ function parseGemini(ev: any): NormEvent[] {
         isError: ev.status === "error" || !!ev.is_error,
       },
     });
+  } else if (ev?.type === "result") {
+    const u = geminiUsage(ev.stats);
+    if (u) out.push({ usage: u });
   }
   return out;
+}
+
+/** Best-effort token totals from Gemini's `result.stats` (shape varies by
+ *  version, so dig defensively; returns null if nothing recognizable). */
+function geminiUsage(stats: any): { input: number; output: number } | null {
+  if (!stats || typeof stats !== "object") return null;
+  let input = 0;
+  let output = 0;
+  const models = stats.models ?? stats.metrics?.models;
+  if (models && typeof models === "object") {
+    for (const m of Object.values<any>(models)) {
+      const t = m?.tokens ?? m;
+      input += t?.prompt ?? t?.input ?? t?.promptTokenCount ?? 0;
+      output += t?.candidates ?? t?.output ?? t?.candidatesTokenCount ?? 0;
+    }
+  }
+  return input || output ? { input, output } : null;
 }

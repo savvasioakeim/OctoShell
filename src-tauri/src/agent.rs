@@ -84,6 +84,7 @@ impl AgentManager {
                 "--print".into(), prompt.clone(),
                 "--output-format".into(), "stream-json".into(),
                 "--verbose".into(),
+                "--include-partial-messages".into(), // token-by-token streaming
                 "--dangerously-skip-permissions".into(),
             ]);
             if let Some(r) = &resume { args.push("--resume".into()); args.push(r.clone()); }

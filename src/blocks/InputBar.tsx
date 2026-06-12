@@ -21,6 +21,15 @@ interface Props {
   agentModel: string | null;
   /** Which agent CLI drives this project. */
   agentProvider: AgentProvider;
+  /** Cumulative token usage for this session's agent (null if unavailable). */
+  agentTokens: { input: number; output: number; costUsd: number } | null;
+}
+
+/** Compact token count, e.g. 1234 → "1.2k", 45000 → "45k". */
+function fmtTokens(n: number): string {
+  if (n >= 10000) return Math.round(n / 1000) + "k";
+  if (n >= 1000) return (n / 1000).toFixed(1) + "k";
+  return String(n);
 }
 
 // Models offered per provider (`value` → the CLI's `--model`/`-m`). Curated:
@@ -63,7 +72,7 @@ const INPUT_MAX_PX = 220;
  * candidate menu opens. Shift+Enter inserts a newline, Ctrl+C interrupts, ↑/↓
  * navigate history (or the completion menu when open).
  */
-export function InputBar({ controller, cwd, busy, value, altScreen, interacting, mode, agentBusy, agentModel, agentProvider }: Props) {
+export function InputBar({ controller, cwd, busy, value, altScreen, interacting, mode, agentBusy, agentModel, agentProvider, agentTokens }: Props) {
   const ref = useRef<HTMLTextAreaElement>(null);
   const selectedRef = useRef<HTMLLIElement>(null);
   const pendingCursor = useRef<number | null>(null);
@@ -303,9 +312,17 @@ export function InputBar({ controller, cwd, busy, value, altScreen, interacting,
           </div>
         )}
 
+        {agent && agentTokens && (agentTokens.input > 0 || agentTokens.output > 0) && (
+          <span
+            className="flex shrink-0 items-center gap-1 rounded border border-edge px-1.5 py-0.5 text-[10px] text-muted"
+            title={`Σύνολο tokens αυτής της συνεδρίας${agentTokens.costUsd > 0 ? ` · ~$${agentTokens.costUsd.toFixed(3)}` : ""}`}
+          >
+            🪙 ↑{fmtTokens(agentTokens.input)} ↓{fmtTokens(agentTokens.output)}
+          </span>
+        )}
         <span className="truncate">{cwd || "~"}</span>
         {agent ? (
-          agentBusy && <span className="text-accent">● claude σκέφτεται… (Ctrl+C ακύρωση)</span>
+          agentBusy && <span className="text-accent">● {prov.label} σκέφτεται… (Ctrl+C ακύρωση)</span>
         ) : altScreen || interacting ? (
           <span className="text-accent">⌨ πληκτρολογείς στην εντολή πάνω — κλικ εδώ για νέα εντολή</span>
         ) : (
