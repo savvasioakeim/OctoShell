@@ -9,7 +9,6 @@ import { AiSidebar } from "./ai/AiSidebar";
 import { MacroBar } from "./macros/MacroBar";
 import { SmartPrButton } from "./macros/SmartPrButton";
 import { ProjectSidebar } from "./projects/ProjectSidebar";
-import { CablesRail } from "./projects/CablesRail";
 import { Titlebar } from "./chrome/Titlebar";
 import { KEY, loadJSON, saveJSON } from "./util/persist";
 
@@ -150,8 +149,6 @@ export function App({ initial }: { initial: ShellController }) {
   }, [tabs]);
 
   const gitStats = useGitStats(tabs);
-  // Measured project-row Y centers (from ProjectSidebar) so the rail aligns.
-  const [rowYs, setRowYs] = useState<Record<string, number>>({});
 
   // Project groups (workspace-global), persisted.
   const [groupsState, setGroupsState] = useState<GroupsState>(() =>
@@ -369,16 +366,8 @@ export function App({ initial }: { initial: ShellController }) {
     <div className="flex h-full flex-col">
       <Titlebar />
       <div className="flex flex-1 overflow-hidden">
-        <CablesRail
-          tabs={tabs.map((t) => ({ id: t.id, name: t.name, controller: t.controller, parentId: t.worktree?.parentId }))}
-          activeId={active.id}
-          onSelect={setActiveId}
-          groups={groupsState.groups}
-          assign={groupsState.assign}
-          rowYs={rowYs}
-        />
         <ProjectSidebar
-          tabs={tabs.map((t) => ({ id: t.id, name: t.name, parentId: t.worktree?.parentId }))}
+          tabs={tabs.map((t) => ({ id: t.id, name: t.name, parentId: t.worktree?.parentId, controller: t.controller }))}
           activeId={active.id}
           onSelect={setActiveId}
           onClose={closeProject}
@@ -396,7 +385,6 @@ export function App({ initial }: { initial: ShellController }) {
           onRenameGroup={renameGroup}
           onDeleteGroup={deleteGroup}
           palette={GROUP_COLORS}
-          onLayout={setRowYs}
         />
         <ResizeHandle
           onDrag={(dx) => setLayout((l) => ({ ...l, left: clamp(l.left + dx, 160, 460) }))}

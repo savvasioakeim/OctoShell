@@ -77,6 +77,9 @@ export interface ShellSnapshot {
   mode: Mode;
   /** An agent turn is in flight. */
   agentBusy: boolean;
+  /** The in-flight agent turn was dispatched by the orchestrator (not the user),
+   *  so the board lights up the whole tentacle route to this agent. */
+  agentOrchestrated: boolean;
   /** Selected agent model (null = CLI default), applied from the next turn. */
   agentModel: string | null;
   /** Which agent CLI drives this project. */
@@ -128,6 +131,8 @@ export class ShellController {
   // ---- agent state ----
   private mode: Mode = "shell";
   private agentBusy = false;
+  /** Set when the current turn was started by the orchestrator. */
+  private agentOrchestrated = false;
   /** claude session id, for `--resume` across turns. */
   private agentSessionId: string | null = null;
   /** Selected model for this project's agent (null = CLI default). Applies from
@@ -172,6 +177,7 @@ export class ShellController {
     interacting: false,
     mode: "shell",
     agentBusy: false,
+    agentOrchestrated: false,
     agentModel: null,
     agentProvider: "claude",
   };
@@ -263,6 +269,7 @@ export class ShellController {
       interacting: this.interacting,
       mode: this.mode,
       agentBusy: this.agentBusy,
+      agentOrchestrated: this.agentOrchestrated,
       agentModel: this.agentModel,
       agentProvider: this.agentProvider,
     };
@@ -545,8 +552,10 @@ export class ShellController {
 
   // ---- agent lifecycle ----
 
-  /** Send a prompt to the local `claude` agent; render its stream as blocks. */
-  runAgent(prompt: string): void {
+  /** Send a prompt to the local `claude` agent; render its stream as blocks.
+   *  `orchestrated` marks turns the assistant dispatched (vs. the user typing),
+   *  so the board can light the whole tentacle route to this agent. */
+  runAgent(prompt: string, opts?: { orchestrated?: boolean }): void {
     const text = prompt.trim();
     if (!text || this.agentBusy) return;
 
@@ -558,6 +567,7 @@ export class ShellController {
       startedAt: Date.now(),
     });
     this.agentBusy = true;
+    this.agentOrchestrated = !!opts?.orchestrated;
     this.inputValue = "";
     this.emit();
 
@@ -617,6 +627,7 @@ export class ShellController {
 
   private onAgentDone(error?: string, code = 0): void {
     this.agentBusy = false;
+    this.agentOrchestrated = false;
     this.streamingTextId = null;
     // Any tool still "running" means the turn was cut short.
     for (const b of this.blocks) {

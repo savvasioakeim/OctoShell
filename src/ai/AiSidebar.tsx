@@ -246,7 +246,7 @@ export function AiSidebar({ tabs, activeId, onSelect, width }: Props) {
       }
       if (a.kind === "dispatch") {
         p.controller.setMode("agent");
-        p.controller.runAgent(a.prompt);
+        p.controller.runAgent(a.prompt, { orchestrated: true });
         // In live watch, follow this agent so we can continue when it finishes.
         if (liveWatchRef.current) {
           watchedRef.current.add(p.id);

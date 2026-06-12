@@ -70,6 +70,16 @@ html {
   animation: octopulse 1.3s ease-in-out infinite;
 }
 
+/* Orchestrator "tentacle reaching": a solid, softly gradient current along the
+   route to the driven agent, breathing so it reads as live energy. */
+@keyframes octoroute {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 1; }
+}
+.octo-route {
+  animation: octoroute 1.5s ease-in-out infinite;
+}
+
 /* Thin dark scrollbars. */
 *::-webkit-scrollbar {
   width: 8px;
