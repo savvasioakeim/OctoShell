@@ -106,6 +106,28 @@ const PAD = { group: 18, project: 52, worktree: 84 } as const;
 
 type Geo = { rows: Record<string, number>; groups: Record<string, number> };
 
+/** An outline (no-fill) chevron: points right when collapsed, rotates down when
+ *  open. Inherits color via currentColor. */
+function Chevron({ open }: { open: boolean }) {
+  return (
+    <svg
+      width="13"
+      height="13"
+      viewBox="0 0 12 12"
+      fill="none"
+      style={{ transform: open ? "rotate(90deg)" : "none", transition: "transform 120ms ease" }}
+    >
+      <path
+        d="M4 2.5 L8 6 L4 9.5"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 /**
  * Left rail: a "circuit board" of projects organised into named, color-coded,
  * reorderable groups. A vertical spine runs down the left; group markers sit on
@@ -250,19 +272,20 @@ export function ProjectSidebar(props: Props) {
             with the name even when a branch sub-line is shown below it. */}
         <div
           ref={(el) => { if (el) rowRefs.current.set(t.id, el); else rowRefs.current.delete(t.id); }}
-          className="flex items-center gap-2 text-sm"
+          className="flex items-center gap-1.5 text-sm"
         >
           {child && <span className="shrink-0 text-[11px]" title="git worktree">🌿</span>}
-          <span className="flex-1 truncate">{t.name}</span>
+          <span className="min-w-0 truncate">{t.name}</span>
           {toggle && (
             <button
               onClick={(e) => { e.stopPropagation(); toggle.onToggle(); }}
-              className="shrink-0 px-0.5 text-sm leading-none text-muted hover:text-gray-200"
+              className="ml-0.5 flex shrink-0 items-center text-muted hover:text-gray-200"
               title={toggle.collapsed ? `Ανάπτυξη worktrees` : `Σύμπτυξη worktrees`}
             >
-              {toggle.collapsed ? "▸" : "▾"}
+              <Chevron open={!toggle.collapsed} />
             </button>
           )}
+          <span className="flex-1" />
           {tabs.length > 1 && (
             <button
               onClick={(e) => { e.stopPropagation(); onClose(t.id); }}
@@ -319,17 +342,18 @@ export function ProjectSidebar(props: Props) {
       className={`flex cursor-grab items-center gap-1 rounded py-1 pr-1 ${dragGroup === g.id ? "opacity-50" : ""}`}
       title="Σύρε για αναδιάταξη · δεξί κλικ για επιλογές"
     >
-      <span className="flex-1 truncate text-[10px] font-semibold uppercase tracking-wider" style={{ color: g.color }}>
+      <span className="min-w-0 truncate text-[10px] font-semibold uppercase tracking-wider" style={{ color: g.color }}>
         {g.name}
       </span>
       <button
         onClick={(e) => { e.stopPropagation(); onToggle(); }}
-        className="shrink-0 px-0.5 text-sm leading-none hover:opacity-80"
+        className="ml-0.5 flex shrink-0 items-center hover:opacity-80"
         style={{ color: g.color }}
         title={isCollapsed ? "Ανάπτυξη ομάδας" : "Σύμπτυξη ομάδας"}
       >
-        {isCollapsed ? "▸" : "▾"}
+        <Chevron open={!isCollapsed} />
       </button>
+      <span className="flex-1" />
     </div>
   );
 
