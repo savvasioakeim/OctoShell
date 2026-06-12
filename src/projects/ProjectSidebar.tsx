@@ -252,17 +252,17 @@ export function ProjectSidebar(props: Props) {
           ref={(el) => { if (el) rowRefs.current.set(t.id, el); else rowRefs.current.delete(t.id); }}
           className="flex items-center gap-2 text-sm"
         >
+          {child && <span className="shrink-0 text-[11px]" title="git worktree">🌿</span>}
+          <span className="flex-1 truncate">{t.name}</span>
           {toggle && (
             <button
               onClick={(e) => { e.stopPropagation(); toggle.onToggle(); }}
-              className="-ml-3 w-3 shrink-0 text-[10px] text-muted hover:text-gray-200"
-              title={toggle.collapsed ? "Ανάπτυξη worktrees" : "Σύμπτυξη worktrees"}
+              className="shrink-0 px-0.5 text-sm leading-none text-muted hover:text-gray-200"
+              title={toggle.collapsed ? `Ανάπτυξη worktrees` : `Σύμπτυξη worktrees`}
             >
               {toggle.collapsed ? "▸" : "▾"}
             </button>
           )}
-          {child && <span className="shrink-0 text-[11px]" title="git worktree">🌿</span>}
-          <span className="flex-1 truncate">{t.name}</span>
           {tabs.length > 1 && (
             <button
               onClick={(e) => { e.stopPropagation(); onClose(t.id); }}
@@ -319,16 +319,17 @@ export function ProjectSidebar(props: Props) {
       className={`flex cursor-grab items-center gap-1 rounded py-1 pr-1 ${dragGroup === g.id ? "opacity-50" : ""}`}
       title="Σύρε για αναδιάταξη · δεξί κλικ για επιλογές"
     >
+      <span className="flex-1 truncate text-[10px] font-semibold uppercase tracking-wider" style={{ color: g.color }}>
+        {g.name}
+      </span>
       <button
         onClick={(e) => { e.stopPropagation(); onToggle(); }}
-        className="w-3 shrink-0 text-[10px] text-muted hover:text-gray-200"
+        className="shrink-0 px-0.5 text-sm leading-none hover:opacity-80"
+        style={{ color: g.color }}
         title={isCollapsed ? "Ανάπτυξη ομάδας" : "Σύμπτυξη ομάδας"}
       >
         {isCollapsed ? "▸" : "▾"}
       </button>
-      <span className="truncate text-[10px] font-semibold uppercase tracking-wider" style={{ color: g.color }}>
-        {g.name}
-      </span>
     </div>
   );
 
