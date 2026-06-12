@@ -87,6 +87,13 @@ export interface ShellSnapshot {
   /** Cumulative token usage for this session's agent (null until first turn ends
    *  or if the provider doesn't report it). */
   agentTokens: { input: number; output: number; costUsd: number } | null;
+  /** Latest context-window occupancy (used / window), for the usage meter. */
+  agentContext: { used: number; window: number } | null;
+  /** True when the agent bills per-token (API key) → cost is shown. On a
+   *  subscription it's false and cost is hidden. */
+  agentApiKey: boolean;
+  /** Epoch seconds when the subscription rate-limit (5h) window resets, or null. */
+  agentRateReset: number | null;
   /** True while the running command is in the terminal's alternate screen
    *  buffer (vim, htop, less, a REPL, `git rebase -i`…). The running block then
    *  becomes a full interactive terminal. */
@@ -145,6 +152,12 @@ export class ShellController {
   private agentProvider: AgentProvider = "claude";
   /** Running token total for this session's agent (null = none reported yet). */
   private agentTokens: { input: number; output: number; costUsd: number } | null = null;
+  /** Latest context-window occupancy reported by the agent. */
+  private agentContext: { used: number; window: number } | null = null;
+  /** Whether the agent bills per-token (API key) vs. a subscription. */
+  private agentApiKey = false;
+  /** Epoch seconds of the next subscription rate-limit reset (account-wide). */
+  private agentRateReset: number | null = null;
   /** Maps a tool_use id to the AgentToolBlock id, so its result can update it. */
   private agentTools = new Map<string, string>();
   /** The currently-open assistant text block id, so streaming deltas (gemini)
@@ -186,6 +199,9 @@ export class ShellController {
     agentModel: null,
     agentProvider: "claude",
     agentTokens: null,
+    agentContext: null,
+    agentApiKey: false,
+    agentRateReset: null,
   };
 
   constructor(public readonly sessionId: string) {
@@ -279,6 +295,9 @@ export class ShellController {
       agentModel: this.agentModel,
       agentProvider: this.agentProvider,
       agentTokens: this.agentTokens,
+      agentContext: this.agentContext,
+      agentApiKey: this.agentApiKey,
+      agentRateReset: this.agentRateReset,
     };
     this.listeners.forEach((l) => l());
     this.scheduleSave();
@@ -365,6 +384,7 @@ export class ShellController {
     this.agentSessionId = null;
     this.agentModel = null; // model names are provider-specific
     this.agentTokens = null; // usage resets with the session
+    this.agentContext = null;
     saveJSON(KEY.provider(this.sessionId), provider);
     saveJSON(KEY.agent(this.sessionId), null);
     saveJSON(KEY.model(this.sessionId), null);
@@ -636,6 +656,12 @@ export class ShellController {
           output: t.output + e.usage.output,
           costUsd: t.costUsd + (e.usage.costUsd ?? 0),
         };
+      } else if (e.context) {
+        this.agentContext = e.context; // latest occupancy (replace, not sum)
+      } else if (e.apiKey !== undefined) {
+        this.agentApiKey = e.apiKey;
+      } else if (e.rateReset !== undefined) {
+        this.agentRateReset = e.rateReset;
       }
     }
     this.emit();

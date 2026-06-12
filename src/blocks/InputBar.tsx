@@ -23,11 +23,28 @@ interface Props {
   agentProvider: AgentProvider;
   /** Cumulative token usage for this session's agent (null if unavailable). */
   agentTokens: { input: number; output: number; costUsd: number } | null;
+  /** Latest context-window occupancy (used / window). */
+  agentContext: { used: number; window: number } | null;
+  /** True when billing per-token (API key) — then cost ($) is shown. */
+  agentApiKey: boolean;
+  /** Epoch seconds of the next subscription rate-limit reset, or null. */
+  agentRateReset: number | null;
+}
+
+/** "3h 59m" until the given epoch-seconds reset (or "" if past/unknown). */
+function fmtReset(epoch: number | null): string {
+  if (!epoch) return "";
+  const secs = epoch - Math.floor(Date.now() / 1000);
+  if (secs <= 0) return "";
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  return h > 0 ? `${h}h ${m}m` : `${m}m`;
 }
 
 /** Compact token count, e.g. 1234 → "1.2k", 45000 → "45k". */
 function fmtTokens(n: number): string {
-  if (n >= 10000) return Math.round(n / 1000) + "k";
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1) + "M";
+  if (n >= 10_000) return Math.round(n / 1000) + "k";
   if (n >= 1000) return (n / 1000).toFixed(1) + "k";
   return String(n);
 }
@@ -72,7 +89,7 @@ const INPUT_MAX_PX = 220;
  * candidate menu opens. Shift+Enter inserts a newline, Ctrl+C interrupts, ↑/↓
  * navigate history (or the completion menu when open).
  */
-export function InputBar({ controller, cwd, busy, value, altScreen, interacting, mode, agentBusy, agentModel, agentProvider, agentTokens }: Props) {
+export function InputBar({ controller, cwd, busy, value, altScreen, interacting, mode, agentBusy, agentModel, agentProvider, agentTokens, agentContext, agentApiKey, agentRateReset }: Props) {
   const ref = useRef<HTMLTextAreaElement>(null);
   const selectedRef = useRef<HTMLLIElement>(null);
   const pendingCursor = useRef<number | null>(null);
@@ -315,9 +332,36 @@ export function InputBar({ controller, cwd, busy, value, altScreen, interacting,
         {agent && agentTokens && (agentTokens.input > 0 || agentTokens.output > 0) && (
           <span
             className="flex shrink-0 items-center gap-1 rounded border border-edge px-1.5 py-0.5 text-[10px] text-muted"
-            title={`Σύνολο tokens αυτής της συνεδρίας${agentTokens.costUsd > 0 ? ` · ~$${agentTokens.costUsd.toFixed(3)}` : ""}`}
+            title="Σύνολο tokens αυτής της συνεδρίας (απεσταλμένα / ληφθέντα)"
           >
             🪙 ↑{fmtTokens(agentTokens.input)} ↓{fmtTokens(agentTokens.output)}
+            {/* Cost is meaningful only on per-token (API key) billing. */}
+            {agentApiKey && agentTokens.costUsd > 0 && (
+              <span className="text-accent">
+                · ${agentTokens.costUsd.toFixed(agentTokens.costUsd < 1 ? 3 : 2)}
+              </span>
+            )}
+          </span>
+        )}
+        {agent && agentContext && agentContext.window > 0 && (() => {
+          const pct = Math.min(100, Math.round((agentContext.used / agentContext.window) * 100));
+          const col = pct >= 80 ? "text-red-400" : pct >= 50 ? "text-amber-400" : "text-sky-300/80";
+          return (
+            <span
+              className="flex shrink-0 items-center gap-1 rounded border border-edge px-1.5 py-0.5 text-[10px] text-muted"
+              title={`Context window: ${agentContext.used.toLocaleString()} / ${agentContext.window.toLocaleString()} tokens`}
+            >
+              🧠 {fmtTokens(agentContext.used)}/{fmtTokens(agentContext.window)}
+              <span className={col}>· {pct}%</span>
+            </span>
+          );
+        })()}
+        {agent && !agentApiKey && fmtReset(agentRateReset) && (
+          <span
+            className="flex shrink-0 items-center gap-1 rounded border border-edge px-1.5 py-0.5 text-[10px] text-muted"
+            title="Πότε μηδενίζει το 5ωρο όριο της συνδρομής"
+          >
+            ↻ {fmtReset(agentRateReset)}
           </span>
         )}
         <span className="truncate">{cwd || "~"}</span>

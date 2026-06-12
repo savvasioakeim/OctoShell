@@ -23,6 +23,15 @@ export interface NormEvent {
   result?: { id: string; content: string; isError: boolean };
   /** Token usage for the turn (from the provider's final result event). */
   usage?: { input: number; output: number; costUsd?: number };
+  /** Current context-window occupancy after the turn (latest, not summed). */
+  context?: { used: number; window: number };
+  /** True when billing is per-token (API key) — then cost ($) is meaningful.
+   *  On a subscription this is false and cost is hidden. */
+  apiKey?: boolean;
+  /** Epoch seconds when the subscription rate-limit window resets (from the
+   *  rate_limit_event). The headless stream exposes the reset time but not a
+   *  used-percentage. */
+  rateReset?: number;
 }
 
 /** A tool_result `content` is either a string or an array of content parts. */
@@ -54,7 +63,13 @@ function parseClaude(ev: any): NormEvent[] {
   const out: NormEvent[] = [];
   if (typeof ev?.session_id === "string") out.push({ session: ev.session_id });
 
-  if (ev?.type === "stream_event") {
+  if (ev?.type === "system" && ev.subtype === "init") {
+    // apiKeySource "none" = a Claude subscription (no per-token billing).
+    out.push({ apiKey: typeof ev.apiKeySource === "string" && ev.apiKeySource !== "none" });
+  } else if (ev?.type === "rate_limit_event") {
+    const r = ev.rate_limit_info?.resetsAt;
+    if (typeof r === "number") out.push({ rateReset: r });
+  } else if (ev?.type === "stream_event") {
     const se = ev.event;
     if (se?.type === "content_block_delta" && se.delta?.type === "text_delta" && se.delta.text) {
       out.push({ text: se.delta.text, delta: true });
@@ -87,6 +102,17 @@ function parseClaude(ev: any): NormEvent[] {
         costUsd: typeof ev.total_cost_usd === "number" ? ev.total_cost_usd : undefined,
       },
     });
+    // Current context-window occupancy: the turn's whole prompt (new + cached)
+    // over the primary model's window (from modelUsage).
+    const window = Object.values<any>(ev.modelUsage ?? {}).reduce(
+      (mx, m) => Math.max(mx, m?.contextWindow ?? 0),
+      0,
+    );
+    const used =
+      (ev.usage.input_tokens ?? 0) +
+      (ev.usage.cache_read_input_tokens ?? 0) +
+      (ev.usage.cache_creation_input_tokens ?? 0);
+    if (window > 0) out.push({ context: { used, window } });
   }
   return out;
 }
