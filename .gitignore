@@ -16,6 +16,7 @@ src-tauri/gen/
 Thumbs.db
 .vscode/
 .idea/
+.claude/
 
 # Cygwin/MSYS crash dumps
 *.stackdump
