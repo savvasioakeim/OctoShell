@@ -2,6 +2,7 @@ import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { AiClient } from "../ai/AiClient";
 import type { ShellController } from "../shell/ShellController";
+import { SmartPrButton } from "./SmartPrButton";
 
 const client = new AiClient();
 
@@ -80,11 +81,7 @@ const MACROS: Macro[] = [
   },
 ];
 
-/** Show at most this many macros inline; the rest collapse into a "⋯" menu so
- *  the top bar stays clean as more macros are added. */
-const MAX_INLINE = 3;
-
-export function MacroBar({ controller }: { controller: ShellController }) {
+export function MacroBar({ controller, active = true }: { controller: ShellController; active?: boolean }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [moreOpen, setMoreOpen] = useState(false);
 
@@ -100,60 +97,42 @@ export function MacroBar({ controller }: { controller: ShellController }) {
     }
   };
 
-  const inline = MACROS.slice(0, MAX_INLINE);
-  const overflow = MACROS.slice(MAX_INLINE);
-
+  // All macros live in the "⋯" menu — keeps the toolbar uncluttered.
   return (
-    <div className="flex items-center gap-1">
-      {inline.map((m) => (
+    <div className="flex shrink-0 items-center justify-end gap-1">
+      <div className="relative">
         <button
-          key={m.label}
-          title={m.title}
+          title="Macros"
           disabled={busy !== null}
-          onClick={() => run(m)}
-          className="whitespace-nowrap rounded-md bg-edge/70 px-2.5 py-1 text-xs hover:bg-accent/30 disabled:opacity-70"
+          onClick={() => setMoreOpen((o) => !o)}
+          className="rounded-md bg-edge/70 px-2.5 py-1 text-xs hover:bg-accent/30 disabled:opacity-50"
         >
-          <span className="inline-flex items-center gap-1.5">
-            {busy === m.label && <span className="octo-spinner" aria-hidden />}
-            {m.label}
-          </span>
+          {busy !== null ? <span className="octo-spinner" aria-hidden /> : "⋯"}
         </button>
-      ))}
-
-      {overflow.length > 0 && (
-        <div className="relative">
-          <button
-            title="Περισσότερα"
-            disabled={busy !== null}
-            onClick={() => setMoreOpen((o) => !o)}
-            className="rounded-md bg-edge/70 px-2 py-1 text-xs hover:bg-accent/30 disabled:opacity-50"
+        {moreOpen && (
+          <ul
+            className="absolute right-0 top-full z-30 mt-1 overflow-hidden rounded-lg border border-edge bg-panel shadow-lg"
+            style={{ minWidth: "12rem" }}
           >
-            ⋯
-          </button>
-          {moreOpen && (
-            <ul
-              className="absolute right-0 top-full z-30 mt-1 overflow-hidden rounded-lg border border-edge bg-panel shadow-lg"
-              style={{ minWidth: "11rem" }}
-            >
-              {overflow.map((m) => (
-                <li key={m.label}>
-                  <button
-                    title={m.title}
-                    disabled={busy !== null}
-                    onClick={() => run(m)}
-                    className="block w-full whitespace-nowrap px-3 py-1.5 text-left text-xs text-gray-200 hover:bg-edge disabled:opacity-70"
-                  >
-                    <span className="inline-flex items-center gap-1.5">
-                      {busy === m.label && <span className="octo-spinner" aria-hidden />}
-                      {m.label}
-                    </span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      )}
+            <SmartPrButton controller={controller} active={active} asMenuItem />
+            {MACROS.map((m) => (
+              <li key={m.label}>
+                <button
+                  title={m.title}
+                  disabled={busy !== null}
+                  onClick={() => run(m)}
+                  className="block w-full whitespace-nowrap px-3 py-1.5 text-left text-xs text-gray-200 hover:bg-edge disabled:opacity-70"
+                >
+                  <span className="inline-flex items-center gap-1.5">
+                    {busy === m.label && <span className="octo-spinner" aria-hidden />}
+                    {m.label}
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
     </div>
   );
 }

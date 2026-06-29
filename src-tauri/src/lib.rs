@@ -3,10 +3,13 @@ mod ai;
 mod approval;
 mod jobctl;
 mod pty;
+mod service;
 
 use agent::AgentManager;
+use ai::AiManager;
 use approval::ApprovalBridge;
 use pty::{CompletionEngine, PtyManager};
+use service::ServiceManager;
 use tauri::Manager;
 use tauri_plugin_sql::{Migration, MigrationKind};
 
@@ -37,8 +40,10 @@ pub fn run() {
         // Shared, thread-safe registries of all open PTY + agent sessions.
         .manage(PtyManager::default())
         .manage(AgentManager::default())
+        .manage(AiManager::default())
         .manage(CompletionEngine::default())
         .manage(ApprovalBridge::default())
+        .manage(ServiceManager::default())
         .setup(|app| {
             // Create the kill-on-close Job Object FIRST, before anything is
             // spawned, so every shell/agent we launch can be tied to our lifetime
@@ -59,10 +64,14 @@ pub fn run() {
             pty::run_capture,
             pty::shell_complete,
             pty::open_editor,
+            pty::open_in_file_manager,
             ai::ai_chat,
+            ai::ai_cancel,
             agent::agent_send,
             agent::agent_cancel,
             approval::approval_respond,
+            service::service_start,
+            service::service_stop,
         ])
         .run(tauri::generate_context!())
         .expect("error while running OctoShell");

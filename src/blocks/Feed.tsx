@@ -90,7 +90,7 @@ export function Feed({ blocks, controller, altScreen, interacting }: Props) {
       <div
         ref={scrollRef}
         onScroll={onScroll}
-        className="octo-feed h-full overflow-y-auto p-3"
+        className="octo-feed h-full overflow-y-auto px-2.5 py-2"
       >
         <div ref={contentRef} className="space-y-3">
           {blocks.length === 0 && (

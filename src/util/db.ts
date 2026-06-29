@@ -53,3 +53,53 @@ export async function deleteBlocksDb(sessionId: string): Promise<void> {
     console.warn("deleteBlocksDb failed", e);
   }
 }
+
+export interface VacuumResult {
+  sessions: number;
+  trimmed: number;
+  before: number;
+  after: number;
+}
+
+/** Compact stored history. The unbounded space hog is the agent tool-result
+ *  strings (a `git log` or `npm install` can be tens of thousands of lines);
+ *  command output is already capped, and assistant text is "the essence" we keep.
+ *  So we trim oversized tool results, then run SQLite `VACUUM` to reclaim the
+ *  freed pages (SQLite never auto-compacts). Returns byte stats for the UI. */
+export async function vacuumDb(resultCap = 6000): Promise<VacuumResult> {
+  const d = await db();
+  const rows = await d.select<{ session_id: string; data: string }[]>(
+    "SELECT session_id, data FROM blocks",
+  );
+  let before = 0;
+  let after = 0;
+  let trimmed = 0;
+  for (const row of rows) {
+    before += row.data.length;
+    let blocks: any[];
+    try {
+      blocks = JSON.parse(row.data);
+    } catch {
+      after += row.data.length;
+      continue;
+    }
+    for (const b of blocks) {
+      if (b && b.kind === "agentTool" && typeof b.result === "string" && b.result.length > resultCap) {
+        const dropped = b.result.length - resultCap;
+        b.result = b.result.slice(0, resultCap) + `\n…(${dropped} χαρακτήρες συμπιέστηκαν)…`;
+        trimmed += 1;
+      }
+    }
+    const json = JSON.stringify(blocks);
+    after += json.length;
+    if (json !== row.data) {
+      await d.execute("UPDATE blocks SET data = $1 WHERE session_id = $2", [json, row.session_id]);
+    }
+  }
+  try {
+    await d.execute("VACUUM");
+  } catch (e) {
+    console.warn("VACUUM failed", e);
+  }
+  return { sessions: rows.length, trimmed, before, after };
+}

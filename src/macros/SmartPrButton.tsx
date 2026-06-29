@@ -53,12 +53,15 @@ async function queryPr(cwd: string): Promise<GhPr | null> {
 export function SmartPrButton({
   controller,
   active = true,
+  asMenuItem = false,
 }: {
   controller: ShellController;
   /** Only the visible project should poll git/GitHub. With every project's panel
    *  kept mounted, an unguarded window-focus listener here would fire one git +
    *  `gh` probe PER PROJECT on every focus/alt-tab — an N-way freeze. */
   active?: boolean;
+  /** Render as a full-width row inside the macros "⋯" menu instead of a button. */
+  asMenuItem?: boolean;
 }) {
   const cwd = controller.getCwd();
   const id = controller.sessionId;
@@ -184,6 +187,33 @@ export function SmartPrButton({
     done: { label: `✅ Merged #${n}`, onClick: doDone, cls: plain },
   };
   const c = cfg[phase];
+  // Resolve/Update need the user's attention — flag them even inside the menu.
+  const actionable = phase === "resolve" || phase === "update";
+
+  if (asMenuItem) {
+    return (
+      <li>
+        <button
+          onClick={c.onClick}
+          disabled={busy}
+          title="Smart PR: Create → Check → Resolve (ο agent φτιάχνει + commit) → Update (push) → loop μέχρι merge"
+          className={`block w-full whitespace-nowrap px-3 py-1.5 text-left text-xs hover:bg-edge disabled:opacity-70 ${
+            actionable ? "text-accent" : "text-gray-200"
+          }`}
+        >
+          <span className="inline-flex items-center gap-1.5">
+            {busy && <span className="octo-spinner" aria-hidden />}
+            {c.label}
+          </span>
+        </button>
+        {msg && (
+          <div className="truncate px-3 pb-1 text-[10px] text-muted" title={msg}>
+            {msg}
+          </div>
+        )}
+      </li>
+    );
+  }
 
   return (
     <div className="flex items-center gap-1.5">

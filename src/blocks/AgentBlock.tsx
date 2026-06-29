@@ -14,7 +14,7 @@ const RESULT_CHARS_CAP = 4000;
 const TEXT_LINES_CAP = 160;
 
 function fmtTime(ts: number): string {
-  return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
 }
 
 /** A user prompt or an assistant reply. */

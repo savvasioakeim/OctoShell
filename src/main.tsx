@@ -5,10 +5,19 @@ import "@fontsource/jetbrains-mono/600.css";
 import "@fontsource/jetbrains-mono/700.css";
 import "./styles.css";
 import { createRoot } from "react-dom/client";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { App } from "./App";
+import { ReviewWindow } from "./review/ReviewWindow";
 import { ShellController } from "./shell/ShellController";
 
 async function bootstrap() {
+  // The floating review window loads the same bundle; render its UI instead of
+  // the full app (no shell/PTY) when we're in that webview.
+  if (getCurrentWindow().label === "review") {
+    createRoot(document.getElementById("root")!).render(<ReviewWindow />);
+    return;
+  }
+
   const controller = new ShellController("main");
   // Listeners must be registered before the shell emits its first prompt.
   await controller.init();

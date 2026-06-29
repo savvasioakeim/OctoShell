@@ -4,6 +4,13 @@
 
 export type AgentProvider = "claude" | "gemini";
 
+/** One planned step of a task (the agent's TodoWrite list), with its live status.
+ *  Drives the trace progress bar. */
+export interface AgentStep {
+  text: string;
+  status: "pending" | "in_progress" | "completed";
+}
+
 export const PROVIDERS: { value: AgentProvider; label: string; icon: string }[] = [
   { value: "claude", label: "Claude", icon: "🐙" },
   { value: "gemini", label: "Gemini", icon: "✦" },

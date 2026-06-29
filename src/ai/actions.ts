@@ -4,7 +4,7 @@
 // surface each action as a confirmation card. Only the user's click runs them.
 
 export type OrchestratorAction =
-  | { kind: "dispatch"; project: string; prompt: string }
+  | { kind: "dispatch"; project: string; prompt: string; branch?: string }
   | { kind: "cancel"; project: string };
 
 /** Matches a ```octo-actions … ``` fenced block (the only place actions live). */
@@ -45,7 +45,11 @@ function normalize(item: any): OrchestratorAction | null {
   if (verb === "dispatch" || verb === "send" || verb === "run") {
     const prompt = typeof item.prompt === "string" ? item.prompt.trim() : "";
     if (!prompt) return null;
-    return { kind: "dispatch", project, prompt };
+    // Optional: run the task in a FRESH isolated worktree off `project`. The branch
+    // name doubles as the worktree label. `worktree` is accepted as an alias.
+    const rawBranch = item.branch ?? item.worktree;
+    const branch = typeof rawBranch === "string" && rawBranch.trim() ? rawBranch.trim() : undefined;
+    return branch ? { kind: "dispatch", project, prompt, branch } : { kind: "dispatch", project, prompt };
   }
   if (verb === "cancel" || verb === "stop") {
     return { kind: "cancel", project };

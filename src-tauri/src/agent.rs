@@ -62,6 +62,7 @@ impl AgentManager {
         approval: bool,
         approval_port: u16,
         approval_script: Option<String>,
+        config_dir: Option<String>,
     ) -> Result<(), String> {
         // One active turn per session: replace any in-flight run.
         if let Some(mut old) = self.runs.lock().unwrap().remove(&id) {
@@ -90,6 +91,10 @@ impl AgentManager {
                 "--output-format".into(), "stream-json".into(),
                 "--verbose".into(),
                 "--include-partial-messages".into(), // token-by-token streaming
+                // Eagerly load the full built-in tool set (incl. TodoWrite) rather
+                // than the deferred/tool-search subset, so the agent can report its
+                // task plan via TodoWrite — which drives our trace progress bar.
+                "--tools".into(), "default".into(),
             ]);
             // Approval mode: route sensitive tools to our permission MCP sidecar
             // (which asks the user). Otherwise run fully autonomously.
@@ -137,6 +142,18 @@ impl AgentManager {
 
         if !cwd.is_empty() {
             cmd.current_dir(&cwd);
+        }
+        // Profile selection (claude): point this agent at the chosen account's
+        // config dir. With none, CLEAR the var so we don't inherit whatever account
+        // OctoShell's own environment happens to pin (the default home config is
+        // used instead) — the same rule as the orchestrator in ai.rs.
+        match config_dir.as_deref().filter(|s| !s.is_empty()) {
+            Some(dir) => {
+                cmd.env("CLAUDE_CONFIG_DIR", dir);
+            }
+            None => {
+                cmd.env_remove("CLAUDE_CONFIG_DIR");
+            }
         }
         cmd.stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -229,10 +246,11 @@ pub fn agent_send(
     model: Option<String>,
     provider: Option<String>,
     approval: Option<bool>,
+    config_dir: Option<String>,
 ) -> Result<(), String> {
     manager.send(
         app, id, prompt, cwd, resume, model, provider,
-        approval.unwrap_or(false), bridge.port(), bridge.script_path(),
+        approval.unwrap_or(false), bridge.port(), bridge.script_path(), config_dir,
     )
 }
 

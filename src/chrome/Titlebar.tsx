@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import logoUrl from "../assets/logo.png";
 
 const appWindow = getCurrentWindow();
 
@@ -28,10 +29,10 @@ export function Titlebar() {
   return (
     <div
       data-tauri-drag-region
-      className="flex h-8 shrink-0 select-none items-center justify-between border-b border-edge bg-panel"
+      className="flex h-8 shrink-0 select-none items-center justify-between border-b border-edge bg-chrome"
     >
       <div data-tauri-drag-region className="flex items-center gap-2 px-3 text-xs">
-        <span aria-hidden>🐙</span>
+        <img src={logoUrl} alt="" aria-hidden className="h-4 w-4" />
         <span className="font-semibold tracking-wide text-gray-300">OctoShell</span>
       </div>
 

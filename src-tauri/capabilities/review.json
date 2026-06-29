@@ -1,0 +1,14 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "review",
+  "description": "Permissions for the floating Review Mode window.",
+  "windows": ["review"],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "core:window:allow-set-always-on-top",
+    "core:window:allow-close",
+    "core:window:allow-destroy",
+    "core:window:allow-start-dragging"
+  ]
+}

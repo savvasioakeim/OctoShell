@@ -95,6 +95,7 @@ impl PtyManager {
         app: AppHandle,
         id: String,
         cwd: String,
+        shell: String,
         on_output: Channel<InvokeResponseBody>,
     ) -> Result<(), String> {
         // Replace any existing session with this id (e.g. after a dev hot-reload),
@@ -119,16 +120,23 @@ impl PtyManager {
             cwd
         };
 
-        // Prefer pwsh 7; fall back to Windows PowerShell. Both support
-        // -EncodedCommand and PSReadLine.
-        let spawn = |shell: &str| {
-            let mut builder = shell_args(shell);
-            builder.cwd(&start_dir);
-            pair.slave.spawn_command(builder)
+        // Spawn the requested shell in the start dir. PowerShell gets the OSC-133
+        // shell-integration script injected (the source of our per-command blocks);
+        // CMD and WSL are spawned raw — they work as plain terminals but, lacking
+        // that integration, don't produce semantic command blocks (flagged in the
+        // Settings UI).
+        let spawn = |builder: CommandBuilder| {
+            let mut b = builder;
+            b.cwd(&start_dir);
+            pair.slave.spawn_command(b)
         };
-        let child = spawn("pwsh.exe")
-            .or_else(|_| spawn("powershell.exe"))
-            .map_err(|e| format!("failed to spawn shell: {e}"))?;
+        let child = match shell.as_str() {
+            "cmd" => spawn(CommandBuilder::new("cmd.exe")),
+            "wsl" => spawn(CommandBuilder::new("wsl.exe")),
+            // "powershell" (default): prefer pwsh 7, fall back to Windows PowerShell.
+            _ => spawn(shell_args("pwsh.exe")).or_else(|_| spawn(shell_args("powershell.exe"))),
+        }
+        .map_err(|e| format!("failed to spawn shell: {e}"))?;
 
         // Tie the shell (and every command it runs) to OctoShell's lifetime so a
         // crash or hot-reload can't leave an orphaned pwsh.exe behind.
@@ -505,9 +513,10 @@ pub fn open_new_tab(
     manager: State<'_, PtyManager>,
     id: String,
     cwd: String,
+    shell: Option<String>,
     on_output: Channel<InvokeResponseBody>,
 ) -> Result<(), String> {
-    manager.open(app, id, cwd, on_output)
+    manager.open(app, id, cwd, shell.unwrap_or_else(|| "powershell".into()), on_output)
 }
 
 #[tauri::command]
@@ -748,6 +757,47 @@ pub fn open_editor(path: String) -> Result<(), String> {
     cmd.spawn()
         .map(|_| ())
         .map_err(|e| format!("could not open VS Code (is `code` on PATH?): {e}"))
+}
+
+/// Reveal a folder in the OS file manager (Explorer / Finder / xdg-open).
+/// Spawned detached — we don't wait. Explorer can exit non-zero even on success,
+/// which is why we only care that the spawn itself succeeded.
+#[tauri::command]
+pub fn open_in_file_manager(path: String) -> Result<(), String> {
+    use std::process::Command;
+    if path.trim().is_empty() {
+        return Err("no project folder yet".into());
+    }
+
+    #[cfg(windows)]
+    let mut cmd = {
+        let mut c = Command::new("explorer");
+        c.arg(&path);
+        c
+    };
+    #[cfg(target_os = "macos")]
+    let mut cmd = {
+        let mut c = Command::new("open");
+        c.arg(&path);
+        c
+    };
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut cmd = {
+        let mut c = Command::new("xdg-open");
+        c.arg(&path);
+        c
+    };
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    cmd.spawn()
+        .map(|_| ())
+        .map_err(|e| format!("could not open file manager: {e}"))
 }
 
 fn which(exe: &str) -> bool {

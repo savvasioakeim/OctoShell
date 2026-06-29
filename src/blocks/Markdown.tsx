@@ -12,7 +12,7 @@ function renderInline(text: string): ReactNode[] {
     if (m.index > last) nodes.push(text.slice(last, m.index));
     const tok = m[0];
     if (tok.startsWith("**")) {
-      nodes.push(<strong key={key++} className="font-semibold text-white">{tok.slice(2, -2)}</strong>);
+      nodes.push(<strong key={key++} className="font-medium text-gray-100">{tok.slice(2, -2)}</strong>);
     } else {
       nodes.push(
         <code key={key++} className="rounded bg-edge px-1 text-[0.9em] text-accent">

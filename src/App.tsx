@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { ShellController } from "./shell/ShellController";
@@ -7,9 +7,13 @@ import { Feed, pendingMountCount, setMountBudget } from "./blocks/Feed";
 import { InputBar } from "./blocks/InputBar";
 import { AiSidebar } from "./ai/AiSidebar";
 import { MacroBar } from "./macros/MacroBar";
-import { SmartPrButton } from "./macros/SmartPrButton";
+import { TraceProgress } from "./blocks/TraceProgress";
 import { ProjectSidebar } from "./projects/ProjectSidebar";
 import { Titlebar } from "./chrome/Titlebar";
+import { ServiceBar } from "./services/ServiceBar";
+import { serviceStore } from "./services/serviceStore";
+import { SettingsPage } from "./settings/SettingsPage";
+import { settingsStore, useSettings } from "./settings/settingsStore";
 import { KEY, loadJSON, saveJSON } from "./util/persist";
 
 interface Tab {
@@ -168,8 +172,10 @@ function ResizeHandle({ onDrag, onReset }: { onDrag: (dx: number) => void; onRes
       onDoubleClick={onReset}
       style={{ cursor: "col-resize" }}
       title="Σύρε για resize · διπλό κλικ για επαναφορά"
-      className="w-1 shrink-0 bg-edge transition-colors hover:bg-accent"
-    />
+      className="group flex w-2 shrink-0 items-center justify-center"
+    >
+      <span className="h-10 w-0.5 rounded-full bg-edge transition-colors group-hover:bg-accent" />
+    </div>
   );
 }
 
@@ -179,6 +185,7 @@ export function App({ initial }: { initial: ShellController }) {
   ]);
   const [activeId, setActiveId] = useState(initial.sessionId);
   const [hydrated, setHydrated] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   // Startup preload: once projects are restored we eagerly mount every block of
   // every project (desktop app — it's all local), behind a loading overlay, so
   // switching/scrolling afterwards has zero lag. `preloading` drives both the
@@ -189,9 +196,34 @@ export function App({ initial }: { initial: ShellController }) {
   const [preloading, setPreloading] = useState(false);
   const [preloadProgress, setPreloadProgress] = useState(0);
   // User-resizable panel widths (px), persisted across restarts.
-  const [layout, setLayout] = useState(() => loadJSON(KEY.layout, { left: 208, right: 384 }));
+  const [layout, setLayout] = useState(() => loadJSON(KEY.layout, { left: 200, right: 344 }));
 
   useEffect(() => { saveJSON(KEY.layout, layout); }, [layout]);
+
+  // Keep all three columns shrinking together: when the window gets too narrow
+  // for the saved side widths + a usable center, scale the side columns down
+  // proportionally (display only — the saved layout is untouched, so widening the
+  // window restores them).
+  const [winW, setWinW] = useState(() => window.innerWidth);
+  useEffect(() => {
+    const onResize = () => setWinW(window.innerWidth);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+  const { effLeft, effRight } = useMemo(() => {
+    const CENTER_MIN = 300; // keep the center usable before the sides give way
+    const CHROME = 40; // outer p-2 padding + the two resize handles
+    const avail = winW - CHROME;
+    let l = layout.left;
+    let r = layout.right;
+    const over = l + r + CENTER_MIN - avail;
+    if (over > 0) {
+      const side = l + r;
+      l = Math.max(150, l - (over * l) / side);
+      r = Math.max(220, r - (over * r) / side);
+    }
+    return { effLeft: Math.round(l), effRight: Math.round(r) };
+  }, [winW, layout.left, layout.right]);
 
   // Drive the preload: turbo the mount budget while the overlay covers the UI,
   // watch the scheduler's queue drain, then reveal the app. A frame cap is a
@@ -354,12 +386,22 @@ export function App({ initial }: { initial: ShellController }) {
     setActiveId(tab.id);
   };
 
-  const newWorktree = async (branch: string) => {
-    const src = tabs.find((t) => t.id === activeId) ?? tabs[0];
-    if (!src.cwd) { src.controller.setInput("# Άνοιξε πρώτα ένα git project (το home δεν είναι repo)"); return; }
+  /** Core worktree creation: branch a git worktree off `srcId`, register it as a
+   *  nested tab with its OWN controller/agent session, and return it. Returns an
+   *  `{ error }` instead of throwing so each caller surfaces it its own way. Shared
+   *  by the sidebar "New worktree" button and the orchestrator's worktree-dispatch
+   *  — both go through here so an orchestrator-made worktree is a first-class
+   *  session (shows in the bar, gets its own agent), not an invisible on-disk dir. */
+  const createWorktree = async (srcId: string, branch: string): Promise<Tab | { error: string }> => {
+    const src = tabs.find((t) => t.id === srcId);
+    if (!src?.cwd) return { error: "δεν είναι git project (το home δεν είναι repo)" };
     const branchName = branch.trim().replace(/[^A-Za-z0-9._/-]/g, "-").replace(/^-+|-+$/g, "");
-    if (!branchName) return;
+    if (!branchName) return { error: "άκυρο όνομα branch" };
     const dirName = branchName.replace(/\//g, "-");
+    // New worktrees branch off the configured base branch (Settings → Workspace),
+    // or the main worktree's HEAD when unset. Sanitised the same way as the branch.
+    const baseBranch = settingsStore.getSnapshot().workspace.baseBranch.trim().replace(/[^A-Za-z0-9._/-]/g, "");
+    const baseArg = baseBranch ? ` "${baseBranch}"` : "";
     // Resolve the MAIN worktree, ignore the managed folder locally, create the
     // worktree + branch, and print its path (or ERR:…). One pwsh round-trip.
     const script =
@@ -369,7 +411,7 @@ export function App({ initial }: { initial: ShellController }) {
       `$wt="$main/.octoshell/worktrees/${dirName}";` +
       "$excl=\"$main/.git/info/exclude\";" +
       "if((Test-Path $excl) -and -not (Select-String -Path $excl -Pattern 'octoshell' -Quiet)){Add-Content -Path $excl -Value '.octoshell/'};" +
-      `$r=git -C "$main" worktree add -b "${branchName}" "$wt" 2>&1;` +
+      `$r=git -C "$main" worktree add -b "${branchName}" "$wt"${baseArg} 2>&1;` +
       `if($LASTEXITCODE -ne 0){$r=git -C "$main" worktree add "$wt" "${branchName}" 2>&1};` +
       "if($LASTEXITCODE -ne 0){Write-Output ('ERR:'+($r -join ' '))}else{Write-Output $wt}";
     let out = "";
@@ -380,11 +422,27 @@ export function App({ initial }: { initial: ShellController }) {
     }
     const last = out.split(/\r?\n/).pop()?.trim() ?? "";
     if (!last || last.startsWith("ERR:")) {
-      src.controller.setInput(`# Worktree error: ${last.replace(/^ERR:/, "") || "unknown"}`);
-      return;
+      return { error: last.replace(/^ERR:/, "") || "unknown" };
     }
     const wtPath = last;
     const repoRoot = wtPath.split("/.octoshell/")[0];
+    // Copy untracked/gitignored root-level .env* from the base checkout into the
+    // new worktree. `git worktree add` only materialises TRACKED files, so secrets
+    // (Maps key, NEXT_PUBLIC_API_URL, …) are missing and a dev server here would
+    // crash on launch. Best-effort: never block worktree creation on this. Gated by
+    // the Settings → Workspace "auto-copy .env*" toggle.
+    if (settingsStore.getSnapshot().workspace.copyEnv) {
+      try {
+        await invoke<string>("run_capture", {
+          cwd: repoRoot,
+          command:
+            "Get-ChildItem -Path . -Filter '.env*' -File -Force | " +
+            `ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination (Join-Path '${wtPath}' $_.Name) -Force }`,
+        });
+      } catch {
+        /* missing .env / copy failure is non-fatal */
+      }
+    }
     const controller = new ShellController(crypto.randomUUID());
     await controller.init(wtPath);
     const tab: Tab = {
@@ -404,7 +462,31 @@ export function App({ initial }: { initial: ShellController }) {
       arr.splice(idx, 0, tab);
       return arr;
     });
-    setActiveId(tab.id);
+    return tab;
+  };
+
+  /** Sidebar "New worktree" button: branch off the active project, focus the new
+   *  tab, and on failure echo the git error into the source project's input. */
+  const newWorktree = async (branch: string) => {
+    const src = tabs.find((t) => t.id === activeId) ?? tabs[0];
+    const result = await createWorktree(src?.id ?? "", branch);
+    if ("error" in result) {
+      src?.controller.setInput(`# Worktree error: ${result.error}`);
+      return;
+    }
+    setActiveId(result.id);
+  };
+
+  /** Orchestrator worktree-dispatch: branch off `srcId`, focus it, and hand the
+   *  new session back so the assistant can run an agent in it. Null on failure. */
+  const createWorktreeForAgent = async (
+    srcId: string,
+    branch: string,
+  ): Promise<{ id: string; name: string; controller: ShellController } | null> => {
+    const result = await createWorktree(srcId, branch);
+    if ("error" in result) return null;
+    setActiveId(result.id);
+    return { id: result.id, name: result.name, controller: result.controller };
   };
 
   const closeProject = (id: string) => {
@@ -426,6 +508,38 @@ export function App({ initial }: { initial: ShellController }) {
     });
   };
 
+  // Auto-clean (Settings → Workspace = "onMerge"): periodically ask GitHub whether
+  // each worktree's PR has merged/closed and, if so, remove the worktree. Reads via
+  // refs so the long-lived interval always sees the latest tabs/close handler.
+  const tabsRef = useRef(tabs);
+  tabsRef.current = tabs;
+  const closeProjectRef = useRef(closeProject);
+  closeProjectRef.current = closeProject;
+  useEffect(() => {
+    const tick = async () => {
+      if (settingsStore.getSnapshot().workspace.autoClean !== "onMerge") return;
+      for (const t of tabsRef.current) {
+        if (!t.worktree) continue;
+        let state = "";
+        try {
+          state = (
+            await invoke<string>("run_capture", {
+              cwd: t.cwd,
+              command: "$b=git branch --show-current; if($b){gh pr view $b --json state -q .state 2>$null}",
+            })
+          )
+            .trim()
+            .toUpperCase();
+        } catch {
+          continue; // gh missing / not authed / no PR — skip silently
+        }
+        if (state.includes("MERGED") || state.includes("CLOSED")) closeProjectRef.current(t.id);
+      }
+    };
+    const iv = setInterval(() => void tick(), 120000);
+    return () => clearInterval(iv);
+  }, []);
+
   // Workspace keyboard shortcuts.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -443,11 +557,19 @@ export function App({ initial }: { initial: ShellController }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tabs, activeId]);
 
+  // Attach the managed-services event stream once, so the bottom ServiceBar shows
+  // any server OctoShell starts (from the shell offer or, later, review mode).
+  useEffect(() => {
+    serviceStore.init();
+  }, []);
+
   return (
     <div className="flex h-full flex-col">
+      <ThemeApplier />
       {preloading && <StartupOverlay progress={preloadProgress} count={tabs.length} />}
       <Titlebar />
-      <div className="flex flex-1 overflow-hidden">
+      <div className="relative flex flex-1 flex-col overflow-hidden bg-well">
+        <div className="flex flex-1 overflow-hidden p-2">
         <ProjectSidebar
           tabs={tabs.map((t) => ({ id: t.id, name: t.name, parentId: t.worktree?.parentId, controller: t.controller }))}
           activeId={active.id}
@@ -455,7 +577,7 @@ export function App({ initial }: { initial: ShellController }) {
           onClose={closeProject}
           onNew={newProject}
           onNewWorktree={newWorktree}
-          width={layout.left}
+          onOpenSettings={() => setSettingsOpen(true)}
           stats={gitStats}
           groups={groupsState.groups}
           assign={groupsState.assign}
@@ -467,6 +589,7 @@ export function App({ initial }: { initial: ShellController }) {
           onRenameGroup={renameGroup}
           onDeleteGroup={deleteGroup}
           palette={GROUP_COLORS}
+          width={effLeft}
         />
         <ResizeHandle
           onDrag={(dx) => setLayout((l) => ({ ...l, left: clamp(l.left + dx, 160, 460) }))}
@@ -478,22 +601,31 @@ export function App({ initial }: { initial: ShellController }) {
             from layout — otherwise the browser reflows every project's blocks on
             any DOM change, which froze the UI. Each panel virtualizes its own
             feed, so the live laid-out DOM stays ≈ one viewport. */}
-        <div className="relative flex-1 overflow-hidden">
+        <div className="relative flex-1 overflow-hidden rounded-xl border border-edge bg-panel">
           {tabs.map((t) => (
             <CenterPanel key={t.id} controller={t.controller} active={t.id === active.id} />
           ))}
         </div>
 
         <ResizeHandle
-          onDrag={(dx) => setLayout((l) => ({ ...l, right: clamp(l.right - dx, 260, 760) }))}
-          onReset={() => setLayout((l) => ({ ...l, right: 384 }))}
+          onDrag={(dx) => setLayout((l) => ({ ...l, right: clamp(l.right - dx, 232, 760) }))}
+          onReset={() => setLayout((l) => ({ ...l, right: 344 }))}
         />
         <AiSidebar
           tabs={tabs.map((t) => ({ id: t.id, name: t.name, controller: t.controller }))}
           activeId={active.id}
           onSelect={setActiveId}
-          width={layout.right}
+          onCreateWorktree={createWorktreeForAgent}
+          onCloseProject={closeProject}
+          width={effRight}
         />
+        </div>
+        <ServiceBar />
+        {settingsOpen && (
+          <div className="absolute inset-0 z-40">
+            <SettingsPage onClose={() => setSettingsOpen(false)} />
+          </div>
+        )}
       </div>
     </div>
   );
@@ -520,6 +652,24 @@ function StartupOverlay({ progress, count }: { progress: number; count: number }
   );
 }
 
+/** Applies the Appearance settings to the document root: the monospace font CSS
+ *  variable (terminal/feed pick it up) and the PCB trace-speed class. */
+function ThemeApplier() {
+  const { appearance } = useSettings();
+  useEffect(() => {
+    const root = document.documentElement;
+    root.style.setProperty(
+      "--octo-mono",
+      appearance.fontFamily
+        ? `"${appearance.fontFamily}", "JetBrains Mono", "Cascadia Code", Consolas, monospace`
+        : "",
+    );
+    root.classList.remove("trace-fast", "trace-normal", "trace-stealth", "trace-static");
+    if (appearance.traceSpeed !== "normal") root.classList.add(`trace-${appearance.traceSpeed}`);
+  }, [appearance.fontFamily, appearance.traceSpeed]);
+  return null;
+}
+
 /** Center column: top bar (cwd + macros) · feed · input — for one session.
  *  Kept mounted even when not `active`; hidden via display:none so its state and
  *  built DOM persist across project switches. */
@@ -530,18 +680,23 @@ const CenterPanel = memo(function CenterPanel({
   controller: ShellController;
   active: boolean;
 }) {
-  const { blocks, cwd, busy, input, altScreen, interacting, mode, agentBusy, agentModel, agentProvider, agentTokens, agentContext, agentApiKey, agentRateReset, agentApproval } = useShell(controller);
+  const { blocks, cwd, busy, input, altScreen, interacting, mode, agentBusy, agentOrchestrated, agentModel, agentProvider, agentConfigDir, agentTokens, agentContext, agentProgress, agentApiKey, agentRateReset, agentApproval } = useShell(controller);
 
   return (
     <section
-      className={`absolute inset-0 flex-col overflow-hidden ${active ? "flex" : "hidden"}`}
+      className={`absolute inset-0 flex-col gap-2 overflow-hidden p-2 ${active ? "flex" : "hidden"}`}
     >
-      <div className="flex items-center gap-3 border-b border-edge bg-panel px-3 py-1.5">
-        <span className="truncate text-xs text-muted">{cwd || "~"}</span>
-        <div className="flex-1" />
-        <SmartPrButton controller={controller} active={active} />
-        <MacroBar controller={controller} />
+      <div className="flex shrink-0 items-center gap-2 rounded-lg border border-edge bg-card px-3 py-1.5">
+        {/* Task progress lives up top: a trace bar that fills as the agent completes
+            its planned steps. Empty when there's no active plan (the cwd path now
+            lives under the Shell/Agent switch in the input bar). */}
+        <div className="min-w-0 flex-1">
+          {agentProgress && agentProgress.length > 0 && <TraceProgress steps={agentProgress} />}
+        </div>
+        <MacroBar controller={controller} active={active} />
       </div>
+      {/* Chat panel — the conversation feed with the command input pinned below. */}
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-edge bg-card">
       <Feed blocks={blocks} controller={controller} altScreen={altScreen} interacting={interacting} />
       <InputBar
         controller={controller}
@@ -552,14 +707,17 @@ const CenterPanel = memo(function CenterPanel({
         interacting={interacting}
         mode={mode}
         agentBusy={agentBusy}
+        agentOrchestrated={agentOrchestrated}
         agentModel={agentModel}
         agentProvider={agentProvider}
+        agentConfigDir={agentConfigDir}
         agentTokens={agentTokens}
         agentContext={agentContext}
         agentApiKey={agentApiKey}
         agentRateReset={agentRateReset}
         agentApproval={agentApproval}
       />
+      </div>
     </section>
   );
 });

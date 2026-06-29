@@ -7,8 +7,10 @@ import {
   useRef,
   useState,
 } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import type { GitStat, Group } from "../App";
 import type { ShellController, ShellSnapshot } from "../shell/ShellController";
+import { statusOf, STATUS_COLOR as COLOR, STATUS_LABEL as LABEL } from "../shell/agentStatus";
 import { KEY, loadJSON, saveJSON } from "../util/persist";
 
 export interface ProjectTab {
@@ -27,6 +29,7 @@ interface Props {
   onClose: (id: string) => void;
   onNew: () => void;
   onNewWorktree: (branch: string) => void;
+  onOpenSettings: () => void;
   width: number;
   stats: Map<string, GitStat>;
   groups: Group[];
@@ -43,35 +46,8 @@ interface Props {
 
 type Ctx = { x: number; y: number; kind: "project" | "group" | "blank"; id?: string };
 
-// ---------------------------------------------------------------------------
-// Agent status (drives the board node colors — OctoShell's "circuit board").
-// ---------------------------------------------------------------------------
-type Status = "idle" | "active" | "done" | "error";
-const COLOR: Record<Status, string> = {
-  idle: "#4b5066", // gray  — nothing running
-  active: "#82AAFF", // blue  — shell/agent working
-  done: "#4ade80", // green — last action succeeded
-  error: "#f87171", // red   — last action failed
-};
-const LABEL: Record<Status, string> = {
-  idle: "idle",
-  active: "τρέχει",
-  done: "ολοκληρώθηκε",
-  error: "σφάλμα",
-};
-function statusOf(s?: ShellSnapshot): Status {
-  if (!s) return "idle";
-  if (s.agentBusy || s.busy) return "active";
-  for (let i = s.blocks.length - 1; i >= 0; i--) {
-    const b = s.blocks[i];
-    if (b.kind === "command" || b.kind === "agentTool") {
-      if (b.status === "error") return "error";
-      if (b.status === "success") return "done";
-      return "idle";
-    }
-  }
-  return "idle";
-}
+// Agent status colors/labels/statusOf now live in shell/agentStatus, shared with
+// the orchestrator's Agents panel.
 
 /** Subscribe to every controller, but re-render ONLY when a field the board
  *  actually shows changes (busy / agentBusy / orchestrated status). Controllers
@@ -164,7 +140,7 @@ function Chevron({ open }: { open: boolean }) {
  */
 export function ProjectSidebar(props: Props) {
   const {
-    tabs, activeId, onSelect, onClose, onNew, onNewWorktree, width, stats,
+    tabs, activeId, onSelect, onClose, onNew, onNewWorktree, onOpenSettings, width, stats,
     groups, assign, onAssign, onReorder, onReorderGroup,
   } = props;
 
@@ -298,7 +274,7 @@ export function ProjectSidebar(props: Props) {
           endDrag();
         }}
         style={style}
-        className={`group cursor-pointer rounded py-1.5 pr-2 transition-colors ${
+        className={`group cursor-pointer rounded py-1 pr-2 transition-colors ${
           dragId === t.id ? "opacity-50" : ""
         } ${active ? "bg-accent/25 text-gray-100" : "text-muted hover:bg-edge/60"}`}
       >
@@ -306,7 +282,7 @@ export function ProjectSidebar(props: Props) {
             with the name even when a branch sub-line is shown below it. */}
         <div
           ref={(el) => { if (el) rowRefs.current.set(t.id, el); else rowRefs.current.delete(t.id); }}
-          className="flex items-center gap-1.5 text-sm"
+          className="flex items-center gap-1.5 text-[13px]"
         >
           {isWt && <span className="shrink-0 text-[11px]" title="git worktree">🌿</span>}
           <span className="min-w-0 truncate">{t.name}</span>
@@ -404,10 +380,12 @@ export function ProjectSidebar(props: Props) {
   };
 
   return (
-    <nav className="relative flex shrink-0 flex-col bg-panel" style={{ width }}>
-      <div className="flex items-center gap-2 border-b border-edge px-3 py-2.5">
-        <span className="text-base">🐙</span>
-        <span className="text-sm font-semibold text-gray-100">OctoShell</span>
+    <nav
+      className="relative flex shrink-0 flex-col overflow-hidden rounded-xl border border-edge bg-panel"
+      style={{ width }}
+    >
+      <div className="flex items-center border-b border-edge px-3 py-2.5">
+        <span className="text-[11px] font-semibold uppercase tracking-wider text-muted">Projects</span>
       </div>
 
       <div ref={scrollRef} className="flex-1 overflow-y-auto p-2" onContextMenu={(e) => openCtx(e, "blank")}>
@@ -426,13 +404,15 @@ export function ProjectSidebar(props: Props) {
           />
 
           <div className="space-y-0.5 pt-5">
+            {/* Drop target to un-assign a project from its group. Labelled only when
+                groups exist (otherwise the panel header already says "Projects"). */}
             <div
-              className="py-1 text-[10px] uppercase tracking-wider text-muted"
+              className="min-h-[14px] py-1 text-[10px] uppercase tracking-wider text-muted"
               style={{ paddingLeft: PAD_X[1] }}
               onDragOver={(e) => { if (dragId) e.preventDefault(); }}
               onDrop={(e) => { e.preventDefault(); if (dragId) onAssign(dragId, null); endDrag(); }}
             >
-              Projects
+              {groups.length > 0 ? "Ungrouped" : ""}
             </div>
             {ungrouped.map((t) => renderProject(t, 1))}
 
@@ -479,9 +459,16 @@ export function ProjectSidebar(props: Props) {
         )}
         <button
           onClick={onNew}
-          className="w-full rounded-lg border border-accent/60 bg-accent/25 px-3 py-2 text-sm font-semibold text-gray-100 transition-colors hover:bg-accent/30"
+          className="w-full rounded-md border border-accent/60 bg-accent/25 px-3 py-1.5 text-xs font-semibold text-gray-100 transition-colors hover:bg-accent/30"
         >
           ＋ New project
+        </button>
+        <button
+          onClick={onOpenSettings}
+          title="Ρυθμίσεις (defaults agents & orchestrator)"
+          className="w-full rounded-md border border-edge px-3 py-1.5 text-xs text-muted transition-colors hover:border-accent/50 hover:text-gray-100"
+        >
+          ⚙️ Settings
         </button>
       </div>
 
@@ -725,6 +712,17 @@ function ContextMenu({
                 ✕ Ακύρωση agent
               </button>
             )}
+            <div className="my-1 border-t border-edge" />
+            <button
+              className="w-full px-3 py-1.5 text-left text-gray-200 hover:bg-edge"
+              onClick={() => {
+                const cwd = projTab?.controller.getCwd();
+                if (cwd) void invoke("open_in_file_manager", { path: cwd });
+                close();
+              }}
+            >
+              📂 Άνοιγμα στον file manager
+            </button>
             <div className="my-1 border-t border-edge" />
             <div className="px-3 py-0.5 text-[10px] uppercase tracking-wider text-muted">Ομάδα</div>
             <button className="w-full px-3 py-1.5 text-left text-gray-200 hover:bg-edge" onClick={() => newGroup(ctx.id)}>

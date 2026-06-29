@@ -18,7 +18,7 @@ html {
   margin: 0;
   white-space: pre-wrap;
   word-break: break-word;
-  font-family: "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+  font-family: var(--octo-mono, "JetBrains Mono", "Cascadia Code", Consolas, monospace);
   font-size: 15px;
   line-height: 20px;
 }
@@ -41,7 +41,7 @@ html {
   background: transparent !important;
   white-space: pre-wrap;
   word-break: break-word;
-  font-family: "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+  font-family: var(--octo-mono, "JetBrains Mono", "Cascadia Code", Consolas, monospace);
   font-size: 14px;
   line-height: 1.5;
 }
@@ -80,12 +80,31 @@ html {
   animation: octoroute 1.5s ease-in-out infinite;
 }
 
-/* Thin dark scrollbars. */
+/* Trace animation speed (Settings → Appearance). The root gets a trace-* class;
+   `normal` is the default above. `static` freezes the flow entirely. */
+:root.trace-fast .octo-route { animation-duration: 0.8s; }
+:root.trace-fast .octo-cable-pulse { animation-duration: 0.7s; }
+:root.trace-stealth .octo-route { animation-duration: 3.2s; }
+:root.trace-stealth .octo-cable-pulse { animation-duration: 2.8s; }
+:root.trace-static .octo-route,
+:root.trace-static .octo-cable-pulse { animation: none !important; }
+
+/* Thin, quiet scrollbars — transparent track, subtle thumb that brightens on hover. */
 *::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 7px;
+  height: 7px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
 }
 *::-webkit-scrollbar-thumb {
-  background: #3a3f58;
+  background: #2c3142;
   border-radius: 4px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: #3f4660;
+}
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #2c3142 transparent;
 }

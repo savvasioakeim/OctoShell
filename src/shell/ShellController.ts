@@ -8,10 +8,29 @@ import { ansiToHtml, stripAnsi } from "../util/ansi";
 import { KEY, loadJSON, removeKey, saveJSON } from "../util/persist";
 import { deleteBlocksDb, loadBlocksDb, saveBlocksDb } from "../util/db";
 import { notify } from "../util/notify";
-import { parseAgentLine, type AgentProvider } from "../agents/providers";
+import { playSfx } from "../util/sfx";
+import { parseAgentLine, type AgentProvider, type AgentStep } from "../agents/providers";
+import { settingsStore } from "../settings/settingsStore";
 
 /** Keep at most this many historical blocks per session in storage. */
 const MAX_PERSISTED_BLOCKS = 80;
+
+/** The CLI's native task-tracker tools (this build's replacement for TodoWrite).
+ *  Their calls drive the trace progress bar and are hidden from the feed. */
+const TASK_TOOLS = new Set(["TaskCreate", "TaskUpdate", "TaskList", "TaskGet"]);
+
+/** Injected on every Claude turn so the app gets a reliable task-step signal: the
+ *  agent breaks the task into an ordered task list (TaskCreate) up front and keeps
+ *  it updated (TaskUpdate) as it goes. OctoShell renders that as the trace bar. */
+const STEP_PROTOCOL = [
+  "<<OCTOSHELL TASK STEPS — MANDATORY>>",
+  "This applies to EVERY task you are given (typed directly or dispatched by the orchestrator), including ones already phrased as \"do these steps\".",
+  "1. Before doing anything else, use the TaskCreate tool to lay out the task as a short ordered list of concrete, user-meaningful steps (aim for 3–7) — one TaskCreate call per step. Do this even if the task looks simple or sequential — do NOT just describe the steps in prose.",
+  "2. Use TaskUpdate to mark EXACTLY ONE step `in_progress` at a time. The moment a step is finished, immediately call TaskUpdate to set it `completed` and the next one `in_progress`.",
+  "3. Phrase each step's subject as a short outcome (e.g. \"Create todo.txt\", \"Write the tests\"), not internal chatter.",
+  "This task list is the ONLY thing that drives the user's live progress bar, so it must exist and stay accurate from the first action to the last.",
+  "<</OCTOSHELL TASK STEPS>>",
+].join("\n");
 
 export type BlockStatus = "running" | "success" | "error";
 
@@ -95,6 +114,8 @@ export interface ShellSnapshot {
   agentModel: string | null;
   /** Which agent CLI drives this project. */
   agentProvider: AgentProvider;
+  /** Selected Claude Code profile dir for this agent (null = home default). */
+  agentConfigDir: string | null;
   /** Per-tool approval mode (Claude only): the agent asks before sensitive tools. */
   agentApproval: boolean;
   /** True while ≥1 approval request is pending the user's decision. */
@@ -104,6 +125,9 @@ export interface ShellSnapshot {
   agentTokens: { input: number; output: number; costUsd: number } | null;
   /** Latest context-window occupancy (used / window), for the usage meter. */
   agentContext: { used: number; window: number } | null;
+  /** Task progress from the agent's todo list (TodoWrite): the ordered planned
+   *  steps with status. Null until the agent writes a plan. Drives the trace bar. */
+  agentProgress: AgentStep[] | null;
   /** True when the agent bills per-token (API key) → cost is shown. On a
    *  subscription it's false and cost is hidden. */
   agentApiKey: boolean;
@@ -165,19 +189,42 @@ export class ShellController {
   private agentBusy = false;
   /** Set when the current turn was started by the orchestrator. */
   private agentOrchestrated = false;
+  /** A user prompt typed while a turn was in flight: we cancel the running turn
+   *  and run this one once it ends (so the user can always take over the agent,
+   *  without two concurrent turns racing the backend). */
+  private pendingUserPrompt: string | null = null;
   /** claude session id, for `--resume` across turns. */
   private agentSessionId: string | null = null;
+  /** The last prompt sent to the agent — replayed if a `--resume` turns out stale. */
+  private lastAgentPrompt: string | null = null;
+  /** Guards the one-shot fresh-session retry so a real failure can't loop. */
+  private resumeRetried = false;
   /** Selected model for this project's agent (null = CLI default). Applies from
    *  the NEXT turn — `claude --model` can't change a turn already in flight. */
   private agentModel: string | null = null;
   /** Which agent CLI drives this project (claude / gemini). */
   private agentProvider: AgentProvider = "claude";
+  /** Claude Code profile (CLAUDE_CONFIG_DIR) for this project's agent; null = home. */
+  private agentConfigDir: string | null = null;
   /** Per-tool approval mode (Claude only). */
   private agentApproval = false;
   /** Running token total for this session's agent (null = none reported yet). */
   private agentTokens: { input: number; output: number; costUsd: number } | null = null;
   /** Latest context-window occupancy reported by the agent. */
   private agentContext: { used: number; window: number } | null = null;
+  /** Latest task progress from the agent's todo list (null until it plans). */
+  private agentProgress: AgentStep[] | null = null;
+  // Task progress, accumulated from the CLI's TaskCreate/TaskUpdate tool calls
+  // (kept across turns — the task list is per-session). We deliberately DON'T map a
+  // TaskUpdate's `taskId` back to a specific created task: the CLI's ids aren't
+  // guaranteed to start at 1 (a resumed session continues an earlier counter), so
+  // any id→index guess breaks. Instead we count: N created = N steps, and the
+  // number of distinct ids marked `completed` = how many are done. Accurate for the
+  // common in-order case, and robust to whatever ids the CLI hands out.
+  /** Step subjects in creation order (one per TaskCreate). */
+  private agentTaskTexts: string[] = [];
+  /** Latest status seen per TaskUpdate id — deduped, so counts don't double up. */
+  private agentTaskStatus = new Map<string, AgentStep["status"]>();
   /** Whether the agent bills per-token (API key) vs. a subscription. */
   private agentApiKey = false;
   /** Epoch seconds of the next subscription rate-limit reset (account-wide). */
@@ -223,10 +270,12 @@ export class ShellController {
     agentOrchestrated: false,
     agentModel: null,
     agentProvider: "claude",
+    agentConfigDir: null,
     agentApproval: false,
     agentNeedsInput: false,
     agentTokens: null,
     agentContext: null,
+    agentProgress: null,
     agentApiKey: false,
     agentRateReset: null,
   };
@@ -237,10 +286,14 @@ export class ShellController {
     this.liveHost.style.cssText = "position:absolute;left:-99999px;top:0;width:900px;height:400px;";
     document.body.appendChild(this.liveHost);
 
+    const appearance = settingsStore.getSnapshot().appearance;
+    const font = appearance.fontFamily
+      ? `${JSON.stringify(appearance.fontFamily)}, JetBrains Mono, Cascadia Code, Consolas, monospace`
+      : "JetBrains Mono, Cascadia Code, Consolas, monospace";
     this.liveTerm = new Terminal({
-      fontFamily: "JetBrains Mono, Cascadia Code, Consolas, monospace",
+      fontFamily: font,
       fontSize: 15,
-      scrollback: 5000,
+      scrollback: settingsStore.getSnapshot().system.scrollback,
       cursorBlink: false, // enabled only while focused/alt-screen (saves idle repaints)
       allowProposedApi: true,
       theme: { background: "#15181F", foreground: "#A6ACCD" }, // matches `card`
@@ -322,10 +375,12 @@ export class ShellController {
       agentOrchestrated: this.agentOrchestrated,
       agentModel: this.agentModel,
       agentProvider: this.agentProvider,
+      agentConfigDir: this.agentConfigDir,
       agentApproval: this.agentApproval,
       agentNeedsInput: this.blocks.some((b) => b.kind === "agentApproval" && b.status === "pending"),
       agentTokens: this.agentTokens,
       agentContext: this.agentContext,
+      agentProgress: this.agentProgress,
       agentApiKey: this.agentApiKey,
       agentRateReset: this.agentRateReset,
     };
@@ -374,17 +429,26 @@ export class ShellController {
         },
       ),
     );
-    await invoke("open_new_tab", { id: this.sessionId, cwd, onOutput: stream });
+    await invoke("open_new_tab", {
+      id: this.sessionId,
+      cwd,
+      shell: settingsStore.getSnapshot().workspace.defaultShell,
+      onOutput: stream,
+    });
     this.hydrate();
   }
 
-  /** Restore persisted agent prefs (sync, small) + history (async, from SQLite). */
+  /** Restore persisted agent prefs (sync, small) + history (async, from SQLite).
+   *  Anything this session never explicitly set falls back to the workspace
+   *  agent defaults (Settings), so new agents start on the configured account. */
   private hydrate(): void {
+    const d = settingsStore.getSnapshot().agent;
     this.agentSessionId = loadJSON<string | null>(KEY.agent(this.sessionId), null);
-    this.agentModel = loadJSON<string | null>(KEY.model(this.sessionId), null);
-    this.agentProvider = loadJSON<AgentProvider>(KEY.provider(this.sessionId), "claude");
+    this.agentModel = loadJSON<string | null>(KEY.model(this.sessionId), d.model);
+    this.agentProvider = loadJSON<AgentProvider>(KEY.provider(this.sessionId), d.provider);
+    this.agentConfigDir = loadJSON<string | null>(KEY.agentCfgDir(this.sessionId), settingsStore.configDirFor(d.profileId));
     this.agentApproval = loadJSON<boolean>(KEY.approval(this.sessionId), false);
-    if (this.agentSessionId || this.agentModel) this.emit();
+    if (this.agentSessionId || this.agentModel || this.agentConfigDir) this.emit();
     void this.hydrateBlocks();
   }
 
@@ -436,6 +500,7 @@ export class ShellController {
     saveJSON(KEY.agent(this.sessionId), this.agentSessionId);
     saveJSON(KEY.model(this.sessionId), this.agentModel);
     saveJSON(KEY.provider(this.sessionId), this.agentProvider);
+    saveJSON(KEY.agentCfgDir(this.sessionId), this.agentConfigDir);
     saveJSON(KEY.approval(this.sessionId), this.agentApproval);
   }
 
@@ -486,6 +551,19 @@ export class ShellController {
     this.emit();
   }
 
+  /** Choose the Claude Code profile (account config dir) for this project's agent.
+   *  Applies from the NEXT turn; null = home default. A stale resume under the new
+   *  account is recovered automatically (see onAgentDone). */
+  setAgentConfigDir(configDir: string | null): void {
+    if (configDir === this.agentConfigDir) return;
+    this.agentConfigDir = configDir;
+    // Switching accounts invalidates the old session — start fresh next turn.
+    this.agentSessionId = null;
+    saveJSON(KEY.agentCfgDir(this.sessionId), configDir);
+    saveJSON(KEY.agent(this.sessionId), null);
+    this.emit();
+  }
+
   /** Switch the agent CLI (claude ↔ gemini). Resets the session id since a
    *  session can't carry across providers; the next turn starts fresh. */
   setAgentProvider(provider: AgentProvider): void {
@@ -509,6 +587,7 @@ export class ShellController {
     removeKey(KEY.agent(this.sessionId));
     removeKey(KEY.model(this.sessionId));
     removeKey(KEY.provider(this.sessionId));
+    removeKey(KEY.agentCfgDir(this.sessionId));
     removeKey(KEY.approval(this.sessionId));
   }
 
@@ -698,7 +777,18 @@ export class ShellController {
    *  so the board can light the whole tentacle route to this agent. */
   runAgent(prompt: string, opts?: { orchestrated?: boolean }): void {
     const text = prompt.trim();
-    if (!text || this.agentBusy) return;
+    if (!text) return;
+    if (this.agentBusy) {
+      // A turn is in flight. The orchestrator never preempts (it dispatches to
+      // idle agents). A USER message takes over: cancel the running turn and
+      // queue this prompt to fire from onAgentDone — never two turns at once.
+      if (opts?.orchestrated) return;
+      this.pendingUserPrompt = text;
+      this.inputValue = "";
+      this.cancelAgent();
+      this.emit();
+      return;
+    }
     this.touched = true;
 
     this.blocks.push({
@@ -711,17 +801,42 @@ export class ShellController {
     this.agentBusy = true;
     this.agentOrchestrated = !!opts?.orchestrated;
     this.inputValue = "";
+    this.lastAgentPrompt = text;
+    this.resumeRetried = false;
+    // Each turn is a fresh task: clear the step counters so the trace bar tracks
+    // THIS prompt's plan (the agent re-plans per dispatch), not stale ones.
+    this.agentTaskTexts = [];
+    this.agentTaskStatus.clear();
+    this.agentProgress = null;
     this.emit();
 
+    this.sendToAgent(text, this.agentSessionId);
+  }
+
+  /** Spawn one agent turn. Split out so a failed `--resume` can be retried as a
+   *  fresh session without re-pushing the user's message. */
+  private sendToAgent(prompt: string, resume: string | null): void {
     this.streamingTextId = null;
+    const rules = settingsStore.getSnapshot().globalRules.trim();
+    // Global rules are injected once, at the START of a session (resume === null):
+    // on continuation turns they're already in the agent's context.
+    const rulesBlock = resume === null && rules ? `<<GLOBAL RULES (always follow these)>>\n${rules}\n<</GLOBAL RULES>>` : "";
+    // The step protocol drives the trace progress bar, so reliability matters more
+    // than token thrift: re-inject it on EVERY claude turn (gemini has no TodoWrite
+    // tool). Otherwise a continuation/orchestrated turn would skip it and the agent
+    // falls back to ad-hoc "STEP 1… STEP 2…" prose we can't parse.
+    const stepRule = this.agentProvider === "claude" ? STEP_PROTOCOL : "";
+    const preamble = [rulesBlock, stepRule].filter(Boolean).join("\n\n");
+    const full = preamble ? `${preamble}\n\n${prompt}` : prompt;
     invoke("agent_send", {
       id: this.sessionId,
-      prompt: text,
+      prompt: full,
       cwd: this.cwd,
-      resume: this.agentSessionId,
+      resume,
       model: this.agentModel,
       provider: this.agentProvider,
       approval: this.agentApproval,
+      configDir: this.agentConfigDir,
     }).catch((err) => {
       this.onAgentDone(String(err));
     });
@@ -753,9 +868,16 @@ export class ShellController {
         }
       } else if (e.tool) {
         this.streamingTextId = null;
-        const id = crypto.randomUUID();
-        this.agentTools.set(e.tool.id, id);
-        this.blocks.push({ id, kind: "agentTool", toolName: e.tool.name, toolInput: e.tool.input, status: "running", startedAt: now });
+        // The CLI's native task-tracker tools (this build's replacement for
+        // TodoWrite) drive the trace progress bar. We consume them for progress
+        // and DON'T render them as feed blocks — the trace represents them.
+        if (TASK_TOOLS.has(e.tool.name)) {
+          this.applyTaskOp(e.tool.name, e.tool.input);
+        } else {
+          const id = crypto.randomUUID();
+          this.agentTools.set(e.tool.id, id);
+          this.blocks.push({ id, kind: "agentTool", toolName: e.tool.name, toolInput: e.tool.input, status: "running", startedAt: now });
+        }
       } else if (e.result) {
         const block = this.blocks.find((b) => b.id === this.agentTools.get(e.result!.id));
         if (block && block.kind === "agentTool") {
@@ -782,7 +904,73 @@ export class ShellController {
     this.emit();
   }
 
+  /** Fold a TaskCreate/TaskUpdate call into the session task counters and re-derive
+   *  the progress steps (see the field comments for why this is count-based). */
+  private applyTaskOp(name: string, inputJson: string): void {
+    let input: { subject?: string; description?: string; taskId?: string; status?: string };
+    try {
+      input = JSON.parse(inputJson);
+    } catch {
+      return;
+    }
+    if (name === "TaskCreate") {
+      const text = (input.subject || input.description || "").trim();
+      if (!text) return;
+      this.agentTaskTexts.push(text);
+    } else if (name === "TaskUpdate") {
+      const id = String(input.taskId ?? "");
+      if (!id) return;
+      if (input.status === "deleted") {
+        this.agentTaskStatus.delete(id);
+      } else if (input.status === "pending" || input.status === "in_progress" || input.status === "completed") {
+        this.agentTaskStatus.set(id, input.status);
+      }
+    } else {
+      return; // TaskList / TaskGet are reads — no state change
+    }
+    this.rederiveProgress();
+  }
+
+  /** Build the ordered `agentProgress` steps from the task counters: the first
+   *  `completed` nodes are done, the next is in-progress (if any task is active),
+   *  the rest pending. Texts come from creation order. */
+  private rederiveProgress(): void {
+    const total = this.agentTaskTexts.length;
+    if (!total) {
+      this.agentProgress = null;
+      return;
+    }
+    const statuses = [...this.agentTaskStatus.values()];
+    const completed = Math.min(statuses.filter((s) => s === "completed").length, total);
+    const hasActive = statuses.some((s) => s === "in_progress");
+    this.agentProgress = this.agentTaskTexts.map((text, i) => ({
+      text,
+      status: i < completed ? "completed" : i === completed && hasActive ? "in_progress" : "pending",
+    }));
+  }
+
   private onAgentDone(error?: string, code = 0): void {
+    // A stale `--resume` (the stored session vanished — e.g. the profile/account
+    // was switched, or tokens ran out under the old account) fails with "No
+    // conversation found". Recover transparently: drop the dead session id and
+    // replay the same prompt as a FRESH session, once.
+    if (
+      code !== 0 &&
+      error &&
+      /no conversation found/i.test(error) &&
+      this.agentSessionId &&
+      this.lastAgentPrompt &&
+      !this.resumeRetried
+    ) {
+      this.resumeRetried = true;
+      this.agentSessionId = null;
+      saveJSON(KEY.agent(this.sessionId), null);
+      this.agentTools.clear();
+      this.streamingTextId = null;
+      this.sendToAgent(this.lastAgentPrompt, null);
+      return;
+    }
+
     this.agentBusy = false;
     this.agentOrchestrated = false;
     this.streamingTextId = null;
@@ -808,12 +996,22 @@ export class ShellController {
     }
     this.emit();
 
+    // A user message typed during the turn we just ended — run it now (the agent
+    // is idle, so this starts cleanly with no concurrent turn).
+    if (this.pendingUserPrompt) {
+      const p = this.pendingUserPrompt;
+      this.pendingUserPrompt = null;
+      this.runAgent(p);
+      return;
+    }
+
     // Ping the user if they've tabbed away — "fan out & walk away".
     const where = this.displayName || "OctoShell";
     notify(
       failed ? `🐙 ${where}: ο agent σταμάτησε` : `🐙 ${where}: ο agent τελείωσε`,
       failed && error ? error : "Το turn ολοκληρώθηκε.",
     );
+    playSfx(failed ? "error" : "done");
   }
 
   getBlocks(): Block[] {
