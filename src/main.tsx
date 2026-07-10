@@ -7,14 +7,14 @@ import "./styles.css";
 import { createRoot } from "react-dom/client";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { App } from "./App";
-import { ReviewWindow } from "./review/ReviewWindow";
+import { QaWindow } from "./qa/QaWindow";
 import { ShellController } from "./shell/ShellController";
 
 async function bootstrap() {
-  // The floating review window loads the same bundle; render its UI instead of
+  // The floating QA window loads the same bundle; render its UI instead of
   // the full app (no shell/PTY) when we're in that webview.
-  if (getCurrentWindow().label === "review") {
-    createRoot(document.getElementById("root")!).render(<ReviewWindow />);
+  if (getCurrentWindow().label === "qa") {
+    createRoot(document.getElementById("root")!).render(<QaWindow />);
     return;
   }
 

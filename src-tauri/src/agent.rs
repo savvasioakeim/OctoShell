@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::approval::ApprovalBridge;
 
@@ -62,6 +62,7 @@ impl AgentManager {
         approval: bool,
         approval_port: u16,
         approval_script: Option<String>,
+        approval_token: String,
         config_dir: Option<String>,
     ) -> Result<(), String> {
         // One active turn per session: replace any in-flight run.
@@ -71,6 +72,16 @@ impl AgentManager {
 
         let provider = provider.as_deref().unwrap_or("claude").to_string();
         let resumed = resume.as_deref().map(|r| !r.is_empty()).unwrap_or(false);
+
+        // Sandbox (native claude only): when the global flag is on, run the WHOLE
+        // claude-code CLI inside a Docker container (same hardening + shared login
+        // volume as the ACP whole-adapter path). Approval mode is forced off in
+        // the container — the MCP approval sidecar is a host script talking to a
+        // host-loopback TCP bridge, neither of which exists inside — and the
+        // sandbox itself is the containment story there.
+        let sandbox_enabled = app.state::<crate::docker::SandboxConfig>().enabled();
+        let sandboxed = provider == "claude" && sandbox_enabled && !cwd.is_empty();
+        let approval = approval && !sandboxed;
 
         // Per-provider argument list (the binary is chosen below). Both stream
         // newline-delimited JSON and run tools autonomously (yolo / skip-perms).
@@ -104,7 +115,7 @@ impl AgentManager {
                     "mcpServers": { "octo": {
                         "command": "node",
                         "args": [script],
-                        "env": { "OCTO_PORT": approval_port.to_string(), "OCTO_SESSION": id.clone() }
+                        "env": { "OCTO_PORT": approval_port.to_string(), "OCTO_SESSION": id.clone(), "OCTO_TOKEN": approval_token.clone() }
                     } }
                 })
                 .to_string();
@@ -121,10 +132,19 @@ impl AgentManager {
             if let Some(m) = &model { args.push("--model".into()); args.push(m.clone()); }
         }
 
-        // On Windows, gemini is an npm shim (.cmd/.ps1) → run via cmd.exe;
-        // claude is a real .exe. Elsewhere, invoke the binary directly.
+        // Sandboxed: `docker run … node:22 npx claude-code <args>` — every arg is
+        // its own argv element, so the prompt never goes through a shell. The
+        // worktree is mounted at /app (the container's cwd); the shared volume
+        // carries the one-time sandbox login. On the host: gemini is an npm shim
+        // (.cmd/.ps1) on Windows → cmd.exe; claude is a real .exe.
         #[cfg(windows)]
-        let mut cmd = if provider == "gemini" {
+        let mut cmd = if sandboxed {
+            let mut c = Command::new("docker");
+            c.args(crate::acp::docker_run_prefix(&cwd));
+            c.args(["node:22", "npx", "-y", "@anthropic-ai/claude-code@latest"]);
+            c.args(&args);
+            c
+        } else if provider == "gemini" {
             let mut c = Command::new("cmd");
             c.arg("/c").arg("gemini").args(&args);
             c
@@ -134,7 +154,13 @@ impl AgentManager {
             c
         };
         #[cfg(not(windows))]
-        let mut cmd = {
+        let mut cmd = if sandboxed {
+            let mut c = Command::new("docker");
+            c.args(crate::acp::docker_run_prefix(&cwd));
+            c.args(["node:22", "npx", "-y", "@anthropic-ai/claude-code@latest"]);
+            c.args(&args);
+            c
+        } else {
             let mut c = Command::new(if provider == "gemini" { "gemini" } else { CLAUDE_BIN });
             c.args(&args);
             c
@@ -146,8 +172,10 @@ impl AgentManager {
         // Profile selection (claude): point this agent at the chosen account's
         // config dir. With none, CLEAR the var so we don't inherit whatever account
         // OctoShell's own environment happens to pin (the default home config is
-        // used instead) — the same rule as the orchestrator in ai.rs.
-        match config_dir.as_deref().filter(|s| !s.is_empty()) {
+        // used instead) — the same rule as the orchestrator in ai.rs. A sandboxed
+        // run ignores profiles: config dirs are host paths, and the container's
+        // identity is the shared volume's own login.
+        match config_dir.as_deref().filter(|s| !s.is_empty() && !sandboxed) {
             Some(dir) => {
                 cmd.env("CLAUDE_CONFIG_DIR", dir);
             }
@@ -228,9 +256,34 @@ impl AgentManager {
 
     pub fn cancel(&self, id: &str) -> Result<(), String> {
         if let Some(mut child) = self.runs.lock().unwrap().remove(id) {
+            // `child.kill()` only terminates the agent CLI itself, not its
+            // descendants (the Node MCP sidecar, any Bash the agent spawned).
+            // Those would linger until app exit (the Job Object finally reaps
+            // them). Kill the whole tree now so repeated cancels don't pile up.
+            kill_tree(&child);
             let _ = child.kill();
         }
         Ok(())
+    }
+}
+
+/// Terminate a child process AND its descendants. On Windows the only reliable
+/// tree-kill without extra job plumbing is `taskkill /T`; elsewhere `child.kill`
+/// (called by the caller) is left to handle it.
+fn kill_tree(child: &Child) {
+    #[cfg(windows)]
+    {
+        use std::process::Command;
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let _ = Command::new("taskkill")
+            .args(["/T", "/F", "/PID", &child.id().to_string()])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output();
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = child; // caller's child.kill() handles the single process
     }
 }
 
@@ -250,7 +303,7 @@ pub fn agent_send(
 ) -> Result<(), String> {
     manager.send(
         app, id, prompt, cwd, resume, model, provider,
-        approval.unwrap_or(false), bridge.port(), bridge.script_path(), config_dir,
+        approval.unwrap_or(false), bridge.port(), bridge.script_path(), bridge.token(), config_dir,
     )
 }
 

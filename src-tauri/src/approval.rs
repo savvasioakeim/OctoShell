@@ -34,11 +34,12 @@ const net = require("net");
 const PORT = parseInt(process.env.OCTO_PORT, 10);
 const SESSION = process.env.OCTO_SESSION || "";
 const send = (o) => process.stdout.write(JSON.stringify(o) + "\n");
+const TOKEN = process.env.OCTO_TOKEN || "";
 function ask(args, cb) {
   let done = false;
   const finish = (d) => { if (!done) { done = true; cb(d); } };
   const sock = net.connect(PORT, "127.0.0.1", () => {
-    sock.write(JSON.stringify({ session: SESSION, tool_name: args.tool_name, input: args.input || {}, tool_use_id: args.tool_use_id || "" }) + "\n");
+    sock.write(JSON.stringify({ token: TOKEN, session: SESSION, tool_name: args.tool_name, input: args.input || {}, tool_use_id: args.tool_use_id || "" }) + "\n");
   });
   let buf = "";
   sock.on("data", (d) => {
@@ -75,6 +76,18 @@ process.stdin.on("data", (d) => {
 });
 "#;
 
+/// Length-aware constant-time byte comparison (no early-exit timing leak).
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
 static COUNTER: AtomicU64 = AtomicU64::new(1);
 fn next_id() -> String {
     format!("ap-{}", COUNTER.fetch_add(1, Ordering::Relaxed))
@@ -86,13 +99,75 @@ struct Decision {
     updated_input: Option<Value>,
 }
 
-/// Managed Tauri state: the localhost port, the sidecar path, and the map of
-/// in-flight requests awaiting a UI decision.
-#[derive(Default)]
+/// Managed Tauri state: the localhost port, the sidecar path, and the maps of
+/// in-flight requests awaiting a UI decision. Cheap to clone (all shared state is
+/// Arc-backed) so async callers (acp.rs) can hold an owned handle across awaits.
+#[derive(Default, Clone)]
 pub struct ApprovalBridge {
-    port: Mutex<u16>,
-    script: Mutex<Option<String>>,
+    port: Arc<Mutex<u16>>,
+    script: Arc<Mutex<Option<String>>>,
+    /// Shared secret the sidecar must present on every request. Without it, any
+    /// local process could connect to the localhost listener and pop a spoofed
+    /// approval prompt in the UI. Generated once at startup, passed to the
+    /// sidecar via the OCTO_TOKEN env var.
+    token: Arc<Mutex<String>>,
+    /// Sidecar (Claude MCP) waiters — resolved on a blocking std thread.
     pending: Arc<Mutex<HashMap<String, Sender<Decision>>>>,
+    /// In-process async waiters (ACP permission requests) — resolved via a tokio
+    /// oneshot so acp.rs can `.await` the user's decision directly.
+    async_pending: Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<Decision>>>>,
+}
+
+impl ApprovalBridge {
+    /// Ask the user to approve/deny a tool the ACP agent wants to run. Emits the
+    /// same `approval://request` event the UI already renders, then awaits the
+    /// decision (`approval_respond`). A dropped channel (app closing) means deny.
+    pub async fn request(
+        &self,
+        app: &AppHandle,
+        session: String,
+        tool_name: String,
+        input: Value,
+    ) -> (bool, Option<Value>) {
+        let request_id = next_id();
+        let (tx, rx) = tokio::sync::oneshot::channel::<Decision>();
+        self.async_pending.lock().unwrap().insert(request_id.clone(), tx);
+        let _ = app.emit(
+            "approval://request",
+            ApprovalEvent {
+                id: session,
+                request_id,
+                tool_name,
+                input,
+                tool_use_id: String::new(),
+            },
+        );
+        match rx.await {
+            Ok(d) => (d.allow, d.updated_input),
+            Err(_) => (false, None), // app closed the request
+        }
+    }
+}
+
+/// Generate an unpredictable token for the approval bridge. Uses the OS-seeded
+/// `RandomState` as the entropy source (no extra crate) — enough to stop a local
+/// process from guessing it and spoofing approval prompts.
+fn random_token() -> String {
+    use std::collections::hash_map::RandomState;
+    use std::hash::{BuildHasher, Hasher};
+    let mut out = String::with_capacity(32);
+    for i in 0..2u8 {
+        let mut h = RandomState::new().build_hasher();
+        h.write_u8(i);
+        h.write_u128(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0),
+        );
+        out.push_str(&format!("{:016x}", h.finish()));
+    }
+    out
 }
 
 #[derive(Clone, Serialize)]
@@ -109,6 +184,8 @@ struct ApprovalEvent {
 
 #[derive(Deserialize)]
 struct WireReq {
+    #[serde(default)]
+    token: String,
     session: String,
     tool_name: String,
     #[serde(default)]
@@ -127,6 +204,9 @@ impl ApprovalBridge {
             *self.script.lock().unwrap() = Some(path.to_string_lossy().to_string());
         }
 
+        let token = random_token();
+        *self.token.lock().unwrap() = token.clone();
+
         let listener = match TcpListener::bind("127.0.0.1:0") {
             Ok(l) => l,
             Err(_) => return,
@@ -138,7 +218,8 @@ impl ApprovalBridge {
             for stream in listener.incoming().flatten() {
                 let app = app.clone();
                 let pending = pending.clone();
-                thread::spawn(move || handle_conn(app, pending, stream));
+                let token = token.clone();
+                thread::spawn(move || handle_conn(app, pending, stream, token));
             }
         });
     }
@@ -149,12 +230,16 @@ impl ApprovalBridge {
     pub fn script_path(&self) -> Option<String> {
         self.script.lock().unwrap().clone()
     }
+    pub fn token(&self) -> String {
+        self.token.lock().unwrap().clone()
+    }
 }
 
 fn handle_conn(
     app: AppHandle,
     pending: Arc<Mutex<HashMap<String, Sender<Decision>>>>,
     stream: TcpStream,
+    expected_token: String,
 ) {
     let mut reader = match stream.try_clone() {
         Ok(s) => BufReader::new(s),
@@ -168,6 +253,11 @@ fn handle_conn(
         Ok(r) => r,
         Err(_) => return,
     };
+    // Reject anything that doesn't present our secret — a local process trying to
+    // spoof an approval prompt. Constant-time compare to avoid a timing oracle.
+    if !constant_time_eq(req.token.as_bytes(), expected_token.as_bytes()) {
+        return;
+    }
 
     let request_id = next_id();
     let (tx, rx) = channel::<Decision>();
@@ -212,6 +302,11 @@ pub fn approval_respond(
     message: Option<String>,
     updated_input: Option<Value>,
 ) -> Result<(), String> {
+    // ACP async waiters first (tokio oneshot), then the sidecar std-mpsc waiters.
+    if let Some(tx) = bridge.async_pending.lock().unwrap().remove(&request_id) {
+        let _ = tx.send(Decision { allow, message, updated_input });
+        return Ok(());
+    }
     let tx = bridge.pending.lock().unwrap().remove(&request_id);
     match tx {
         Some(tx) => {

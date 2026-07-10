@@ -4,10 +4,12 @@ import type { Block, CommandBlock, ShellController, ShellSnapshot } from "../she
 import { KEY, loadJSON, saveJSON } from "../util/persist";
 import { Markdown } from "../blocks/Markdown";
 import { parseActions, type OrchestratorAction } from "./actions";
-import { parseReview } from "../review/parseReview";
-import { openReviewWindow } from "../review/reviewHost";
-import type { ReviewItem, ReviewResult } from "../review/reviewTypes";
+import { parseQa } from "../qa/parseQa";
+import { openQaWindow } from "../qa/qaHost";
+import type { QaItem, QaResult } from "../qa/qaTypes";
+import { aggregateReviews, type ReviewSnapshot } from "../review/ReviewAgentController";
 import { serviceStore } from "../services/serviceStore";
+import { supportsProfile } from "../agents/providers";
 import { useSettings } from "../settings/settingsStore";
 import {
   statusOf,
@@ -34,7 +36,7 @@ interface ChatSession {
 /** First real user line → a short title (skips internal live-watch breadcrumbs). */
 function chatTitle(messages: ChatMessage[]): string {
   const first = messages.find((m) => m.role === "user" && !m.content.startsWith("👁"));
-  return first ? first.content.replace(/\s+/g, " ").slice(0, 40) : "Νέα συνομιλία";
+  return first ? first.content.replace(/\s+/g, " ").slice(0, 40) : "New chat";
 }
 
 /** Load chat sessions, migrating the legacy single-chat storage on first run. */
@@ -74,7 +76,7 @@ interface Props {
    *  session (its own controller/agent), or null on failure. Lets the orchestrator
    *  dispatch isolated work into a real, visible per-worktree agent. */
   onCreateWorktree?: (sourceProjectId: string, branch: string) => Promise<ProjectRef | null>;
-  /** Close + git-remove a project/worktree by id (used by review auto-clean). */
+  /** Close + git-remove a project/worktree by id (used by QA auto-clean). */
   onCloseProject?: (id: string) => void;
   /** Width in px (user-resizable). */
   width: number;
@@ -149,6 +151,21 @@ function useAllSnapshots(projects: ProjectRef[]): Map<string, ShellSnapshot> {
   return map;
 }
 
+/** Subscribe to every project's REVIEW-agent store and re-render on any change —
+ *  so the QA-handoff watcher sees verdicts land in real time. */
+function useAllReviews(projects: ProjectRef[]): Map<string, ReviewSnapshot> {
+  const [, force] = useReducer((x) => x + 1, 0);
+  const ids = projects.map((p) => p.id).join(",");
+  useEffect(() => {
+    const unsubs = projects.map((p) => p.controller.review.subscribe(force));
+    return () => unsubs.forEach((u) => u());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ids]);
+  const map = new Map<string, ReviewSnapshot>();
+  for (const p of projects) map.set(p.id, p.controller.review.getSnapshot());
+  return map;
+}
+
 /**
  * Workspace-wide AI assistant. It has live context of EVERY open project — the
  * terminal blocks and the agent's messages/tool-calls — so the user can ask
@@ -157,6 +174,7 @@ function useAllSnapshots(projects: ProjectRef[]): Map<string, ShellSnapshot> {
  */
 export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseProject, width }: Props) {
   const snaps = useAllSnapshots(tabs);
+  const reviews = useAllReviews(tabs);
   // Chat sessions: the active session's content IS the live messages/actionState,
   // so "New chat" clears the view without losing history.
   const [sessions, setSessions] = useState<ChatSession[]>(loadSessions);
@@ -310,7 +328,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
 
   /** Start a fresh conversation (the current one stays saved in the list). */
   const newChat = useCallback(() => {
-    const s: ChatSession = { id: crypto.randomUUID(), title: "Νέα συνομιλία", updatedAt: Date.now(), messages: [], actionState: {} };
+    const s: ChatSession = { id: crypto.randomUUID(), title: "New chat", updatedAt: Date.now(), messages: [], actionState: {} };
     setSessions((prev) => {
       const next = [s, ...prev];
       saveJSON(KEY.assistantSessions, next);
@@ -348,7 +366,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
       setSessions((prev) => {
         let next = prev.filter((s) => s.id !== id);
         if (next.length === 0) {
-          next = [{ id: crypto.randomUUID(), title: "Νέα συνομιλία", updatedAt: Date.now(), messages: [], actionState: {} }];
+          next = [{ id: crypto.randomUUID(), title: "New chat", updatedAt: Date.now(), messages: [], actionState: {} }];
         }
         saveJSON(KEY.assistantSessions, next);
         if (id === chatId) {
@@ -426,7 +444,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
           : ['- WORKTREES ARE DISABLED in settings: do NOT use the "branch" field. Dispatch every task directly to the named project\'s own agent. If two tasks target the same project, run them sequentially (don\'t interrupt a busy agent).']),
         '- "cancel" stops a running agent: {"action":"cancel","project":"<name>"}.',
         "- Prefer dispatching to idle agents; don't interrupt a busy one unless the user asks.",
-        "- NEVER instruct an agent to start a long-running server (`npm run dev`, `next dev`, `vite`, etc.) — a blocking server never returns, so the agent's turn hangs forever. Agents should only build/commit/test-with-exit. Running servers is OctoShell's job: the user (or review mode) starts them as managed services with their own port. If a task needs a live server, say so in prose and let OctoShell run it — don't put it in a dispatch prompt.",
+        "- NEVER instruct an agent to start a long-running server (`npm run dev`, `next dev`, `vite`, etc.) — a blocking server never returns, so the agent's turn hangs forever. Agents should only build/commit/test-with-exit. Running servers is OctoShell's job: the user (or QA mode) starts them as managed services with their own port. If a task needs a live server, say so in prose and let OctoShell run it — don't put it in a dispatch prompt.",
         "- Propose multiple actions (one array, multiple objects) to fan work across projects in parallel.",
         "- Emit the block ONLY when proposing real work. For plain questions, just answer — no block.",
         "- TRUST the agents' reported results in the context. Never dispatch a task whose only purpose is to re-verify or re-confirm something an agent already reported done (e.g. don't ask 'did the PR get created?' if the agent said it created it). Read the context, believe it, and only dispatch a genuinely NEW next step.",
@@ -434,14 +452,19 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
         // --- Output style (your replies render as Markdown) ---
         "- FORMAT plans and multi-task status as a clean Markdown list — never a wall of prose. When you present steps or report progress across several tasks, use a numbered list (for an ordered plan) or bullets (for parallel work), ONE item per step/task. Start each item with a bold label and a status emoji, e.g. `1. **tracking-config-admin** (ridebly-fe) — ✅ done`, `2. **tracking-config-be** — 🔄 in progress`, `3. **client-injection** — ⏳ queued`. Add at most a short half-line of detail after the dash. Use ✅ done · 🔄 in progress · ⏳ pending/queued · ❌ failed.",
         "- Keep the surrounding prose tight: a one-line intro before the list and a one-line next-step after it. Use `**bold**` for project/branch names and short `code` spans for commands, files and ports so they stand out.",
-        "- REVIEW MODE: when the tasks you dispatched are DONE and there's something the user should manually verify, ask in prose if they want to review, and append a separate ```octo-review fenced block — a JSON array, one object per feature: {\"title\":\"…\",\"branch\":\"<worktree branch>\",\"project\":\"<repo>\",\"startCommand\":\"<command that starts its dev server, e.g. npm run dev>\",\"whatToCheck\":\"<what the user should look at / how to test>\"}. OctoShell shows an \"Open Review Mode\" button that walks the user feature-by-feature (approve/decline + notes) and can start each server for them. You learned the ticket and what changed — put the concrete check steps in whatToCheck. Emit this block ONLY when there's real, finished work to review.",
-        "- REVIEW BACKEND: if a feature can't be tested without a backend running (e.g. a frontend feature that calls an API), add a \"backend\" field to that item: {\"backend\":{\"project\":\"<backend repo name>\",\"command\":\"<command that starts the backend, e.g. npm run dev>\"}}. The review window then shows a second \"backend\" start button. OctoShell runs it from the worktree on the SAME branch if one exists, otherwise from the backend repo's base branch — so you only need to name the backend repo and its start command, not a path.",
+        "- QA MODE: when the tasks you dispatched are DONE and there's something the user should manually verify, ask in prose if they want to QA, and append a separate ```octo-qa fenced block — a JSON array, one object per feature: {\"title\":\"…\",\"branch\":\"<worktree branch>\",\"project\":\"<repo>\",\"startCommand\":\"<command that starts its dev server, e.g. npm run dev>\",\"whatToCheck\":\"<what the user should look at / how to test>\"}. OctoShell shows an \"Open QA Mode\" button that walks the user feature-by-feature (approve/decline + notes) and can start each server for them. You learned the ticket and what changed — put the concrete check steps in whatToCheck. Emit this block ONLY when there's real, finished work to QA.",
+        "- QA BACKEND: if a feature can't be tested without a backend running (e.g. a frontend feature that calls an API), add a \"backend\" field to that item: {\"backend\":{\"project\":\"<backend repo name>\",\"command\":\"<command that starts the backend, e.g. npm run dev>\"}}. The QA window then shows a second \"backend\" start button. OctoShell runs it from the worktree on the SAME branch if one exists, otherwise from the backend repo's base branch — so you only need to name the backend repo and its start command, not a path.",
         ...(autoRun
           ? ["- AUTONOMOUS MODE: your actions run automatically (no user click). Don't ask for confirmation — just propose them and they execute."]
           : []),
         ...(liveWatch
           ? [
               "- LIVE WATCH is on: after an agent finishes a turn you'll automatically be pinged to continue. Drive the whole task to completion across turns — each ping, evaluate the latest result and dispatch the NEXT concrete step (e.g. for a PR flow: make the change & open the PR, then on the next turn review/fix, then verify). When everything is truly complete, say so plainly and emit NO actions block — that ends the loop.",
+            ]
+          : []),
+        ...(settings.reviewAgent.enabled
+          ? [
+              "- REVIEW AGENT is enabled: after a coding agent finishes a dispatched task, OctoShell automatically runs an independent review agent over its diff BEFORE any QA. Therefore do NOT emit an ```octo-qa block on your own initiative. When every review has passed with no blocking issues, OctoShell pings you with `👁 (review agents)` — ONLY then offer QA. If a review finds a blocking problem, the user resolves it with the review agent first; just keep driving the plan and don't offer QA.",
             ]
           : []),
       ].join("\n"),
@@ -471,9 +494,14 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
         const reply = await client.chat(next, buildSystem(), {
           provider: aiProvider,
           model: aiModel,
-          // A profile (CLAUDE_CONFIG_DIR) only applies to the claude CLI.
-          configDir: aiProvider === "claude" ? activeProfile?.configDir ?? null : null,
+          // A profile (config/account dir) applies to any provider that has one
+          // (Claude native + Claude/Codex/Cursor/Copilot/OpenCode via ACP).
+          configDir: supportsProfile(aiProvider) ? activeProfile?.configDir ?? null : null,
           requestId: reqId,
+          // Local orchestrator (acp-ollama): talk straight to Ollama's HTTP API.
+          baseUrl: aiProvider === "acp-ollama" ? settings.ollama.baseUrl : null,
+          numCtx: aiProvider === "acp-ollama" ? settings.ollama.contextWindow : null,
+          temperature: aiProvider === "acp-ollama" ? settings.ollama.temperature : null,
         });
         if (cancelledReqRef.current.has(reqId)) return; // user pressed Stop
         setMessages([...next, { role: "assistant", content: reply }]);
@@ -596,10 +624,10 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
     setActionState((s) => ({ ...s, [key]: "dismissed" }));
   }, []);
 
-  /** Resolve the open worktree/project a review item refers to (by branch, then
+  /** Resolve the open worktree/project a QA item refers to (by branch, then
    *  project name). Worktree tabs are named after the sanitized branch. */
   const resolveByBranch = useCallback(
-    (item: ReviewItem): ProjectRef | undefined => {
+    (item: QaItem): ProjectRef | undefined => {
       const cands = [item.branch, item.project].filter(Boolean).map((s) => s!.toLowerCase().trim());
       for (const c of cands) {
         const exact = tabs.find((p) => p.name.toLowerCase().trim() === c);
@@ -617,29 +645,37 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
   /** Reviewer finished: batch the outcomes into fresh dispatches — declines (and
    *  approvals that carry a note) become a fix task on that feature's branch agent;
    *  clean approvals and skips do nothing. Then post a summary to the chat. */
-  const finishReview = useCallback(
-    (results: ReviewResult[], items: ReviewItem[]) => {
+  const finishQa = useCallback(
+    (results: QaResult[], items: QaItem[]) => {
       const byId = new Map(items.map((i) => [i.id, i]));
-      const dispatched: string[] = [];
       const cleaned: string[] = [];
+      const failed: string[] = [];
       const autoClean = settings.workspace.autoClean;
+      // Several QA items usually live on the SAME worktree (one branch, many
+      // tickets). Dispatching them one-by-one only landed the FIRST — the agent
+      // was then busy and every later orchestrated runAgent was refused. So
+      // group all fix prompts per tab and send ONE combined dispatch.
+      const perTab = new Map<string, { tab: ProjectRef; prompts: string[]; titles: string[] }>();
       for (const r of results) {
         const item = byId.get(r.id);
         if (!item) continue;
         const notes = r.notes?.trim();
         let prompt: string | null = null;
         if (r.verdict === "decline") {
-          prompt = `Το feature «${item.title}» ΔΕΝ πέρασε το review.${notes ? ` Πρόβλημα: ${notes}.` : ""} Διόρθωσέ το ολοκληρωμένα. Τι ελεγχόταν: ${item.whatToCheck}`;
+          prompt = `The feature "${item.title}" did NOT pass QA.${notes ? ` Problem: ${notes}.` : ""} Fix it completely. What was being checked: ${item.whatToCheck}`;
         } else if (r.verdict === "approve" && notes) {
-          prompt = `Το feature «${item.title}» πέρασε το review με μια σημείωση: ${notes}. Εφάρμοσε αυτό το tweak και τίποτα άλλο.`;
+          prompt = `The feature "${item.title}" passed QA with one note: ${notes}. Apply that tweak and nothing else.`;
         }
         if (prompt) {
           const tab = resolveByBranch(item);
-          if (!tab) continue;
-          tab.controller.setMode("agent");
-          tab.controller.runAgent(prompt, { orchestrated: true });
-          watchDispatched(tab.id);
-          dispatched.push(item.title);
+          if (!tab) {
+            failed.push(`${item.title} (no worktree found)`);
+            continue;
+          }
+          const g = perTab.get(tab.id) ?? { tab, prompts: [], titles: [] };
+          g.prompts.push(prompt);
+          g.titles.push(item.title);
+          perTab.set(tab.id, g);
           continue;
         }
         // CLEAN approve (no fix follow-up) → optionally auto-remove its worktree.
@@ -651,11 +687,39 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
           }
         }
       }
-      const n = (v: string) => results.filter((r) => r.verdict === v).length;
+      const dispatched: string[] = [];
+      for (const { tab, prompts, titles } of perTab.values()) {
+        const prompt =
+          prompts.length === 1
+            ? prompts[0]
+            : `QA produced ${prompts.length} fixes — do ALL of them:\n\n` +
+              prompts.map((p, i) => `${i + 1}. ${p}`).join("\n\n");
+        tab.controller.setMode("agent");
+        if (tab.controller.runAgent(prompt, { orchestrated: true })) {
+          watchDispatched(tab.id);
+          dispatched.push(...titles);
+        } else {
+          failed.push(...titles.map((t) => `${t} (the agent in "${tab.name}" was busy)`));
+        }
+      }
+      // The summary doubles as the orchestrator's ONLY record of the QA: it
+      // reads the chat history, so verdicts AND the reviewer's notes must be in
+      // it (they used to vanish — the orchestrator never saw the notes).
+      const lines = results
+        .map((r) => {
+          const item = byId.get(r.id);
+          if (!item) return null;
+          const v = r.verdict === "approve" ? "✓ approve" : r.verdict === "decline" ? "✗ decline" : "— no verdict";
+          const notes = r.notes?.trim();
+          return `- **${item.title}** — ${v}${notes ? ` · note: ${notes}` : ""}`;
+        })
+        .filter(Boolean)
+        .join("\n");
       const summary =
-        `🔍 Review ολοκληρώθηκε: ✓ ${n("approve")} approved · ✗ ${n("decline")} declined.` +
-        (dispatched.length ? ` Έστειλα fixes: ${dispatched.join(", ")}.` : "") +
-        (cleaned.length ? ` 🧹 Καθάρισα worktrees: ${cleaned.join(", ")}.` : "");
+        `🔍 _(automated system note — not an orchestrator reply)_ QA finished:\n${lines || "- (no results)"}` +
+        (dispatched.length ? `\n\n🚀 Dispatched fixes: ${dispatched.join(", ")}.` : "") +
+        (failed.length ? `\n\n⚠️ NOT dispatched: ${failed.join(", ")}.` : "") +
+        (cleaned.length ? `\n\n🧹 Cleaned up worktrees: ${cleaned.join(", ")}.` : "");
       setMessages((m) => [...m, { role: "assistant", content: summary }]);
     },
     [resolveByBranch, watchDispatched, settings.workspace.autoClean, onCloseProject],
@@ -665,7 +729,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
    *  worktree on the SAME branch that belongs to the backend repo (matched via its
    *  working dir), else fall back to the backend repo's base project. */
   const resolveBackend = useCallback(
-    (item: ReviewItem): ProjectRef | undefined => {
+    (item: QaItem): ProjectRef | undefined => {
       const be = item.backend?.project?.toLowerCase().trim();
       if (!be) return undefined;
       const branch = item.branch?.toLowerCase().trim();
@@ -685,11 +749,11 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
     [tabs],
   );
 
-  /** Open the floating review window for these items, wiring server-start (both the
+  /** Open the floating QA window for these items, wiring server-start (both the
    *  feature's own server and any backend it needs) and the finish handler. */
-  const startReview = useCallback(
-    (items: ReviewItem[]) => {
-      void openReviewWindow(items, {
+  const startQa = useCallback(
+    (items: QaItem[]) => {
+      void openQaWindow(items, {
         onStartServer: async (item, role) => {
           if (role === "backend") {
             if (!item.backend) return undefined;
@@ -712,10 +776,10 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
           });
           return url;
         },
-        onClosed: (results) => finishReview(results, items),
+        onClosed: (results) => finishQa(results, items),
       });
     },
-    [resolveByBranch, resolveBackend, finishReview],
+    [resolveByBranch, resolveBackend, finishQa],
   );
 
   /** A watched agent finished a turn — ping the assistant to continue the plan. */
@@ -728,7 +792,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
           ...m,
           {
             role: "assistant",
-            content: `⏹️ Σταμάτησα το live watch (όριο ${MAX_AUTO_STEPS} αυτόματων βημάτων). Πες μου «συνέχισε» αν θες κι άλλο.`,
+            content: `⏹️ Stopped live watch (limit of ${MAX_AUTO_STEPS} automatic steps). Say "continue" if you want more.`,
           },
         ]);
         return;
@@ -740,7 +804,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
       // rebuilt system digest below (which never accumulates), so embedding it
       // here would bloat the thread every turn (and overflow the CLI prompt).
       void ask(
-        `👁 (live watch) Ο agent στο «${name}» ολοκλήρωσε ένα turn. Διάβασε την τελευταία του αναφορά στο context των projects, ΕΜΠΙΣΤΕΨΟΥ την, και προχώρα το πλάνο: dispatch ΜΟΝΟ το πραγματικό επόμενο βήμα — ή, αν ολοκληρώθηκαν όλα, απάντησε σύντομα στον χρήστη ΧΩΡΙΣ actions block.`,
+        `👁 (live watch) The agent in "${name}" finished a turn. Read its latest report in the projects context, TRUST it, and advance the plan: dispatch ONLY the real next step — or, if everything is complete, reply briefly to the user WITHOUT an actions block.`,
       );
     },
     [ask, saveWatch],
@@ -805,6 +869,25 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
     }
   });
 
+  // QA handoff (event-driven): when the review agent is enabled and EVERY active
+  // review has finished with no blocking findings, ping the orchestrator ONCE to
+  // offer QA. A blocking finding (or a review still running) holds the gate — the
+  // user resolves it in the project's Review view first. No dep array: it reads the
+  // freshest review snapshots (the review store re-renders us on every change).
+  const reviewReadyRef = useRef(false);
+  useEffect(() => {
+    if (!settings.reviewAgent.enabled) return;
+    const agg = aggregateReviews([...reviews.values()]);
+    if (agg.readyForQa && !reviewReadyRef.current && !thinking) {
+      reviewReadyRef.current = true;
+      void ask(
+        "👁 (review agents) All automated code reviews finished with NO blocking issues. If the dispatched work is complete, tell the user briefly and offer QA — emit an ```octo-qa block for the finished features.",
+      );
+    } else if (!agg.anyActive || agg.pending > 0 || agg.blocking.length > 0) {
+      reviewReadyRef.current = false; // re-arm once reviews are running/gone/blocking
+    }
+  });
+
   // Route every project's per-block "Ask AI" button to this one assistant.
   useEffect(() => {
     for (const p of tabs) {
@@ -812,8 +895,8 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
         onSelect(p.id);
         const q =
           block.status === "error"
-            ? `Στο project "${p.name}" αυτή η εντολή απέτυχε (exit ${block.exitCode}). Τι πήγε στραβά και πώς το διορθώνω;\n\n$ ${block.command}\n${truncate(block.outputText)}`
-            : `Στο project "${p.name}", εξήγησε το output:\n\n$ ${block.command}\n${truncate(block.outputText)}`;
+            ? `In project "${p.name}" this command failed (exit ${block.exitCode}). What went wrong and how do I fix it?\n\n$ ${block.command}\n${truncate(block.outputText)}`
+            : `In project "${p.name}", explain this output:\n\n$ ${block.command}\n${truncate(block.outputText)}`;
         autoStepsRef.current = 0;
         saveWatch();
         void ask(q);
@@ -845,7 +928,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
         ...m,
         {
           role: "assistant",
-          content: `🛑 Έφτασες το όριο κόστους ($${spendLimit?.toFixed(2)} / session, τρέχον $${totalCostUsd.toFixed(2)}). Σταμάτησα orchestrator + agents. Αύξησε ή σβήσε το όριο στις Ρυθμίσεις για να συνεχίσεις.`,
+          content: `🛑 You hit the session cost limit ($${spendLimit?.toFixed(2)} / session, current $${totalCostUsd.toFixed(2)}). Stopped the orchestrator + agents. Raise or remove the limit in Settings to continue.`,
         },
       ]);
     } else if (!overSpend) {
@@ -883,7 +966,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
           <button
             onClick={stopAll}
             disabled={!canStop}
-            title="Σταμάτα τα πάντα — orchestrator + όλους τους agents (όπως Escape)"
+            title="Stop everything — orchestrator + all agents (like Escape)"
             className={`rounded px-1.5 py-0.5 text-[11px] font-semibold ${
               canStop
                 ? "bg-red-500/25 text-red-200 hover:bg-red-500/35"
@@ -894,7 +977,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
           </button>
           <button
             onClick={newChat}
-            title="Νέο chat (το τρέχον μένει αποθηκευμένο)"
+            title="New chat (the current one stays saved)"
             className="rounded px-1.5 py-0.5 text-[11px] text-muted hover:bg-edge hover:text-gray-200"
           >
             ✚ New
@@ -902,7 +985,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
           <div className="relative">
             <button
               onClick={() => setSessionMenu((o) => !o)}
-              title="Συνομιλίες"
+              title="Chats"
               className="rounded px-1.5 py-0.5 text-[11px] text-muted hover:bg-edge hover:text-gray-200"
             >
               💬 {sessions.length}
@@ -916,11 +999,11 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
                       className={`flex-1 truncate px-2 py-1 text-left text-xs ${s.id === chatId ? "text-accent" : "text-gray-200"}`}
                     >
                       {s.id === chatId && "● "}
-                      {s.title || "Νέα συνομιλία"}
+                      {s.title || "New chat"}
                     </button>
                     <button
                       onClick={() => deleteChat(s.id)}
-                      title="Διαγραφή συνομιλίας"
+                      title="Delete chat"
                       className="px-1.5 text-muted hover:text-red-300"
                     >
                       ✕
@@ -932,7 +1015,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
           </div>
           <button
             onClick={() => setAutoRun((v) => !v)}
-            title={autoRun ? "Auto-run: τα actions τρέχουν χωρίς επιβεβαίωση" : "Confirm: κάθε action θέλει κλικ"}
+            title={autoRun ? "Auto-run: actions run without confirmation" : "Confirm: every action needs a click"}
             className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${
               autoRun ? "bg-amber-500/20 text-amber-300" : "text-muted hover:bg-edge/50 hover:text-gray-200"
             }`}
@@ -943,7 +1026,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
             onClick={() => setLiveWatch((v) => !v)}
             title={
               liveWatch
-                ? "Live watch: συνεχίζει μόνος του όταν τελειώνει ένας agent"
+                ? "Live watch: continues on its own when an agent finishes"
                 : "Live watch off"
             }
             className={`flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium ${
@@ -956,7 +1039,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
             👁{" "}
             {liveWatch
               ? watchingNow > 0
-                ? `${watchingNow} δουλεύει${watchStep > 0 ? ` · #${watchStep}` : ""}`
+                ? `${watchingNow} working${watchStep > 0 ? ` · #${watchStep}` : ""}`
                 : "Watch"
               : "Watch"}
           </button>
@@ -988,7 +1071,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
         </div>
         <div className="space-y-0.5 overflow-y-auto pr-0.5" style={{ height: agentsPanelH }}>
           {visibleAgents.length === 0 && (
-            <div className="px-1.5 py-2 text-[11px] text-muted">Κανένας agent εδώ.</div>
+            <div className="px-1.5 py-2 text-[11px] text-muted">No agents here.</div>
           )}
           {visibleAgents.map(({ p, status }) => {
             const running = status === "active";
@@ -1007,7 +1090,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
                   {p.name}
                 </button>
                 {watchedRef.current.has(p.id) && (
-                  <span title="Υπό παρακολούθηση (live watch)" className="text-[10px] text-emerald-300/80">
+                  <span title="Being watched (live watch)" className="text-[10px] text-emerald-300/80">
                     👁
                   </span>
                 )}
@@ -1042,7 +1125,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
             window.addEventListener("mousemove", onMove);
             window.addEventListener("mouseup", onUp);
           }}
-          title="Σύρε για αλλαγή ύψους"
+          title="Drag to resize"
           className="group -mx-2 mt-0.5 flex h-3 cursor-row-resize items-center justify-center"
         >
           <span className="h-0.5 w-8 rounded-full bg-edge group-hover:bg-accent/60" />
@@ -1054,7 +1137,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
       <div ref={logRef} className="flex-1 space-y-3 overflow-y-auto px-2.5 py-2.5 text-sm">
         {messages.length === 0 && (
           <div className="text-muted">
-            Ρώτησέ με για οποιοδήποτε project — βλέπω τι τρέχει σε terminals και agents παντού.
+            Ask me about any project — I can see what's running in every terminal and agent.
           </div>
         )}
         {messages.map((m, i) => {
@@ -1074,19 +1157,19 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
             );
           }
           const parsed = parseActions(m.content);
-          const review = parseReview(parsed.clean);
-          const clean = review.clean;
+          const qa = parseQa(parsed.clean);
+          const clean = qa.clean;
           const actions = parsed.actions;
           const pending = actions.filter((_, j) => !actionState[`${i}:${j}`]);
           return (
             <div key={i} className="px-0.5 leading-relaxed">
               {clean && <Markdown text={clean} />}
-              {review.items.length > 0 && (
+              {qa.items.length > 0 && (
                 <button
-                  onClick={() => startReview(review.items)}
+                  onClick={() => startQa(qa.items)}
                   className="mt-2 w-full rounded bg-emerald-500/20 px-2 py-1.5 text-xs font-medium text-emerald-200 hover:bg-emerald-500/30"
                 >
-                  🔍 Open Review Mode ({review.items.length} feature{review.items.length > 1 ? "s" : ""})
+                  🔍 Open QA Mode ({qa.items.length} feature{qa.items.length > 1 ? "s" : ""})
                 </button>
               )}
               {actions.length > 0 && (
@@ -1144,7 +1227,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
                 if (v) { autoStepsRef.current = 0; saveWatch(); void ask(v); setInput(""); }
               }
             }}
-            placeholder="Ρώτησε για όλα τα projects…"
+            placeholder="Ask about all your projects…"
             className="max-h-[220px] flex-1 resize-none overflow-y-auto bg-transparent text-sm leading-relaxed text-gray-100 caret-accent outline-none placeholder:text-muted/50"
           />
         </div>
@@ -1163,9 +1246,9 @@ function WatchTick({ content }: { content: string }) {
       <button
         onClick={() => setOpen((o) => !o)}
         className="text-[10px] text-muted/60 hover:text-muted"
-        title="Εσωτερικό βήμα live watch — κλικ για λεπτομέρειες"
+        title="Internal live-watch step — click for details"
       >
-        👁 live watch · συνέχεια {open ? "▾" : "▸"}
+        👁 live watch · continuation {open ? "▾" : "▸"}
       </button>
       {open && (
         <div className="mt-1 whitespace-pre-wrap break-words rounded bg-well/40 px-2 py-1 text-[10px] text-muted/70">
@@ -1194,7 +1277,7 @@ function ActionCard({
   if (state === "done") {
     return (
       <div className="rounded border border-emerald-500/30 bg-emerald-500/10 px-2 py-1.5 text-xs text-emerald-300">
-        ✓ {isDispatch ? "Έστειλα task στο" : "Σταμάτησα τον agent στο"} <b>{action.project}</b>
+        ✓ {isDispatch ? "Sent a task to" : "Stopped the agent in"} <b>{action.project}</b>
       </div>
     );
   }
@@ -1208,7 +1291,7 @@ function ActionCard({
   if (state === "error") {
     return (
       <div className="rounded border border-red-500/30 bg-red-500/10 px-2 py-1.5 text-xs text-red-300">
-        ⚠️ Δεν βρέθηκε project «{action.project}»
+        ⚠️ No project found: "{action.project}"
       </div>
     );
   }
@@ -1217,7 +1300,7 @@ function ActionCard({
       <div className="flex items-center gap-1.5 text-xs font-semibold text-accent">
         <span>{isDispatch ? "🚀" : "🛑"}</span>
         <span>
-          {isDispatch ? "Στείλε task στο" : "Σταμάτα τον agent στο"} {action.project}
+          {isDispatch ? "Send task to" : "Stop the agent in"} {action.project}
         </span>
       </div>
       {isDispatch && (

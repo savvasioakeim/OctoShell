@@ -95,7 +95,7 @@ export function Feed({ blocks, controller, altScreen, interacting }: Props) {
         <div ref={contentRef} className="space-y-3">
           {blocks.length === 0 && (
             <div className="select-none p-6 text-center text-sm text-muted">
-              🐙 OctoShell — γράψε μια εντολή παρακάτω για να ξεκινήσεις.
+              🐙 OctoShell — type a command below to get started.
             </div>
           )}
           {blocks.map((b) => {
@@ -135,7 +135,7 @@ export function Feed({ blocks, controller, altScreen, interacting }: Props) {
       {!atBottom && (
         <button
           onClick={() => scrollToBottom("smooth")}
-          title="Μετάβαση στο κάτω μέρος"
+          title="Jump to bottom"
           className="absolute bottom-3 right-4 z-10 flex items-center gap-1.5 rounded-full border border-edge bg-panel/90 px-3 py-1.5 text-xs text-muted shadow-lg backdrop-blur hover:bg-accent/30 hover:text-white"
         >
           {newCount > 0 && (
@@ -143,7 +143,7 @@ export function Feed({ blocks, controller, altScreen, interacting }: Props) {
               {newCount}
             </span>
           )}
-          <span>↓ {newCount > 0 ? "νέα" : "Κάτω"}</span>
+          <span>↓ {newCount > 0 ? "new" : "Bottom"}</span>
         </button>
       )}
     </div>

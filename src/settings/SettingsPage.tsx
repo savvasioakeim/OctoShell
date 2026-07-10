@@ -1,22 +1,26 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import {
-  CLAUDE_MODELS,
   modelsFor,
   settingsStore,
   useSettings,
   type AutoCleanMode,
   type DefaultShell,
+  type OllamaSettings,
   type Profile,
   type SttEngine,
   type TraceSpeed,
 } from "./settingsStore";
-import { PROVIDERS, type AgentProvider } from "../agents/providers";
+import { PROVIDERS, supportsProfile, type AgentProvider } from "../agents/providers";
+import { useOllamaModels, ollamaModelOptions, refreshOllamaModels } from "../agents/ollamaModels";
 import { vacuumDb, type VacuumResult } from "../util/db";
 
-type TabId = "ai" | "workspace" | "appearance" | "system";
+type TabId = "ai" | "local" | "workspace" | "appearance" | "system";
 const TABS: { id: TabId; label: string }[] = [
   { id: "ai", label: "👤 Profiles & AI" },
+  { id: "local", label: "🦙 Local LLM" },
   { id: "workspace", label: "🌿 Workspace & Git" },
   { id: "appearance", label: "🎨 Appearance" },
   { id: "system", label: "🗄️ System & Database" },
@@ -37,7 +41,7 @@ const FONTS: { label: string; value: string }[] = [
  * defaults & profiles, the Git/worktree automation, the look & feel, and storage
  * maintenance. Everything reads/writes the shared {@link settingsStore}.
  */
-export function SettingsPage({ onClose }: { onClose: () => void }) {
+export function SettingsPage({ onClose, onSandboxLogin, onShowOnboarding }: { onClose: () => void; onSandboxLogin: () => void; onShowOnboarding: () => void }) {
   const [tab, setTab] = useState<TabId>("ai");
 
   return (
@@ -48,7 +52,7 @@ export function SettingsPage({ onClose }: { onClose: () => void }) {
           onClick={onClose}
           className="rounded-md px-3 py-1 text-sm text-muted transition-colors hover:bg-edge hover:text-gray-200"
         >
-          ✕ Κλείσιμο
+          ✕ Close
         </button>
       </div>
 
@@ -74,9 +78,10 @@ export function SettingsPage({ onClose }: { onClose: () => void }) {
         <div className="flex-1 overflow-y-auto rounded-xl border border-edge bg-panel p-4">
           <div className="mx-auto max-w-2xl space-y-3">
             {tab === "ai" && <AiTab />}
+            {tab === "local" && <LocalLlmTab />}
             {tab === "workspace" && <WorkspaceTab />}
             {tab === "appearance" && <AppearanceTab />}
-            {tab === "system" && <SystemTab />}
+            {tab === "system" && <SystemTab onSandboxLogin={onSandboxLogin} onShowOnboarding={onShowOnboarding} />}
           </div>
         </div>
       </div>
@@ -88,10 +93,10 @@ export function SettingsPage({ onClose }: { onClose: () => void }) {
 // Tab 1 — Profiles & AI
 // ---------------------------------------------------------------------------
 function AiTab() {
-  const { profiles, agent, orchestrator, globalRules, spendLimitUsd } = useSettings();
+  const { profiles, agent, orchestrator, globalRules, spendLimitUsd, reviewAgent } = useSettings();
 
   const addProfile = async () => {
-    const dir = await open({ directory: true, title: "Διάλεξε φάκελο profile (CLAUDE_CONFIG_DIR)" });
+    const dir = await open({ directory: true, title: "Pick a profile folder (CLAUDE_CONFIG_DIR)" });
     if (typeof dir !== "string") return;
     const name = dir.split(/[\\/]/).filter(Boolean).pop() || "profile";
     settingsStore.addProfile(name, dir);
@@ -99,10 +104,10 @@ function AiTab() {
 
   return (
     <>
-      <Section title="Claude Code Profiles" desc="Λογαριασμοί (CLAUDE_CONFIG_DIR) — κοινοί για agents και orchestrator.">
+      <Section title="Claude Code Profiles" desc="Accounts (CLAUDE_CONFIG_DIR) — shared by agents and the orchestrator.">
         <div className="space-y-1.5">
           {profiles.length === 0 && (
-            <p className="text-xs text-muted">Κανένα profile ακόμα — πρόσθεσε τον φάκελο ενός λογαριασμού.</p>
+            <p className="text-xs text-muted">No profiles yet — add an account's folder.</p>
           )}
           {profiles.map((p) => (
             <div key={p.id} className="flex items-center gap-2 rounded border border-edge px-2 py-1.5 text-sm">
@@ -110,7 +115,7 @@ function AiTab() {
               <span className="flex-1 truncate text-xs text-muted">{p.configDir}</span>
               <button
                 onClick={() => settingsStore.removeProfile(p.id)}
-                title="Διαγραφή"
+                title="Delete"
                 className="text-muted hover:text-red-300"
               >
                 ✕
@@ -121,34 +126,44 @@ function AiTab() {
             onClick={() => void addProfile()}
             className="rounded bg-accent/20 px-3 py-1.5 text-sm text-accent hover:bg-accent/30"
           >
-            + Πρόσθεσε profile…
+            + Add profile…
           </button>
         </div>
       </Section>
 
-      <Section title="Agents — default" desc="Με τι ξεκινούν οι νέοι agents (ισχύει για νέα sessions).">
+      <Section title="Agents — default" desc="What new agents start with (applies to new sessions).">
         <div className="grid grid-cols-3 gap-3">
           <Field label="Provider">
             <Select
               value={agent.provider}
-              onChange={(v) => settingsStore.setAgentDefaults({ provider: v as AgentProvider })}
+              // Reset the model on a provider switch: a claude alias ("opus") is
+              // meaningless to gemini/ollama and vice-versa (mirrors the orchestrator).
+              onChange={(v) => settingsStore.setAgentDefaults({ provider: v as AgentProvider, model: null })}
               options={PROVIDERS.map((p) => ({ label: p.label, value: p.value }))}
             />
           </Field>
           <Field label="Model">
-            <ModelSelect value={agent.model} onChange={(v) => settingsStore.setAgentDefaults({ model: v })} />
+            <ModelSelect
+              provider={agent.provider}
+              value={agent.model}
+              onChange={(v) => settingsStore.setAgentDefaults({ model: v })}
+            />
           </Field>
           <Field label="Profile">
-            <ProfileSelect
-              profiles={profiles}
-              value={agent.profileId}
-              onChange={(v) => settingsStore.setAgentDefaults({ profileId: v })}
-            />
+            {supportsProfile(agent.provider) ? (
+              <ProfileSelect
+                profiles={profiles}
+                value={agent.profileId}
+                onChange={(v) => settingsStore.setAgentDefaults({ profileId: v })}
+              />
+            ) : (
+              <p className="px-1 pt-1.5 text-xs text-muted">No account/profile for this provider.</p>
+            )}
           </Field>
         </div>
       </Section>
 
-      <Section title="Orchestrator — default" desc="Με τι τρέχει ο Workspace Assistant.">
+      <Section title="Orchestrator — default" desc="What the Workspace Assistant runs with.">
         <div className="grid grid-cols-3 gap-3">
           <Field label="Provider">
             <Select
@@ -158,6 +173,10 @@ function AiTab() {
                 // and vice-versa, so fall back to each provider's "Default".
                 settingsStore.setOrchestratorDefaults({ provider: v as AgentProvider, model: null })
               }
+              // Every provider can back the orchestrator: claude/gemini via their
+              // CLIs, acp-ollama via Ollama's HTTP chat, and the other ACP adapters
+              // via a one-shot ACP turn (acp_oneshot). The orchestrator only needs
+              // text back, so no tools/streaming are required.
               options={PROVIDERS.map((p) => ({ label: p.label, value: p.value }))}
             />
           </Field>
@@ -168,7 +187,7 @@ function AiTab() {
               onChange={(v) => settingsStore.setOrchestratorDefaults({ model: v })}
             />
           </Field>
-          {orchestrator.provider === "claude" ? (
+          {supportsProfile(orchestrator.provider) ? (
             <Field label="Profile">
               <ProfileSelect
                 profiles={profiles}
@@ -179,7 +198,7 @@ function AiTab() {
           ) : (
             <Field label="Profile">
               <p className="px-1 pt-1.5 text-xs text-muted">
-                Τα profiles ισχύουν μόνο στο Claude.
+                No account/profile for this provider.
               </p>
             </Field>
           )}
@@ -187,26 +206,56 @@ function AiTab() {
       </Section>
 
       <Section
+        title="Review agent"
+        desc="An automated agent that reviews each coding agent's diff (with the orchestrator's task context) BEFORE it's offered for QA. Findings appear in the project's Review view; the orchestrator only offers QA once all reviews pass."
+      >
+        <ToggleRow
+          label="Use a review agent"
+          desc="When on, each dispatched coding agent's work is auto-reviewed before QA. Off = straight to QA as before."
+          checked={reviewAgent.enabled}
+          onChange={(v) => settingsStore.setReviewAgent({ enabled: v })}
+        />
+        {reviewAgent.enabled && (
+          <div className="mt-3 grid grid-cols-2 gap-3">
+            <Field label="Provider">
+              <Select
+                value={reviewAgent.provider}
+                onChange={(v) => settingsStore.setReviewAgent({ provider: v as AgentProvider, model: null })}
+                options={PROVIDERS.map((p) => ({ label: p.label, value: p.value }))}
+              />
+            </Field>
+            <Field label="Model">
+              <ModelSelect
+                provider={reviewAgent.provider}
+                value={reviewAgent.model}
+                onChange={(v) => settingsStore.setReviewAgent({ model: v })}
+              />
+            </Field>
+          </div>
+        )}
+      </Section>
+
+      <Section
         title="Global rules (system prompt)"
-        desc="Κανόνες που προστίθενται στις οδηγίες ΚΑΘΕ agent και του orchestrator — π.χ. «Γράφε μόνο TypeScript με strict types»."
+        desc="Rules appended to EVERY agent’s and the orchestrator’s instructions — e.g. “Write only TypeScript with strict types”."
       >
         <textarea
           value={globalRules}
           onChange={(e) => settingsStore.setGlobalRules(e.target.value)}
-          placeholder={"- Ακολούθησε τα linting rules του project\n- Μην προσθέτεις dependencies χωρίς λόγο"}
+          placeholder={"- Follow the project's linting rules\n- Don't add dependencies without a reason"}
           className="min-h-[120px] w-full resize-y rounded border border-edge bg-well px-2 py-1.5 text-sm leading-relaxed text-gray-100 outline-none focus:border-accent"
         />
       </Section>
 
       <Section
         title="Token spend limit (safety brake)"
-        desc="Όριο κόστους ($) ανά session. Όταν ξεπεραστεί, το OctoShell σταματά orchestrator + agents. Ισχύει μόνο σε λογαριασμό με χρέωση per-token (API key)· σε subscription το κόστος δεν αναφέρεται."
+        desc="Cost limit ($) per session. When exceeded, OctoShell stops the orchestrator + agents. Only applies with per-token billing (API key); on a subscription no cost is reported."
       >
         <div className="flex items-center gap-3">
           <Toggle
             checked={spendLimitUsd != null}
             onChange={(on) => settingsStore.setSpendLimit(on ? 5 : null)}
-            label={spendLimitUsd != null ? "Ενεργό" : "Ανενεργό"}
+            label={spendLimitUsd != null ? "Enabled" : "Disabled"}
           />
           {spendLimitUsd != null && (
             <div className="flex items-center gap-1">
@@ -229,7 +278,626 @@ function AiTab() {
 }
 
 // ---------------------------------------------------------------------------
-// Tab 2 — Workspace & Git
+// Tab 2 — Local LLM (Ollama)
+// ---------------------------------------------------------------------------
+type Conn =
+  | { state: "idle" }
+  | { state: "testing" }
+  | { state: "ok"; version: string }
+  | { state: "err"; msg: string };
+
+/** Connection · downloader · agent-assignment · advanced knobs for local models. */
+function LocalLlmTab() {
+  const { ollama, orchestrator, agent, reviewAgent } = useSettings();
+  const [conn, setConn] = useState<Conn>({ state: "idle" });
+  const [models, setModels] = useState<string[]>([]);
+  const [pullTag, setPullTag] = useState("");
+  const [browse, setBrowse] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [pull, setPull] = useState<{ active: boolean; pct: number; status: string }>({
+    active: false,
+    pct: -1,
+    status: "",
+  });
+
+  const refreshModels = async (baseUrl: string) => {
+    try {
+      setModels(await invoke<string[]>("ollama_tags", { baseUrl }));
+    } catch {
+      setModels([]);
+    }
+  };
+
+  const test = async () => {
+    setConn({ state: "testing" });
+    try {
+      const version = await invoke<string>("ollama_version", { baseUrl: ollama.baseUrl });
+      setConn({ state: "ok", version });
+      void refreshModels(ollama.baseUrl);
+    } catch (e) {
+      setConn({ state: "err", msg: String(e) });
+      setModels([]);
+    }
+  };
+
+  // Auto-probe on first open. (baseUrl-only dep so re-testing on every keystroke is
+  // avoided; the explicit Test button covers manual edits.)
+  useEffect(() => {
+    void test();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Live pull-progress from the backend's `ollama://pull` NDJSON stream.
+  useEffect(() => {
+    const un = listen<{ model: string; status: string; percent: number }>("ollama://pull", (e) => {
+      setPull((p) => (p.active ? { active: true, pct: e.payload.percent, status: e.payload.status } : p));
+    });
+    return () => {
+      void un.then((f) => f());
+    };
+  }, []);
+
+  const runPull = async (raw: string) => {
+    const tag = raw.trim();
+    if (!tag || pull.active) return;
+    setBrowse(false);
+    setPull({ active: true, pct: -1, status: `starting ${tag}…` });
+    try {
+      await invoke("ollama_pull", { baseUrl: ollama.baseUrl, model: tag });
+      setPull({ active: false, pct: 100, status: `✓ pulled ${tag}` });
+      setPullTag("");
+      void refreshModels(ollama.baseUrl);
+      void refreshOllamaModels(); // keep the shared list (InputBar, selects) in sync
+    } catch (e) {
+      setPull({ active: false, pct: -1, status: `✕ ${String(e)}` });
+    }
+  };
+
+  const deleteModel = async (tag: string) => {
+    setConfirmDelete(null);
+    try {
+      await invoke("ollama_delete", { baseUrl: ollama.baseUrl, model: tag });
+      setPull({ active: false, pct: -1, status: `🗑 deleted ${tag}` });
+      void refreshModels(ollama.baseUrl);
+      void refreshOllamaModels();
+    } catch (e) {
+      setPull({ active: false, pct: -1, status: `✕ ${String(e)}` });
+    }
+  };
+
+  // In the Local picker each persona must resolve to a concrete downloaded model
+  // (a vague "OpenCode default" wouldn't tell you which model — or even that it's
+  // local). So the options are exactly the installed models.
+  const localOptions = models.map((m) => ({ label: m, value: `ollama/${m}` }));
+  const firstLocal = models.length ? `ollama/${models[0]}` : null;
+
+  return (
+    <>
+      <Section
+        title="Ollama connection"
+        desc="OctoShell drives local models through Ollama (via OpenCode's ACP server) — zero token cost. Point this at your running daemon."
+      >
+        <div className="flex flex-wrap items-end gap-3">
+          <Field label="Ollama base URL">
+            <input
+              value={ollama.baseUrl}
+              onChange={(e) => settingsStore.setOllama({ baseUrl: e.target.value })}
+              placeholder="http://localhost:11434"
+              className="w-64 rounded-lg border border-edge bg-well px-2.5 py-1.5 text-sm text-gray-100 outline-none focus:border-accent"
+            />
+          </Field>
+          <button
+            onClick={() => void test()}
+            disabled={conn.state === "testing"}
+            className="rounded-lg bg-accent/20 px-3 py-1.5 text-sm text-accent hover:bg-accent/30 disabled:opacity-60"
+          >
+            {conn.state === "testing" ? "Testing…" : "Test connection"}
+          </button>
+          <ConnBadge conn={conn} />
+        </div>
+      </Section>
+
+      <Section
+        title="Local models"
+        desc="Models already pulled to this machine, plus a downloader to grab any tag from the Ollama library directly from here."
+      >
+        <div className="mb-3">
+          <div className="mb-1.5 text-[11px] uppercase tracking-wider text-muted">Installed</div>
+          {conn.state !== "ok" ? (
+            <p className="text-xs text-muted">Connect to Ollama to list local models.</p>
+          ) : models.length === 0 ? (
+            <p className="text-xs text-muted">No models pulled yet — download one below.</p>
+          ) : (
+            <div className="flex flex-wrap gap-1.5">
+              {models.map((m) => (
+                <span
+                  key={m}
+                  className="group flex items-center gap-1.5 rounded-full border border-edge bg-well py-1 pl-2.5 pr-1.5 font-mono text-[11px] text-gray-300"
+                >
+                  {m}
+                  <button
+                    onClick={() => setConfirmDelete(m)}
+                    disabled={pull.active}
+                    title={`Delete ${m}`}
+                    className="rounded-full px-1 text-muted transition-colors hover:bg-red-500/20 hover:text-red-300 disabled:opacity-40"
+                  >
+                    ✕
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="flex flex-wrap items-end gap-2">
+          <Field label="Pull a model tag">
+            <input
+              value={pullTag}
+              onChange={(e) => setPullTag(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && void runPull(pullTag)}
+              placeholder="qwen2.5-coder:7b"
+              className="w-64 rounded-lg border border-edge bg-well px-2.5 py-1.5 font-mono text-sm text-gray-100 outline-none focus:border-accent"
+            />
+          </Field>
+          <button
+            onClick={() => void runPull(pullTag)}
+            disabled={pull.active || !pullTag.trim()}
+            className="rounded-lg bg-amber-500/20 px-3 py-1.5 text-sm text-amber-300 hover:bg-amber-500/30 disabled:opacity-60"
+          >
+            {pull.active ? "Pulling…" : "⬇ Pull model"}
+          </button>
+          <button
+            onClick={() => setBrowse(true)}
+            disabled={pull.active}
+            className="rounded-lg border border-edge px-3 py-1.5 text-sm text-gray-200 hover:bg-edge disabled:opacity-60"
+          >
+            📚 Browse models
+          </button>
+        </div>
+
+        {(pull.active || pull.status) && (
+          <div className="mt-3">
+            <div className="mb-1 flex items-center justify-between text-[11px] text-muted">
+              <span className="truncate">{pull.status || "Pulling…"}</span>
+              {pull.pct >= 0 && <span className="tabular-nums text-amber-300">{pull.pct}%</span>}
+            </div>
+            <div className="h-1.5 w-full overflow-hidden rounded-full bg-well">
+              <div
+                className={`h-full rounded-full bg-amber-400 transition-all ${
+                  pull.active && pull.pct < 0 ? "w-1/3 animate-pulse" : ""
+                }`}
+                style={pull.pct >= 0 ? { width: `${pull.pct}%` } : undefined}
+              />
+            </div>
+          </div>
+        )}
+      </Section>
+
+      <Section
+        title="Agent assignment"
+        desc="Route each agent persona to the cloud or a local model. “Local” switches that surface to the Ollama (ACP) provider; pick which downloaded model powers it."
+      >
+        <div className="space-y-2">
+          <AssignRow
+            label="Orchestrator"
+            provider={orchestrator.provider}
+            model={orchestrator.model}
+            localOptions={localOptions}
+            onCloud={() => settingsStore.setOrchestratorDefaults({ provider: "claude", model: null })}
+            onLocal={() => settingsStore.setOrchestratorDefaults({ provider: "acp-ollama", model: firstLocal })}
+            onModel={(v) => settingsStore.setOrchestratorDefaults({ model: v })}
+          />
+          <AssignRow
+            label="Coding agents"
+            provider={agent.provider}
+            model={agent.model}
+            localOptions={localOptions}
+            onCloud={() => settingsStore.setAgentDefaults({ provider: "claude", model: null })}
+            onLocal={() => settingsStore.setAgentDefaults({ provider: "acp-ollama", model: firstLocal })}
+            onModel={(v) => settingsStore.setAgentDefaults({ model: v })}
+          />
+          <AssignRow
+            label="Reviewer agent"
+            provider={reviewAgent.provider}
+            model={reviewAgent.model}
+            localOptions={localOptions}
+            onCloud={() => settingsStore.setReviewAgent({ provider: "claude", model: null })}
+            onLocal={() => settingsStore.setReviewAgent({ provider: "acp-ollama", model: firstLocal })}
+            onModel={(v) => settingsStore.setReviewAgent({ model: v })}
+          />
+          <p className="rounded-lg border border-edge bg-well px-3 py-2 text-xs leading-relaxed text-muted">
+            💡 Pro-tip: assign a pedantic local model (e.g. <span className="font-mono text-gray-300">qwen2.5-coder:14b</span>)
+            exclusively to the Reviewer agent to scan for regressions offline at zero token cost. Small models
+            (&lt;7B) often lack reliable tool-calling — prefer Qwen2.5-Coder ≥7B for agentic work.
+          </p>
+        </div>
+      </Section>
+
+      <AdvancedLocal ollama={ollama} />
+
+      {browse && (
+        <ModelCatalog
+          installed={models}
+          onPull={(tag) => void runPull(tag)}
+          onDelete={(tag) => setConfirmDelete(tag)}
+          onClose={() => setBrowse(false)}
+        />
+      )}
+
+      {confirmDelete && (
+        <ConfirmDialog
+          title="Delete local model?"
+          message={
+            <>
+              This permanently removes <span className="font-mono text-gray-200">{confirmDelete}</span> from
+              this machine and frees its disk space. You can pull it again later, but that re-downloads it.
+            </>
+          }
+          confirmLabel="Delete"
+          danger
+          onConfirm={() => void deleteModel(confirmDelete)}
+          onCancel={() => setConfirmDelete(null)}
+        />
+      )}
+    </>
+  );
+}
+
+/** A themed yes/no confirmation modal (replaces the native confirm()). */
+function ConfirmDialog({
+  title,
+  message,
+  confirmLabel,
+  danger,
+  onConfirm,
+  onCancel,
+}: {
+  title: string;
+  message: React.ReactNode;
+  confirmLabel: string;
+  danger?: boolean;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4" onClick={onCancel}>
+      <div
+        className="w-full max-w-sm rounded-xl border border-edge bg-panel p-5 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h3 className="text-sm font-semibold text-gray-100">{title}</h3>
+        <p className="mt-2 text-xs leading-relaxed text-muted">{message}</p>
+        <div className="mt-4 flex justify-end gap-2">
+          <button
+            onClick={onCancel}
+            className="rounded-lg border border-edge px-3 py-1.5 text-sm text-gray-200 transition-colors hover:bg-edge"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            className={`rounded-lg px-3 py-1.5 text-sm transition-colors ${
+              danger
+                ? "bg-red-500/20 text-red-300 hover:bg-red-500/30"
+                : "bg-accent/20 text-accent hover:bg-accent/30"
+            }`}
+          >
+            {confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** A curated catalog of popular Ollama models for the Browse modal. Ollama has no
+ *  official "list the whole library" API, so this is a hand-picked shortlist
+ *  (coding-first) — the free-text Pull box still handles any other tag. */
+const MODEL_CATALOG: { tag: string; desc: string; size: string; tools: boolean }[] = [
+  { tag: "qwen2.5-coder:7b", desc: "Strong agentic coder — best all-round local pick", size: "4.7 GB", tools: true },
+  { tag: "qwen2.5-coder:14b", desc: "Sharper reasoning; great for the reviewer", size: "9.0 GB", tools: true },
+  { tag: "qwen2.5-coder:32b", desc: "Top local coding quality (needs a big GPU)", size: "20 GB", tools: true },
+  { tag: "qwen2.5-coder:3b", desc: "Light coder for modest machines", size: "1.9 GB", tools: true },
+  { tag: "deepseek-coder-v2:16b", desc: "MoE coder, fast for its quality", size: "8.9 GB", tools: true },
+  { tag: "llama3.1:8b", desc: "General-purpose, reliable tool-calling", size: "4.7 GB", tools: true },
+  { tag: "mistral:7b", desc: "Fast general model with tool support", size: "4.1 GB", tools: true },
+  { tag: "gemma3:12b", desc: "Google Gemma 3 — capable general model", size: "8.1 GB", tools: false },
+  { tag: "gemma3:4b", desc: "Small Gemma 3 — chat/orchestration only", size: "3.3 GB", tools: false },
+  { tag: "phi4:14b", desc: "Microsoft Phi-4 — strong reasoning", size: "9.1 GB", tools: false },
+];
+
+/** Browse modal. Two sources, so it's neither stale nor metadata-poor:
+ *   • Recommended — the curated {@link MODEL_CATALOG} (hand-picked, carries the
+ *     tools/no-tools + size hints that matter for agentic work).
+ *   • Live library — fetched at open from ollama.com/library (families, popular
+ *     first), with a filter box. Fresh, but names only; pulling a family gets its
+ *     `:latest`. Falls back gracefully when the live fetch fails. */
+function ModelCatalog({
+  installed,
+  onPull,
+  onDelete,
+  onClose,
+}: {
+  installed: string[];
+  onPull: (tag: string) => void;
+  onDelete: (tag: string) => void;
+  onClose: () => void;
+}) {
+  const [lib, setLib] = useState<string[] | null>(null);
+  const [libErr, setLibErr] = useState(false);
+  const [filter, setFilter] = useState("");
+
+  useEffect(() => {
+    let alive = true;
+    invoke<string[]>("ollama_library")
+      .then((l) => alive && setLib(l))
+      .catch(() => alive && setLibErr(true));
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const hasTag = (tag: string) => installed.includes(tag);
+  const hasFamily = (name: string) => installed.some((t) => t.split(":")[0] === name);
+  // The concrete installed tag for a family (to delete): the first match.
+  const familyTag = (name: string) => installed.find((t) => t.split(":")[0] === name) ?? name;
+  const DeleteBtn = ({ tag }: { tag: string }) => (
+    <button
+      onClick={() => onDelete(tag)}
+      title={`Delete ${tag}`}
+      className="shrink-0 rounded-md px-2 py-0.5 text-xs text-muted transition-colors hover:bg-red-500/20 hover:text-red-300"
+    >
+      ✕
+    </button>
+  );
+  const q = filter.trim().toLowerCase();
+  const families = (lib ?? []).filter((n) => !q || n.includes(q)).slice().sort();
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onClose}>
+      <div
+        className="flex max-h-[82vh] w-full max-w-lg flex-col overflow-hidden rounded-xl border border-edge bg-panel shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between border-b border-edge px-4 py-3">
+          <div>
+            <h3 className="text-sm font-semibold text-gray-100">📚 Browse models</h3>
+            <p className="text-[11px] text-muted">Recommended picks + the live Ollama library.</p>
+          </div>
+          <button onClick={onClose} className="text-muted hover:text-gray-200">
+            ✕
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-2">
+          {/* Recommended (curated, with tools/size guidance) */}
+          <div className="px-2 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-wider text-muted">
+            Recommended for OctoShell
+          </div>
+          {MODEL_CATALOG.map((m) => (
+            <div key={m.tag} className="flex items-center gap-3 rounded-lg px-3 py-2 hover:bg-edge/40">
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <span className="font-mono text-sm text-gray-100">{m.tag}</span>
+                  <span className="text-[10px] text-muted">{m.size}</span>
+                  <span
+                    className={`rounded px-1.5 py-0.5 text-[9px] uppercase tracking-wide ${
+                      m.tools ? "bg-emerald-500/15 text-emerald-300" : "bg-amber-500/15 text-amber-300"
+                    }`}
+                  >
+                    {m.tools ? "tools" : "no tools"}
+                  </span>
+                </div>
+                <div className="truncate text-xs text-muted">{m.desc}</div>
+              </div>
+              {hasTag(m.tag) ? (
+                <div className="flex shrink-0 items-center gap-1">
+                  <span className="text-xs text-emerald-300">✓ Installed</span>
+                  <DeleteBtn tag={m.tag} />
+                </div>
+              ) : (
+                <button
+                  onClick={() => onPull(m.tag)}
+                  className="shrink-0 rounded-md bg-amber-500/20 px-3 py-1 text-xs text-amber-300 hover:bg-amber-500/30"
+                >
+                  ⬇ Pull
+                </button>
+              )}
+            </div>
+          ))}
+
+          {/* Live library */}
+          <div className="mt-3 flex items-center justify-between px-2 pb-1 pt-1">
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-muted">
+              Ollama library {lib && `(${lib.length})`}
+            </span>
+            {lib && (
+              <input
+                value={filter}
+                onChange={(e) => setFilter(e.target.value)}
+                placeholder="filter…"
+                className="w-32 rounded border border-edge bg-well px-2 py-0.5 text-xs text-gray-100 outline-none focus:border-accent"
+              />
+            )}
+          </div>
+          {libErr ? (
+            <p className="px-3 py-2 text-xs text-muted">
+              Couldn’t load the live library (offline or the page changed). Recommended list still works, and
+              you can type any tag in the Pull box.
+            </p>
+          ) : lib === null ? (
+            <p className="px-3 py-2 text-xs text-muted">Loading the live library…</p>
+          ) : (
+            families.map((name) => (
+              <div key={name} className="flex items-center gap-3 rounded-lg px-3 py-1.5 hover:bg-edge/40">
+                <span className="min-w-0 flex-1 truncate font-mono text-sm text-gray-200">
+                  {name}
+                  <span className="ml-1.5 text-[10px] text-muted">:latest</span>
+                </span>
+                {hasFamily(name) ? (
+                  <div className="flex shrink-0 items-center gap-1">
+                    <span className="text-xs text-emerald-300">✓</span>
+                    <DeleteBtn tag={familyTag(name)} />
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => onPull(name)}
+                    className="shrink-0 rounded-md border border-edge px-2.5 py-0.5 text-xs text-gray-200 hover:bg-edge"
+                  >
+                    ⬇ Pull
+                  </button>
+                )}
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ConnBadge({ conn }: { conn: Conn }) {
+  if (conn.state === "ok") {
+    return (
+      <span className="flex items-center gap-1.5 text-xs text-emerald-300">
+        <span className="h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_6px_2px] shadow-emerald-400/50" />
+        Ollama active{conn.version && ` (v${conn.version})`}
+      </span>
+    );
+  }
+  if (conn.state === "err") {
+    return (
+      <span className="flex items-center gap-1.5 text-xs text-red-300/90">
+        <span className="h-2 w-2 rounded-full bg-red-400/70" />
+        Not detected — ensure Ollama is running
+      </span>
+    );
+  }
+  return (
+    <span className="flex items-center gap-1.5 text-xs text-muted">
+      <span className="h-2 w-2 rounded-full bg-edge" />
+      {conn.state === "testing" ? "Checking…" : "Not tested"}
+    </span>
+  );
+}
+
+/** One persona row in the assignment grid: Cloud⇄Local segmented toggle + (when
+ *  Local) a downloaded-model picker. */
+function AssignRow({
+  label,
+  provider,
+  model,
+  localOptions,
+  onCloud,
+  onLocal,
+  onModel,
+}: {
+  label: string;
+  provider: AgentProvider;
+  model: string | null;
+  localOptions: { label: string; value: string }[];
+  onCloud: () => void;
+  onLocal: () => void;
+  onModel: (v: string | null) => void;
+}) {
+  const isLocal = provider === "acp-ollama";
+  return (
+    <div className="flex flex-wrap items-center gap-3 rounded-lg border border-edge px-3 py-2">
+      <span className="w-28 shrink-0 text-sm font-medium text-gray-100">{label}</span>
+      <div className="flex overflow-hidden rounded-md border border-edge">
+        <button
+          onClick={onCloud}
+          className={`px-2.5 py-1 text-[11px] font-medium transition-colors ${
+            !isLocal ? "bg-accent/25 text-accent" : "text-muted hover:bg-edge"
+          }`}
+        >
+          Cloud API
+        </button>
+        <button
+          onClick={onLocal}
+          className={`px-2.5 py-1 text-[11px] font-medium transition-colors ${
+            isLocal ? "bg-amber-400/15 text-amber-300" : "text-muted hover:bg-edge"
+          }`}
+        >
+          Local LLM
+        </button>
+      </div>
+      {isLocal &&
+        (localOptions.length === 0 ? (
+          <span className="text-xs text-amber-300/80">Pull a model first (above) ↑</span>
+        ) : (
+          <div className="min-w-0 flex-1">
+            <Select
+              value={model ?? ""}
+              onChange={(v) => onModel(v || null)}
+              options={[{ label: "Select a model…", value: "" }, ...localOptions]}
+            />
+          </div>
+        ))}
+    </div>
+  );
+}
+
+/** Expandable advanced accordion: context window + temperature for local runs. */
+function AdvancedLocal({ ollama }: { ollama: OllamaSettings }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <section className="overflow-hidden rounded-xl border border-edge bg-card">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="flex w-full items-center justify-between px-4 py-2.5 text-left transition-colors hover:bg-edge/30"
+      >
+        <h2 className="flex items-center gap-2 text-sm font-semibold text-gray-100">
+          <span className="h-3.5 w-0.5 rounded-full bg-accent/70" />
+          Advanced — context & sampling
+        </h2>
+        <span className={`text-muted transition-transform ${open ? "rotate-180" : ""}`}>⌄</span>
+      </button>
+      {open && (
+        <div className="space-y-5 border-t border-edge/60 p-4">
+          <div>
+            <div className="mb-1 flex items-center justify-between">
+              <span className="text-[11px] uppercase tracking-wider text-muted">Context window</span>
+              <span className="tabular-nums text-xs text-gray-300">
+                {ollama.contextWindow.toLocaleString()} tokens
+              </span>
+            </div>
+            <input
+              type="range"
+              min={2048}
+              max={131072}
+              step={2048}
+              value={ollama.contextWindow}
+              onChange={(e) => settingsStore.setOllama({ contextWindow: Number(e.target.value) })}
+              className="w-full accent-accent"
+            />
+          </div>
+          <div>
+            <div className="mb-1 flex items-center justify-between">
+              <span className="text-[11px] uppercase tracking-wider text-muted">Temperature</span>
+              <span className="tabular-nums text-xs text-gray-300">{ollama.temperature.toFixed(2)}</span>
+            </div>
+            <input
+              type="range"
+              min={0}
+              max={1}
+              step={0.05}
+              value={ollama.temperature}
+              onChange={(e) => settingsStore.setOllama({ temperature: Number(e.target.value) })}
+              className="w-full accent-accent"
+            />
+            <p className="mt-1 text-[11px] text-muted">
+              Lower = stricter/deterministic (good for review &amp; refactors). Higher = more creative.
+            </p>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Tab 3 — Workspace & Git
 // ---------------------------------------------------------------------------
 function WorkspaceTab() {
   const { workspace } = useSettings();
@@ -237,43 +905,43 @@ function WorkspaceTab() {
 
   return (
     <>
-      <Section title="Worktrees" desc="Πώς ο orchestrator απομονώνει και καθαρίζει τη δουλειά.">
+      <Section title="Worktrees" desc="How the orchestrator isolates and cleans up work.">
         <div className="space-y-3">
           <ToggleRow
-            label="Ο orchestrator φτιάχνει worktrees"
-            desc="Κάθε task τρέχει σε δικό του git worktree (απομονωμένα/παράλληλα) αντί στον agent του ίδιου του project."
+            label="Orchestrator creates worktrees"
+            desc="Each task runs in its own git worktree (isolated/parallel) instead of the project’s own agent."
             checked={workspace.orchestratorWorktrees}
             onChange={(v) => set({ orchestratorWorktrees: v })}
           />
           <ToggleRow
-            label="Auto-copy .env* στα νέα worktrees"
-            desc="Αντιγράφει .env / .env.local κ.λπ. (untracked secrets) ώστε η εφαρμογή να τρέχει μέσα στο worktree."
+            label="Auto-copy .env* into new worktrees"
+            desc="Copies .env / .env.local etc. (untracked secrets) so the app runs inside the worktree."
             checked={workspace.copyEnv}
             onChange={(v) => set({ copyEnv: v })}
           />
-          <Field label="Auto-clean — πότε διαγράφεται ένα worktree">
+          <Field label="Auto-clean — when a worktree is deleted">
             <Select
               value={workspace.autoClean}
               onChange={(v) => set({ autoClean: v as AutoCleanMode })}
               options={[
-                { label: "Ποτέ (χειροκίνητα)", value: "off" },
-                { label: "Μετά το review approve", value: "onApprove" },
-                { label: "Μετά το merge/close του PR", value: "onMerge" },
+                { label: "Never (manual)", value: "off" },
+                { label: "After review approve", value: "onApprove" },
+                { label: "After PR merge/close", value: "onMerge" },
               ]}
             />
           </Field>
-          <Field label="Base branch για νέα worktrees">
+          <Field label="Base branch for new worktrees">
             <input
               value={workspace.baseBranch}
               onChange={(e) => set({ baseBranch: e.target.value })}
-              placeholder="(default: HEAD του κύριου worktree, π.χ. main/dev)"
+              placeholder="(default: main worktree HEAD, e.g. main/dev)"
               className="rounded border border-edge bg-well px-2 py-1.5 text-sm text-gray-100 outline-none focus:border-accent"
             />
           </Field>
         </div>
       </Section>
 
-      <Section title="Terminal" desc="Τι shell σηκώνει το native PTY.">
+      <Section title="Terminal" desc="Which shell the native PTY spawns.">
         <Field label="Default shell">
           <Select
             value={workspace.defaultShell}
@@ -287,8 +955,8 @@ function WorkspaceTab() {
         </Field>
         {workspace.defaultShell !== "powershell" && (
           <p className="mt-2 text-xs text-amber-300/80">
-            ⚠️ Τα per-command blocks & exit codes είναι φτιαγμένα για PowerShell. Σε CMD/WSL ο terminal δουλεύει, αλλά
-            χωρίς τη σημασιολογική ανάλυση εντολών. Ισχύει στα ΝΕΑ terminals.
+            ⚠️ Per-command blocks & exit codes are built for PowerShell. On CMD/WSL the terminal works, but
+            without semantic command parsing. Applies to NEW terminals.
           </p>
         )}
       </Section>
@@ -305,47 +973,47 @@ function AppearanceTab() {
 
   return (
     <>
-      <Section title="Typography" desc="Γραμματοσειρά για terminal & feed (πρέπει να είναι εγκατεστημένη στο σύστημα).">
+      <Section title="Typography" desc="Font for terminal & feed (must be installed on the system).">
         <Field label="Font">
           <Select value={appearance.fontFamily} onChange={(v) => set({ fontFamily: v })} options={FONTS} />
         </Field>
       </Section>
 
-      <Section title="PCB trace animation" desc="Πόσο γρήγορα «ρέουν» τα traces του circuit board όταν δουλεύουν agents.">
-        <Field label="Ταχύτητα">
+      <Section title="PCB trace animation" desc="How fast the circuit-board traces flow while agents are working.">
+        <Field label="Speed">
           <Select
             value={appearance.traceSpeed}
             onChange={(v) => set({ traceSpeed: v as TraceSpeed })}
             options={[
               { label: "Fast", value: "fast" },
               { label: "Normal", value: "normal" },
-              { label: "Stealth (αργό)", value: "stealth" },
-              { label: "Static (καθόλου)", value: "static" },
+              { label: "Stealth (slow)", value: "stealth" },
+              { label: "Static (none)", value: "static" },
             ]}
           />
         </Field>
       </Section>
 
-      <Section title="Sound effects" desc="Subtle ρετρό sci-fi ήχοι όταν ολοκληρώνεται ένα task ή σκάει error.">
+      <Section title="Sound effects" desc="Subtle retro sci-fi sounds when a task completes or an error hits.">
         <ToggleRow
           label="SFX"
-          desc="Ένα διακριτικό beep στην ολοκλήρωση / σφάλμα ενός agent."
+          desc="A subtle beep on agent completion / error."
           checked={appearance.sfx}
           onChange={(v) => set({ sfx: v })}
         />
       </Section>
 
       <Section
-        title="Speech-to-text (υπαγόρευση)"
-        desc="Το 🎤 κουμπί στο input. Το «Web» χρησιμοποιεί τη δωρεάν μηχανή φωνής του browser. Το Whisper (τοπικό/API) έρχεται σύντομα."
+        title="Speech-to-text (dictation)"
+        desc="The 🎤 button in the input. “Web” uses the browser’s free speech engine. Whisper (local/API) is coming soon."
       >
         <Field label="Engine">
           <Select
             value={sttEngine}
             onChange={(v) => settingsStore.setSttEngine(v as SttEngine)}
             options={[
-              { label: "Web (δωρεάν)", value: "web" },
-              { label: "Whisper (σύντομα)", value: "whisper" },
+              { label: "Web (free)", value: "web" },
+              { label: "Whisper (soon)", value: "whisper" },
             ]}
           />
         </Field>
@@ -357,7 +1025,7 @@ function AppearanceTab() {
 // ---------------------------------------------------------------------------
 // Tab 4 — System & Database
 // ---------------------------------------------------------------------------
-function SystemTab() {
+function SystemTab({ onSandboxLogin, onShowOnboarding }: { onSandboxLogin: () => void; onShowOnboarding: () => void }) {
   const { system } = useSettings();
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<VacuumResult | null>(null);
@@ -376,7 +1044,7 @@ function SystemTab() {
 
   return (
     <>
-      <Section title="Scrollback buffer" desc="Πόσες γραμμές terminal output κρατά στη μνήμη κάθε terminal (μεγαλύτερο = περισσότερη ιστορία, λίγη παραπάνω RAM). Ισχύει στα νέα terminals.">
+      <Section title="Scrollback buffer" desc="How many lines of terminal output each terminal keeps in memory (bigger = more history, a bit more RAM). Applies to new terminals.">
         <div className="flex items-center gap-2">
           <input
             type="number"
@@ -389,24 +1057,61 @@ function SystemTab() {
             }
             className="w-32 rounded border border-edge bg-well px-2 py-1.5 text-sm text-gray-100 outline-none focus:border-accent"
           />
-          <span className="text-sm text-muted">γραμμές</span>
+          <span className="text-sm text-muted">lines</span>
         </div>
       </Section>
 
       <Section
+        title="Docker sandbox for ACP agents"
+        desc="When ON, ACP agents’ shell commands run inside a throwaway Docker container (host isolation: capped CPU/RAM/PIDs, dropped capabilities) instead of directly on the host. Needs Docker Desktop running; otherwise the command fails with a clear message. Does not protect the worktree itself or against exfiltration."
+      >
+        <ToggleRow
+          label="Sandbox agent commands"
+          desc="Runs the ENTIRE ACP agent inside a container (every command isolated). Off = host execution."
+          checked={system.sandboxAgentCommands}
+          onChange={(v) => settingsStore.setSystem({ sandboxAgentCommands: v })}
+        />
+        <div className="mt-3 flex items-center gap-3">
+          <button
+            onClick={onSandboxLogin}
+            className="rounded bg-accent/20 px-3 py-1.5 text-sm text-accent hover:bg-accent/30"
+          >
+            🔑 Sandbox agent login (one-time)
+          </button>
+          <span className="text-xs text-muted">
+            Opens a login in the active project's terminal, for that project's selected agent CLI
+            (Claude/Gemini/Codex — otherwise Claude). Authorize in the browser; the login is stored
+            separately from your host login and covers every worktree.
+          </span>
+        </div>
+      </Section>
+
+      <Section
+        title="First-launch health check"
+        desc="Checks that the CLIs OctoShell drives (agent CLIs, PowerShell 7, GitHub CLI) are on PATH. Shown once automatically on first launch."
+      >
+        <button
+          onClick={onShowOnboarding}
+          className="rounded bg-accent/20 px-3 py-1.5 text-sm text-accent hover:bg-accent/30"
+        >
+          🩺 Re-run health check
+        </button>
+      </Section>
+
+      <Section
         title="Compact database (Vacuum)"
-        desc="Συμπιέζει τα αποθηκευμένα ιστορικά — κόβει τα βαριά ενδιάμεσα tool-output streams των agents κρατώντας την ουσία — και ανακτά χώρο στη βάση."
+        desc="Compacts stored history — trims agents’ heavy intermediate tool-output streams while keeping the essence — and reclaims database space."
       >
         <button
           onClick={() => void runVacuum()}
           disabled={busy}
           className="rounded bg-accent/20 px-3 py-1.5 text-sm text-accent hover:bg-accent/30 disabled:opacity-60"
         >
-          {busy ? "Συμπίεση…" : "🧹 Compact τώρα"}
+          {busy ? "Compacting…" : "🧹 Compact now"}
         </button>
         {result && (
           <p className="mt-2 text-xs text-muted">
-            {result.sessions} sessions · {result.trimmed} tool-outputs συμπιέστηκαν ·{" "}
+            {result.sessions} sessions · {result.trimmed} tool-outputs compacted ·{" "}
             {fmtKB(result.before)} → <span className="text-emerald-300/90">{fmtKB(result.after)}</span>
           </p>
         )}
@@ -420,10 +1125,15 @@ function SystemTab() {
 // ---------------------------------------------------------------------------
 function Section({ title, desc, children }: { title: string; desc: string; children: React.ReactNode }) {
   return (
-    <section className="rounded-xl border border-edge bg-card p-4">
-      <h2 className="text-sm font-semibold text-gray-100">{title}</h2>
-      <p className="mb-3 text-xs text-muted">{desc}</p>
-      {children}
+    <section className="overflow-hidden rounded-xl border border-edge bg-card transition-colors hover:border-edge/80">
+      <div className="border-b border-edge/60 bg-gradient-to-r from-accent/[0.07] to-transparent px-4 py-2.5">
+        <h2 className="flex items-center gap-2 text-sm font-semibold text-gray-100">
+          <span className="h-3.5 w-0.5 rounded-full bg-accent/70" />
+          {title}
+        </h2>
+        <p className="mt-0.5 text-xs leading-relaxed text-muted">{desc}</p>
+      </div>
+      <div className="p-4">{children}</div>
     </section>
   );
 }
@@ -450,7 +1160,7 @@ function Select({
     <select
       value={value}
       onChange={(e) => onChange(e.target.value)}
-      className="rounded border border-edge bg-well px-2 py-1.5 text-sm text-gray-100 outline-none focus:border-accent"
+      className="rounded-lg border border-edge bg-well px-2.5 py-1.5 text-sm text-gray-100 outline-none transition-colors hover:border-accent/40 focus:border-accent"
     >
       {options.map((o) => (
         <option key={o.value} value={o.value}>
@@ -462,7 +1172,8 @@ function Select({
 }
 
 /** Model picker mapping the null "Default" to a "" sentinel for the native select.
- *  The option list follows the provider (claude aliases vs gemini models). */
+ *  The option list follows the provider (claude aliases, gemini models, or — for
+ *  local Ollama — the user's ACTUALLY installed models, fetched live). */
 function ModelSelect({
   value,
   onChange,
@@ -472,7 +1183,9 @@ function ModelSelect({
   onChange: (v: string | null) => void;
   provider?: AgentProvider;
 }) {
-  const models = provider === "claude" ? CLAUDE_MODELS : modelsFor(provider);
+  // Always call the hook (rules-of-hooks); only used for the ollama provider.
+  const ollama = useOllamaModels();
+  const models = provider === "acp-ollama" ? ollamaModelOptions(ollama.models) : modelsFor(provider);
   return (
     <Select
       value={value ?? ""}
@@ -501,17 +1214,27 @@ function ProfileSelect({
   );
 }
 
-/** A small pill toggle. */
+/** A sliding switch toggle (track + knob). */
 function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (v: boolean) => void; label?: string }) {
   return (
     <button
       onClick={() => onChange(!checked)}
-      className={`flex items-center gap-2 rounded-full border px-2 py-0.5 text-xs ${
-        checked ? "border-accent/50 bg-accent/20 text-accent" : "border-edge text-muted hover:bg-edge/50"
-      }`}
+      className="flex shrink-0 items-center gap-2 text-xs"
+      role="switch"
+      aria-checked={checked}
     >
-      <span className={`h-2.5 w-2.5 rounded-full ${checked ? "bg-accent" : "bg-edge"}`} />
-      {label}
+      <span
+        className={`relative inline-flex h-[18px] w-8 items-center rounded-full transition-colors ${
+          checked ? "bg-accent" : "bg-edge"
+        }`}
+      >
+        <span
+          className={`absolute h-[14px] w-[14px] rounded-full bg-white shadow transition-transform ${
+            checked ? "translate-x-[16px]" : "translate-x-[2px]"
+          }`}
+        />
+      </span>
+      {label && <span className={checked ? "text-accent" : "text-muted"}>{label}</span>}
     </button>
   );
 }
@@ -529,12 +1252,18 @@ function ToggleRow({
   onChange: (v: boolean) => void;
 }) {
   return (
-    <div className="flex items-start justify-between gap-3 rounded border border-edge px-3 py-2">
+    <div
+      className={`flex items-start justify-between gap-3 rounded-lg border px-3 py-2.5 transition-colors ${
+        checked ? "border-accent/30 bg-accent/[0.05]" : "border-edge"
+      }`}
+    >
       <div className="min-w-0">
-        <div className="text-sm text-gray-100">{label}</div>
-        <div className="text-xs text-muted">{desc}</div>
+        <div className="text-sm font-medium text-gray-100">{label}</div>
+        <div className="mt-0.5 text-xs leading-relaxed text-muted">{desc}</div>
       </div>
-      <Toggle checked={checked} onChange={onChange} label={checked ? "On" : "Off"} />
+      <div className="pt-0.5">
+        <Toggle checked={checked} onChange={onChange} label={checked ? "On" : "Off"} />
+      </div>
     </div>
   );
 }

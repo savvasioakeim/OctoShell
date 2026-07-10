@@ -31,9 +31,9 @@ export const STATUS_COLOR: Record<AgentStatus, string> = {
 
 export const STATUS_LABEL: Record<AgentStatus, string> = {
   idle: "idle",
-  active: "τρέχει",
-  done: "ολοκληρώθηκε",
-  error: "σφάλμα",
+  active: "working",
+  done: "done",
+  error: "error",
 };
 
 /** Compact English labels for tight UI (the orchestrator's Agents panel rows). */

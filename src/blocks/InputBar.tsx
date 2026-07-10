@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import type { Mode, ShellController } from "../shell/ShellController";
 import { kindLabel, longestCommonPrefix, requestCompletion, type CMatch } from "../shell/completion";
-import { PROVIDERS, type AgentProvider } from "../agents/providers";
+import { PROVIDERS, supportsProfile, type AgentProvider } from "../agents/providers";
+import { useOllamaModels, ollamaModelOptions } from "../agents/ollamaModels";
 import { isServerCommand } from "../services/serviceDetect";
 import { serviceStore } from "../services/serviceStore";
 import { settingsStore, useSettings } from "../settings/settingsStore";
@@ -81,6 +82,36 @@ const MODELS_BY_PROVIDER: Record<AgentProvider, { label: string; value: string |
     { label: "3 Flash", value: "gemini-3-flash-preview" },
     { label: "3 Flash Lite", value: "gemini-3.1-flash-lite" },
   ],
+  // ACP (Claude adapter): model set via ANTHROPIC_MODEL — same aliases as the
+  // native Claude provider.
+  "acp-claude": [
+    { label: "Agent default", value: null },
+    { label: "Fable", value: "fable" },
+    { label: "Opus", value: "opus" },
+    { label: "Sonnet", value: "sonnet" },
+    { label: "Haiku", value: "haiku" },
+  ],
+  // ACP (Gemini native): model set via the CLI's -m flag.
+  "acp-gemini": [
+    { label: "Agent default", value: null },
+    { label: "3 Pro", value: "gemini-3.1-pro-preview" },
+    { label: "3 Flash", value: "gemini-3-flash-preview" },
+  ],
+  // ACP agents whose per-agent model selection isn't wired yet → agent default.
+  "acp-codex": [{ label: "Agent default", value: null }],
+  "acp-opencode": [{ label: "Agent default", value: null }],
+  "acp-cursor": [{ label: "Agent default", value: null }],
+  "acp-copilot": [{ label: "Agent default", value: null }],
+  "acp-kiro": [{ label: "Agent default", value: null }],
+  // Local models via Ollama (OpenCode ACP): values carry the `ollama/` prefix
+  // OpenCode expects. Qwen2.5-Coder is best at agentic tool-use; Gemma is lighter.
+  "acp-ollama": [
+    { label: "Agent default", value: null },
+    { label: "Qwen2.5 Coder 14B", value: "ollama/qwen2.5-coder:14b" },
+    { label: "Qwen2.5 Coder 7B", value: "ollama/qwen2.5-coder:7b" },
+    { label: "Qwen2.5 Coder 3B", value: "ollama/qwen2.5-coder:3b" },
+    { label: "Gemma 3 4B", value: "ollama/gemma3:4b" },
+  ],
 };
 
 interface MenuState {
@@ -132,7 +163,7 @@ export function InputBar({ controller, cwd, busy, value, altScreen, interacting,
   const addAttachments = (paths: string[]) =>
     setAttachments((a) => [...a, ...paths.filter((p) => p && !a.includes(p))]);
   const pickFiles = async () => {
-    const picked = await open({ multiple: true, title: "Διάλεξε αρχείο/α" });
+    const picked = await open({ multiple: true, title: "Pick file(s)" });
     if (!picked) return;
     addAttachments(Array.isArray(picked) ? picked : [picked]);
     ref.current?.focus();
@@ -150,7 +181,7 @@ export function InputBar({ controller, cwd, busy, value, altScreen, interacting,
     const w = window as unknown as { SpeechRecognition?: new () => any; webkitSpeechRecognition?: new () => any };
     const SR = w.SpeechRecognition ?? w.webkitSpeechRecognition;
     if (!SR) {
-      controller.setInput("# (speech-to-text δεν υποστηρίζεται σ' αυτό το WebView)");
+      controller.setInput("# (speech-to-text is not supported in this WebView)");
       return;
     }
     const rec = new SR();
@@ -179,10 +210,11 @@ export function InputBar({ controller, cwd, busy, value, altScreen, interacting,
     startStt();
   };
 
-  // Drag & drop a file/image onto this input → attach its real filesystem path
-  // (Tauri exposes the path; the browser File API would not). The drop event is
-  // window-wide, so we only act when the cursor is over THIS bar — inactive
-  // panels (display:none → empty rect) and other bars ignore it.
+  // Drag & drop a file/image anywhere in the window → attach its real filesystem
+  // path to the ACTIVE project's input (Tauri exposes the path; the browser File
+  // API would not). Requiring a pixel-perfect drop ON the bar made drops feel
+  // dead (they were silently ignored an inch above it), so the visible bar now
+  // claims every drop; inactive panels (display:none → zero-size rect) ignore it.
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     void getCurrentWebviewWindow()
@@ -191,9 +223,7 @@ export function InputBar({ controller, cwd, busy, value, altScreen, interacting,
         const el = barRef.current;
         if (!el) return;
         const r = el.getBoundingClientRect();
-        const dpr = window.devicePixelRatio || 1;
-        const { x, y } = e.payload.position;
-        if (x < r.left * dpr || x > r.right * dpr || y < r.top * dpr || y > r.bottom * dpr) return;
+        if (r.width === 0 && r.height === 0) return; // this project's pane is hidden
         const paths = e.payload.paths ?? [];
         if (paths.length) {
           addAttachments(paths);
@@ -205,7 +235,7 @@ export function InputBar({ controller, cwd, busy, value, altScreen, interacting,
   }, [controller]);
 
   const addAgentProfile = async () => {
-    const dir = await open({ directory: true, title: "Διάλεξε φάκελο profile (CLAUDE_CONFIG_DIR)" });
+    const dir = await open({ directory: true, title: "Pick a profile folder (CLAUDE_CONFIG_DIR)" });
     if (typeof dir !== "string") return;
     const name = dir.split(/[\\/]/).filter(Boolean).pop() || "profile";
     const p = settingsStore.addProfile(name, dir);
@@ -221,7 +251,13 @@ export function InputBar({ controller, cwd, busy, value, altScreen, interacting,
   // in flight takes over — it cancels the running turn (orchestrated or not) and
   // runs your message instead (see ShellController.runAgent).
   const prov = PROVIDERS.find((p) => p.value === agentProvider) ?? PROVIDERS[0];
-  const models = MODELS_BY_PROVIDER[agentProvider];
+  // Local (Ollama) models are the user's ACTUALLY installed ones (live), not a
+  // hardcoded list; every other provider uses its curated set.
+  const ollama = useOllamaModels();
+  const models =
+    agentProvider === "acp-ollama"
+      ? ollamaModelOptions(ollama.models)
+      : MODELS_BY_PROVIDER[agentProvider] ?? MODELS_BY_PROVIDER.claude;
   const modelLabel = models.find((m) => m.value === agentModel)?.label ?? "Default";
 
   // Keep focus in the input as state changes — except while the keyboard belongs
@@ -436,7 +472,7 @@ export function InputBar({ controller, cwd, busy, value, altScreen, interacting,
         {/* Attach a file → its path rides along as an attachment chip. */}
         <button
           onClick={() => void pickFiles()}
-          title="Επισύναψε αρχείο (path)"
+          title="Attach a file (path)"
           className="shrink-0 rounded-md transition-opacity hover:opacity-80"
         >
           <img src={attachIcon} alt="Attach" className="h-6 w-6 rounded-md" />
@@ -444,7 +480,7 @@ export function InputBar({ controller, cwd, busy, value, altScreen, interacting,
         {/* Speech-to-text — dictate into the input. */}
         <button
           onClick={toggleStt}
-          title={recording ? "Σταμάτα την υπαγόρευση" : "Υπαγόρευση (speech-to-text)"}
+          title={recording ? "Stop dictation" : "Dictate (speech-to-text)"}
           className={`shrink-0 rounded-md transition-opacity hover:opacity-80 ${
             recording ? "ring-2 ring-pink-400 animate-pulse" : ""
           }`}
@@ -463,25 +499,41 @@ export function InputBar({ controller, cwd, busy, value, altScreen, interacting,
               {prov.icon} {prov.label}
             </button>
             {providerMenu && (
-              <ul
-                className="absolute bottom-full left-0 z-30 mb-1 overflow-hidden rounded-lg border border-edge bg-panel shadow-lg"
-                style={{ minWidth: "7rem" }}
+              <div
+                className="absolute bottom-full left-0 z-30 mb-1 overflow-hidden rounded-lg border border-edge bg-panel shadow-xl"
+                style={{ minWidth: "11rem" }}
               >
-                {PROVIDERS.map((p) => (
-                  <li key={p.value}>
-                    <button
-                      onClick={() => { controller.setAgentProvider(p.value); setProviderMenu(false); }}
-                      className={`flex w-full items-center gap-1.5 px-2 py-1 text-left text-xs hover:bg-edge ${
-                        p.value === agentProvider ? "text-accent" : "text-gray-200"
-                      }`}
-                    >
-                      <span>{p.icon}</span>
-                      <span className="flex-1">{p.label}</span>
-                      {p.value === agentProvider && <span>✓</span>}
-                    </button>
-                  </li>
+                {/* Native CLIs vs ACP adapters — two labelled sections, so it's
+                    clear which integration path each agent runs on. */}
+                {[
+                  { header: "Native CLI", items: PROVIDERS.filter((p) => !p.value.startsWith("acp")) },
+                  { header: "ACP agents", items: PROVIDERS.filter((p) => p.value.startsWith("acp")) },
+                ].map((sec) => (
+                  <div key={sec.header} className="border-b border-edge/60 py-1 last:border-b-0">
+                    <div className="px-2.5 pb-0.5 pt-1 text-[9px] font-semibold uppercase tracking-widest text-muted/70">
+                      {sec.header}
+                    </div>
+                    <ul>
+                      {sec.items.map((p) => (
+                        <li key={p.value}>
+                          <button
+                            onClick={() => { controller.setAgentProvider(p.value); setProviderMenu(false); }}
+                            className={`flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-xs transition-colors ${
+                              p.value === agentProvider
+                                ? "bg-accent/15 font-medium text-accent"
+                                : "text-gray-200 hover:bg-edge"
+                            }`}
+                          >
+                            <span className="w-4 text-center">{p.icon}</span>
+                            <span className="flex-1">{p.label.replace(" (ACP)", "")}</span>
+                            {p.value === agentProvider && <span className="text-accent">✓</span>}
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
                 ))}
-              </ul>
+              </div>
             )}
           </div>
         )}
@@ -490,7 +542,7 @@ export function InputBar({ controller, cwd, busy, value, altScreen, interacting,
           <div className="relative">
             <button
               onClick={() => setModelMenu((o) => !o)}
-              title="Μοντέλο agent (ισχύει από το επόμενο turn)"
+              title="Agent model (applies from the next turn)"
               className="flex items-center gap-1 rounded border border-edge px-1.5 py-0.5 text-[11px] text-muted hover:bg-edge hover:text-gray-200"
             >
               ⚙ {modelLabel}
@@ -518,11 +570,11 @@ export function InputBar({ controller, cwd, busy, value, altScreen, interacting,
           </div>
         )}
 
-        {agent && agentProvider === "claude" && (
+        {agent && supportsProfile(agentProvider) && (
           <div className="relative">
             <button
               onClick={() => setProfileMenu((o) => !o)}
-              title="Claude Code profile (λογαριασμός) — ισχύει από το επόμενο turn"
+              title="Profile (account/config dir) — applies from the next turn"
               className="flex items-center gap-1 rounded border border-edge px-1.5 py-0.5 text-[11px] text-muted hover:bg-edge hover:text-gray-200"
             >
               👤 {agentProfileName}
@@ -562,7 +614,7 @@ export function InputBar({ controller, cwd, busy, value, altScreen, interacting,
                     onClick={() => void addAgentProfile()}
                     className="w-full px-2 py-1 text-left text-xs text-accent hover:bg-edge"
                   >
-                    + Πρόσθεσε profile…
+                    + Add profile…
                   </button>
                 </li>
               </ul>
@@ -575,8 +627,8 @@ export function InputBar({ controller, cwd, busy, value, altScreen, interacting,
             onClick={() => controller.setAgentApproval(!agentApproval)}
             title={
               agentApproval
-                ? "Approval: ο agent ρωτά πριν από Bash/Edit/Write"
-                : "Auto: ο agent τρέχει χωρίς έγκριση"
+                ? "Approval: the agent asks before Bash/Edit/Write"
+                : "Auto: the agent runs without approval"
             }
             className={`rounded border px-1.5 py-0.5 text-[11px] ${
               agentApproval
@@ -591,7 +643,7 @@ export function InputBar({ controller, cwd, busy, value, altScreen, interacting,
         {agent && agentTokens && (agentTokens.input > 0 || agentTokens.output > 0) && (
           <span
             className="flex shrink-0 items-center gap-1 rounded border border-edge px-1.5 py-0.5 text-[10px] text-muted"
-            title="Σύνολο tokens αυτής της συνεδρίας (απεσταλμένα / ληφθέντα)"
+            title="Session token totals (sent / received)"
           >
             🪙 ↑{fmtTokens(agentTokens.input)} ↓{fmtTokens(agentTokens.output)}
             {/* Cost is meaningful only on per-token (API key) billing. */}
@@ -618,16 +670,16 @@ export function InputBar({ controller, cwd, busy, value, altScreen, interacting,
         {agent && !agentApiKey && fmtReset(agentRateReset) && (
           <span
             className="flex shrink-0 items-center gap-1 rounded border border-edge px-1.5 py-0.5 text-[10px] text-muted"
-            title="Πότε μηδενίζει το 5ωρο όριο της συνδρομής"
+            title="When the subscription's 5-hour limit resets"
           >
             ↻ {fmtReset(agentRateReset)}
           </span>
         )}
         <span className="flex-1" />
         {agent ? (
-          agentBusy && <span className="shrink-0 text-accent">● {prov.label} σκέφτεται…</span>
+          agentBusy && <span className="shrink-0 text-accent">● {prov.label} is thinking…</span>
         ) : altScreen || interacting ? (
-          <span className="shrink-0 text-accent">⌨ κλικ για νέα εντολή</span>
+          <span className="shrink-0 text-accent">⌨ click for a new command</span>
         ) : (
           busy && <span className="shrink-0 text-yellow-400">● running…</span>
         )}
@@ -636,7 +688,7 @@ export function InputBar({ controller, cwd, busy, value, altScreen, interacting,
       {/* Path row — under the switcher. Click to copy the working directory. */}
       <button
         onClick={copyPath}
-        title="Κλικ για copy του path"
+        title="Click to copy the path"
         className="mb-1.5 flex min-w-0 max-w-full items-center gap-1 text-[11px] text-muted hover:text-gray-200"
       >
         <span className="shrink-0">📁</span>
@@ -646,22 +698,22 @@ export function InputBar({ controller, cwd, busy, value, altScreen, interacting,
 
       {serverOffer && (
         <div className="mb-1.5 flex flex-wrap items-center gap-2 rounded border border-sky-500/40 bg-sky-500/10 px-2 py-1 text-[11px]">
-          <span className="text-sky-200">🌐 Μοιάζει με server — να το τρέξω managed (δικό του port, δικά του logs);</span>
+          <span className="text-sky-200">🌐 Looks like a server — run it managed (own port, own logs)?</span>
           <button
             onClick={() => runManaged(serverOffer)}
             className="rounded bg-sky-500/30 px-1.5 py-0.5 text-sky-100 hover:bg-sky-500/40"
           >
-            Ναι, managed
+            Yes, managed
           </button>
           <button
             onClick={() => runShell(serverOffer)}
             className="rounded border border-edge px-1.5 py-0.5 text-muted hover:bg-edge hover:text-gray-200"
           >
-            Τρέξε κανονικά
+            Run normally
           </button>
           <button
             onClick={() => setServerOffer(null)}
-            title="Άκυρο"
+            title="Cancel"
             className="ml-auto text-muted hover:text-gray-200"
           >
             ✕
@@ -680,7 +732,7 @@ export function InputBar({ controller, cwd, busy, value, altScreen, interacting,
               <span className="max-w-[160px] truncate" title={p}>{p.split(/[\\/]/).pop() || p}</span>
               <button
                 onClick={() => setAttachments((a) => a.filter((_, j) => j !== i))}
-                title="Αφαίρεση"
+                title="Remove"
                 className="text-muted hover:text-red-300"
               >
                 ✕
@@ -727,9 +779,9 @@ export function InputBar({ controller, cwd, busy, value, altScreen, interacting,
             placeholder={
               agent
                 ? agentBusy
-                  ? "Στείλε για να πάρεις τον έλεγχο (διακόπτει το τρέχον turn)…"
-                  : "Ρώτησε ή ανάθεσε στον claude…  (Enter = αποστολή, Tab = path complete)"
-                : "Γράψε εντολή…  (Enter = run, Tab = autocomplete, Shift+Enter = νέα γραμμή)"
+                  ? "Send to take over (interrupts the current turn)…"
+                  : "Ask or delegate to the agent…  (Enter = send, Tab = path complete)"
+                : "Type a command…  (Enter = run, Tab = autocomplete, Shift+Enter = new line)"
             }
             className="max-h-[364px] min-h-[5.6rem] flex-1 resize-none overflow-y-auto bg-transparent text-sm leading-relaxed text-gray-100 caret-accent outline-none placeholder:text-muted/50"
             autoFocus

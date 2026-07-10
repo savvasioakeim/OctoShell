@@ -1,78 +1,72 @@
 # 🐙 OctoShell
 
-Ένα power-user terminal workspace για Windows με αρχιτεκτονική **Semantic Blocks** (à la Warp): το terminal είναι ένα *feed* από αυτόνομα command blocks, όχι ένα ενιαίο text stream. Χτισμένο με **Tauri v2 + Rust** (back-end) και **React + TypeScript + Tailwind + xterm.js/WebGL** (front-end).
+**Mission control for coding agents — Windows-native.**
 
-## Χαρακτηριστικά
+OctoShell is a power-user terminal workspace where an AI **orchestrator** fans your tickets out to multiple coding agents, each working in its **own isolated git worktree**, while you watch every terminal, agent trace, and dev server from one window.
 
-- **Semantic Blocks feed** — κάθε εκτέλεση (command + output) είναι ένα αυτόνομο block με header (εντολή, ώρα, status), content και hover actions (Copy output / Copy command / Ask AI).
-- **OSC 133 shell integration** — η Rust κάνει inject ένα PowerShell prompt + PSReadLine Enter-handler που εκπέμπει OSC 133 A/B/C/D markers (+ OSC 7 για cwd). Ένας semantic parser στη Rust ανιχνεύει με ακρίβεια όρια εντολών & exit codes — robust, χωρίς εύθραυστο prompt-regex.
-- **Shared live term + freeze** — ένα μόνο WebGL xterm renderάρει το τρέχον block· όταν τελειώσει, το output γίνεται freeze σε colored & **επιλέξιμο HTML** (copy-paste σαν text editor σε όλα τα blocks). Έτσι κρατάμε ένα WebGL context όσα blocks κι αν υπάρχουν.
-- **AI Assistant sidebar** — chat με πρόσβαση στο ιστορικό των blocks + cwd. Δύο transports: `ANTHROPIC_API_KEY` → Anthropic API· αλλιώς fallback στο τοπικό `claude` CLI (Claude Code), χωρίς key.
-- **Macro buttons** — π.χ. *Git Smart Commit*: αναλύει το output του προηγούμενου block (ή ένα fresh `git status`) και **προτείνει** την εντολή στο input field (ο χρήστης εγκρίνει & πατά Enter — όχι αυτόματη εκτέλεση).
-- **Smart PR button** — ένα stateful κουμπί που οδηγεί ένα branch σε όλο τον κύκλο ζωής του PR: *Create → Check → Update → loop μέχρι merge*. Στο Update ο agent διαβάζει τα review comments, λύνει τα ζητούμενα και κάνει commit + push· το state (PR number + phase) κρατιέται per branch και persistάρεται. Χρειάζεται το `gh` CLI (authed).
-- **Syntax highlighting** — τα code blocks renderάρονται με **Shiki** (theme *Material Palenight*).
+Built with **Tauri v2 + Rust** (backend) and **React + TypeScript + Tailwind + xterm.js/WebGL** (frontend).
 
-## Αρχιτεκτονική
+> 🇬🇷 Ελληνικά: [README.el.md](README.el.md)
 
-```
-Frontend (React/Vite)                          Backend (Rust)
-─────────────────────                          ──────────────
-InputBar ──submit──► ShellController ──write──► PtyManager: Arc<Mutex<HashMap<id, PtySession>>>
-                          │                       │ pwsh.exe + injected OSC 133 prompt
-   Feed ◄── snapshot ─────┤                       │ 1 blocking OS-thread / PTY
-   (TerminalBlock × N)    │                       ▼
-        live xterm  ◄─────┤◄── pty://output ───── SemanticParser (στρώνει το stream)
-        frozen HTML       │◄── pty://command-end ─  → Output / CommandEnd(code)
-                          │◄── pty://cwd / ready    → Cwd / Ready
-AiSidebar / MacroBar ──ai_chat / run_capture──►   ai.rs (API ή claude CLI) · captured subprocess
-```
+## What it does
 
-**Ροή ενός block:** ο χρήστης γράφει στο `InputBar` → `ShellController.submit` φτιάχνει block (status=running) και στέλνει `cmd\r` → η Rust εκπέμπει OSC 133 C (start) → output ρέει στο shared live xterm → OSC 133 D;`<code>` → ο controller κάνει freeze το output σε HTML, θέτει success/error, και ελευθερώνει το live term για το επόμενο block.
+- **Orchestrator sidebar** — a workspace-wide AI assistant that sees every open project (terminal blocks, agent reports). Ask it to coordinate work: it proposes `dispatch` actions (confirm-per-click or fully autonomous), creates a **git worktree per task**, and follows each agent to completion with **live watch**.
+- **Agents per project/worktree** — Claude Code and Gemini CLI natively, plus **any ACP agent** (Agent Client Protocol: Claude, Gemini, Codex, OpenCode, Cursor, Copilot, Kiro) over one protocol integration. Per-project provider, model, profile and approval mode.
+- **Review Mode** — when dispatched features are done, a floating always-on-top window walks you through them one by one: start their dev servers with one click, take notes, approve/decline. Declines are batched back to the right worktree's agent as fix tasks.
+- **Managed dev servers** — server commands (`npm run dev`, `vite`, `uvicorn`…) run as managed services with their own port and logs instead of wedging a shell or an agent turn. Respects your project's `.env` `PORT`, validates npm scripts against `package.json`, and detects the actually-bound URL.
+- **Docker sandbox (opt-in)** — run an entire ACP agent inside a throwaway container (`--cap-drop=ALL`, memory/pids limits, worktree bind-mounted) with a shared login volume, so one login covers every worktree. Host isolation for every command the agent runs.
+- **Semantic Blocks terminal** — the terminal is a feed of self-contained command blocks (à la Warp), driven by OSC 133 shell integration parsed in Rust: exact command boundaries and exit codes, no prompt regex. One shared WebGL xterm renders the live block; finished output freezes into colored, selectable HTML.
+- **Agent trace bar** — each agent's plan/steps render as a live PCB-trace progress bar across the top of its project.
+- **Smart PR button** — drives a branch through the full PR lifecycle: *Create → Check → Update → loop until merge*, with the agent resolving review comments on Update. Needs an authed `gh` CLI.
+- **Everything is local** — your API key (optional) stays in the Rust backend; without one, agents and the orchestrator reuse your existing Claude Code / Gemini CLI subscription login. No key required.
 
-**High-throughput χωρίς freeze:** blocking `read()` σε ξεχωριστό OS-thread ανά PTY · output σε batches 8 KB base64 · ο semantic parser είναι incremental (χειρίζεται escape sequences/markers σπασμένα σε read boundaries).
+## Prerequisites
 
-## Προαπαιτούμενα
-
-- Node.js 18+, Rust 1.77+
-- [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) για Windows (WebView2 + MSVC build tools)
+- Windows 10/11 with **PowerShell 7** (`pwsh`)
+- **Node.js 18+**, **Rust 1.85+**, [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) (WebView2 + MSVC build tools)
+- For agents: [Claude Code](https://claude.com/claude-code) (`claude`) and/or Gemini CLI on PATH — or any ACP agent CLI
+- Optional: `gh` CLI (Smart PR), Docker Desktop (sandbox)
 
 ## Setup & Run
 
 ```powershell
 npm install
-# Προαιρετικό: $env:ANTHROPIC_API_KEY = "sk-ant-..."
-# Χωρίς key, το sidebar χρησιμοποιεί αυτόματα το τοπικό `claude` CLI.
+# Optional: $env:ANTHROPIC_API_KEY = "sk-ant-..."
+# Without a key, agents & orchestrator use your local `claude` CLI login.
 npm run tauri dev
 ```
 
-> Αν δεν υπάρχουν icons, τρέξε `npm run tauri icon path\to\logo.png`.
+Release build: `npm run tauri build` (installer under `src-tauri/target/release/bundle/`).
 
-## Δομή
+> **SmartScreen note:** unsigned builds trigger "Windows protected your PC" — click *More info → Run anyway*, or build from source.
+
+## Architecture (short version)
 
 ```
-src/
-  main.tsx · App.tsx · styles.css
-  shell/ShellController.ts   # model: feed, shared live xterm, PTY events, store
-  shell/useShell.ts          # useSyncExternalStore hook
-  blocks/TerminalBlock.tsx   # ένα block (header/content/actions)
-  blocks/Feed.tsx · InputBar.tsx
-  ai/AiClient.ts · AiSidebar.tsx
-  macros/MacroBar.tsx
-  util/ansi.ts               # ANSI→HTML (colored, selectable) + base64
-src-tauri/src/
-  lib.rs                     # Tauri builder + command registry
-  pty.rs                     # PtyManager + SemanticParser + OSC 133 injection
-  ai.rs                      # ai_chat (API ή claude CLI fallback)
+Frontend (React/Vite)                          Backend (Rust)
+─────────────────────                          ──────────────
+InputBar ──submit──► ShellController ──write──► pty.rs    PtyManager (pwsh + OSC 133 injection)
+   Feed ◄── snapshot ─────┤◄── pty://events ──            SemanticParser (command boundaries/exit codes)
+AiSidebar ──ai_chat──────────────────────────► ai.rs      orchestrator (Anthropic API or claude CLI)
+ShellController ──agent_send/acp_send────────► agent.rs   claude/gemini stream-json
+                                               acp.rs     any ACP agent (JSON-RPC over stdio)
+serviceStore ──service_start─────────────────► service.rs managed dev servers (port alloc, log stream)
+                                               docker.rs  sandbox containers (bollard)
 ```
 
-## Γνωστοί περιορισμοί (MVP)
+All child processes are tied to a kill-on-close Windows Job Object (`jobctl.rs`) — closing OctoShell never orphans a shell, agent, or dev server.
 
-- **Full-screen / alt-screen προγράμματα** (vim, htop, less, REPLs) δεν ταιριάζουν στο block model — χρειάζονται ένα raw fallback pane (μελλοντικά).
-- **Multi-line εντολές** στο input υποστηρίζονται με Shift+Enter, αλλά το PSReadLine Enter-handler κάνει AcceptLine πάντα — σύνθετα multi-line constructs μπορεί να σπάσουν.
-- **Tab completion** προωθείται πλέον στο shell μέσω persistent pwsh runspace (`TabExpansion2`).
-- Multi-tab projects υποστηρίζονται (ένα `ShellController` ανά project), με resizable panels.
+## Security posture — read this
 
-## Σημειώσεις ασφάλειας
+- With approval mode **off** (the default "⚡ Auto"), agents run with `--dangerously-skip-permissions`: they can execute any command in your project without asking. Flip the per-project **🛡 Approve** toggle to review Bash/Edit/Write calls before they run.
+- Orchestrator actions are confirm-per-click unless you enable **🔓 Auto**; a session **spend limit** (Settings) halts everything when hit.
+- The Docker sandbox isolates the **host** from agent commands (resources, filesystem outside the worktree). It does **not** protect the worktree itself or prevent network exfiltration — the mounted worktree is read-write and networking is on (npm installs need it).
+- Macros never auto-execute — they propose a command in the input for you to approve.
 
-- Τα macros **δεν** εκτελούν αυτόματα — προτείνουν εντολή στο input για έγκριση.
-- Το `run_capture` τρέχει με `-NoProfile -NonInteractive`. Μην του περνάς untrusted input χωρίς validation.
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Good first areas: ACP agent definitions (`src/agents/providers.ts`), service detection patterns, translations.
+
+## License
+
+[MIT](LICENSE)

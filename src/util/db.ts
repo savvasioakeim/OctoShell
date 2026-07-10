@@ -86,7 +86,7 @@ export async function vacuumDb(resultCap = 6000): Promise<VacuumResult> {
     for (const b of blocks) {
       if (b && b.kind === "agentTool" && typeof b.result === "string" && b.result.length > resultCap) {
         const dropped = b.result.length - resultCap;
-        b.result = b.result.slice(0, resultCap) + `\n…(${dropped} χαρακτήρες συμπιέστηκαν)…`;
+        b.result = b.result.slice(0, resultCap) + `\n…(${dropped} chars compacted)…`;
         trimmed += 1;
       }
     }

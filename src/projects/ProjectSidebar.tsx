@@ -101,7 +101,13 @@ const GROUP_R = 5;
 const NODE_R = 4.5;
 const WT_R = 3.5;
 const TRACE = "#3a3f58"; // neutral trace (ungrouped / spine)
-const WT_TRACE = "#5b7fb0"; // worktree branch hue
+
+/** "#RRGGBB" → "rgba(r,g,b,a)" for soft tints of the group palette colors. */
+function hexToRgba(hex: string, a: number): string {
+  const n = parseInt(hex.replace("#", ""), 16);
+  return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
+}
+const WT_TRACE = "#454b63"; // worktree branch — neutral gray, a notch above the spine
 const FLOW = "#b794f6"; // orchestrator "tentacle reaching" current (accent)
 const ROOT_Y = 13; // the spine's root node sits here; items start below it
 const ROOT_R = 5;
@@ -290,7 +296,7 @@ export function ProjectSidebar(props: Props) {
             <button
               onClick={(e) => { e.stopPropagation(); toggle.onToggle(); }}
               className="ml-0.5 flex shrink-0 items-center text-muted hover:text-gray-200"
-              title={toggle.collapsed ? `Ανάπτυξη worktrees` : `Σύμπτυξη worktrees`}
+              title={toggle.collapsed ? `Expand worktrees` : `Collapse worktrees`}
             >
               <Chevron open={!toggle.collapsed} />
             </button>
@@ -350,7 +356,7 @@ export function ProjectSidebar(props: Props) {
           : {}),
       }}
       className={`flex cursor-grab items-center gap-1 rounded py-1 pr-1 ${dragGroup === g.id ? "opacity-50" : ""}`}
-      title="Σύρε για αναδιάταξη · δεξί κλικ για επιλογές"
+      title="Drag to reorder · right-click for options"
     >
       <span className="min-w-0 truncate text-[10px] font-semibold uppercase tracking-wider" style={{ color: g.color }}>
         {g.name}
@@ -359,7 +365,7 @@ export function ProjectSidebar(props: Props) {
         onClick={(e) => { e.stopPropagation(); onToggle(); }}
         className="ml-0.5 flex shrink-0 items-center hover:opacity-80"
         style={{ color: g.color }}
-        title={isCollapsed ? "Ανάπτυξη ομάδας" : "Σύμπτυξη ομάδας"}
+        title={isCollapsed ? "Expand group" : "Collapse group"}
       >
         <Chevron open={!isCollapsed} />
       </button>
@@ -423,7 +429,9 @@ export function ProjectSidebar(props: Props) {
                 <div
                   key={g.id}
                   className="rounded-lg pt-2 pb-1 transition-colors"
-                  style={activeGroupId === g.id ? { background: "rgba(126,87,194,0.09)" } : undefined}
+                  // Whole group softly tinted in ITS color; a bit stronger while
+                  // one of its projects is active.
+                  style={{ background: hexToRgba(g.color, activeGroupId === g.id ? 0.1 : 0.05) }}
                 >
                   {renderGroupHeader(g, isCollapsed, () => toggleGroup(g.id))}
                   {!isCollapsed && members.map((t) => renderProject(t, 2))}
@@ -451,7 +459,7 @@ export function ProjectSidebar(props: Props) {
         ) : (
           <button
             onClick={() => setWtInput("")}
-            title="Φτιάξε isolated git worktree (νέο branch) από το ενεργό project"
+            title="Create an isolated git worktree (new branch) off the active project"
             className="w-full rounded-md border border-edge px-3 py-1.5 text-xs text-muted transition-colors hover:border-accent/50 hover:text-gray-100"
           >
             🌿 New worktree
@@ -465,7 +473,7 @@ export function ProjectSidebar(props: Props) {
         </button>
         <button
           onClick={onOpenSettings}
-          title="Ρυθμίσεις (defaults agents & orchestrator)"
+          title="Settings (agent & orchestrator defaults)"
           className="w-full rounded-md border border-edge px-3 py-1.5 text-xs text-muted transition-colors hover:border-accent/50 hover:text-gray-100"
         >
           ⚙️ Settings
@@ -518,8 +526,10 @@ function Board({
     if (y == null) return;
     ys.push(y);
     const nx = X[depth] ?? X[X.length - 1];
-    const g = groupOf(t.id);
-    const stroke = g ? g.color : t.parentId ? WT_TRACE : TRACE;
+    // Only the group's OWN stub (spine → group node) carries the group color;
+    // every trace below it — member repos and worktrees alike — stays neutral
+    // so the board doesn't flood in one hue.
+    const stroke = t.parentId ? WT_TRACE : TRACE;
     const w = t.parentId ? 2.5 : 3;
     // Incoming trace: horizontal off the spine (depth 1), else an elbow down from
     // the parent node then right to this node.
@@ -604,11 +614,12 @@ function Board({
   return (
     <svg className="pointer-events-none absolute inset-0 h-full w-full" style={{ overflow: "visible" }}>
       <defs>
-        {/* Soft accent→teal gradient for the orchestrator route (not flat). */}
+        {/* Purple→blue gradient for the orchestrator route — the same neon pair
+            as the trace progress bar, so "orchestrator energy" reads as one hue
+            everywhere. */}
         <linearGradient id="octo-flow-grad" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="#7E57C2" />
-          <stop offset="50%" stopColor={FLOW} />
-          <stop offset="100%" stopColor="#7fdbca" />
+          <stop offset="0%" stopColor="#A855F7" />
+          <stop offset="100%" stopColor="#38BDF8" />
         </linearGradient>
       </defs>
       {/* Root node + the spine descending from it to the bottom. */}
@@ -657,7 +668,7 @@ function ContextMenu({
 }) {
   const [task, setTask] = useState("");
   const newGroup = (assignTo?: string) => {
-    const id = onCreateGroup(`Ομάδα ${groups.length + 1}`);
+    const id = onCreateGroup(`Group ${groups.length + 1}`);
     if (assignTo) onAssign(assignTo, id);
     close();
   };
@@ -684,7 +695,7 @@ function ContextMenu({
       >
         {ctx.kind === "blank" && (
           <button className="w-full px-3 py-1.5 text-left text-gray-200 hover:bg-edge" onClick={() => newGroup()}>
-            ＋ Νέα ομάδα
+            ＋ New group
           </button>
         )}
 
@@ -699,7 +710,7 @@ function ContextMenu({
                   if (e.key === "Enter" && projTab) dispatch([projTab.controller], ctx.id);
                   else if (e.key === "Escape") close();
                 }}
-                placeholder="⚡ Ανάθεσε task στον agent…"
+                placeholder="⚡ Give the agent a task…"
                 className="w-full rounded bg-ink px-2 py-1 text-xs text-gray-100 outline-none placeholder:text-muted/60"
                 autoFocus
               />
@@ -709,7 +720,7 @@ function ContextMenu({
                 className="w-full px-3 py-1.5 text-left text-red-300 hover:bg-edge"
                 onClick={() => { projTab?.controller.cancelAgent(); close(); }}
               >
-                ✕ Ακύρωση agent
+                ✕ Cancel agent
               </button>
             )}
             <div className="my-1 border-t border-edge" />
@@ -721,12 +732,12 @@ function ContextMenu({
                 close();
               }}
             >
-              📂 Άνοιγμα στον file manager
+              📂 Open in file manager
             </button>
             <div className="my-1 border-t border-edge" />
-            <div className="px-3 py-0.5 text-[10px] uppercase tracking-wider text-muted">Ομάδα</div>
+            <div className="px-3 py-0.5 text-[10px] uppercase tracking-wider text-muted">Group</div>
             <button className="w-full px-3 py-1.5 text-left text-gray-200 hover:bg-edge" onClick={() => newGroup(ctx.id)}>
-              ＋ Νέα ομάδα (με αυτό)
+              ＋ New group (with this)
             </button>
             {groups.map((g) => (
               <button
@@ -741,14 +752,14 @@ function ContextMenu({
             ))}
             {assign[ctx.id!] && (
               <button className="w-full px-3 py-1.5 text-left text-muted hover:bg-edge" onClick={() => { onAssign(ctx.id!, null); close(); }}>
-                Καμία ομάδα
+                No group
               </button>
             )}
             {tabs.length > 1 && (
               <>
                 <div className="my-1 border-t border-edge" />
                 <button className="w-full px-3 py-1.5 text-left text-red-300 hover:bg-edge" onClick={() => { onClose(ctx.id!); close(); }}>
-                  Κλείσιμο project
+                  Close project
                 </button>
               </>
             )}
@@ -760,7 +771,7 @@ function ContextMenu({
             {groupMembers.length > 0 && (
               <>
                 <div className="px-3 py-0.5 text-[10px] uppercase tracking-wider text-muted">
-                  Agent · όλη η ομάδα ({groupMembers.length})
+                  Agent · whole group ({groupMembers.length})
                 </div>
                 <div className="px-2 py-1">
                   <input
@@ -770,7 +781,7 @@ function ContextMenu({
                       if (e.key === "Enter") dispatch(groupMembers.map((m) => m.controller));
                       else if (e.key === "Escape") close();
                     }}
-                    placeholder="⚡ Task σε όλα τα projects…"
+                    placeholder="⚡ Task for every project…"
                     className="w-full rounded bg-ink px-2 py-1 text-xs text-gray-100 outline-none placeholder:text-muted/60"
                     autoFocus
                   />
@@ -778,7 +789,7 @@ function ContextMenu({
                 <div className="my-1 border-t border-edge" />
               </>
             )}
-            <div className="px-3 py-0.5 text-[10px] uppercase tracking-wider text-muted">Ομάδα</div>
+            <div className="px-3 py-0.5 text-[10px] uppercase tracking-wider text-muted">Group</div>
             <div className="px-2 py-1">
               <input
                 value={rename}
@@ -787,7 +798,7 @@ function ContextMenu({
                   if (e.key === "Enter") { onRenameGroup(ctx.id!, rename); close(); }
                   else if (e.key === "Escape") close();
                 }}
-                placeholder="Όνομα ομάδας"
+                placeholder="Group name"
                 className="w-full rounded bg-ink px-2 py-1 text-xs text-gray-100 outline-none"
               />
             </div>
@@ -804,7 +815,7 @@ function ContextMenu({
             </div>
             <div className="my-1 border-t border-edge" />
             <button className="w-full px-3 py-1.5 text-left text-red-300 hover:bg-edge" onClick={() => { onDeleteGroup(ctx.id!); close(); }}>
-              Διαγραφή ομάδας
+              Delete group
             </button>
           </>
         )}

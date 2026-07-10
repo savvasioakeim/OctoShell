@@ -1,7 +1,7 @@
 // Frontend client for OctoShell's managed services (see src-tauri/src/service.rs).
 // Thin typed wrapper around the `service_start`/`service_stop` commands plus the
 // `service://ready|log|exit` event stream. A higher-level store/UI (Services
-// panel, review-mode "open server") builds on this.
+// panel, QA-mode "open server") builds on this.
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";

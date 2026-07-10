@@ -3,43 +3,23 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>OctoShell — The Native AI Workspace for Windows Developers</title>
-  <meta name="description" content="An open-source, blazing-fast terminal orchestra powered by Tauri, Rust, and multi-agent synergy. Bring your own keys, own your context." />
+  <title>OctoShell · A native AI workspace for Windows developers</title>
+  <meta name="description" content="An open source workspace that helps you run and coordinate coding agents. Built with Tauri and Rust. Bring your own keys, own your context." />
 
   <!-- Open Graph / social preview -->
-  <meta property="og:title" content="OctoShell — The Native AI Workspace for Windows Developers" />
-  <meta property="og:description" content="Open-source, blazing-fast multi-agent terminal. Built with Tauri + Rust. BYOK, privacy-first." />
+  <meta property="og:title" content="OctoShell · A native AI workspace for Windows developers" />
+  <meta property="og:description" content="An open source workspace to run and coordinate coding agents. Built with Tauri and Rust. Bring your own keys, keep your context on your machine." />
   <meta property="og:type" content="website" />
-  <meta property="og:image" content="assets/octoshell-logo.png" />
+  <!-- og:image MUST be an absolute URL for social previews to resolve it. -->
+  <meta property="og:image" content="https://savvasioakeim.github.io/OctoShell/assets/octoshell-logo.png" />
   <link rel="icon" type="image/png" href="assets/octoshell-logo.png" />
 
-  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Static, pre-compiled Tailwind (production build). Regenerate after editing
+       classes: npx tailwindcss -c docs/tailwind.docs.config.cjs -i docs/assets/tw.src.css -o docs/assets/tw.css --minify -->
+  <link rel="stylesheet" href="assets/tw.css" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
-
-  <script>
-    tailwind.config = {
-      theme: {
-        extend: {
-          colors: {
-            slatebg: "#101216",
-            chrome: "#14161C",
-            panel: "#1C202B",
-            card: "#15181F",
-            edge: "#1f232d",
-            neonpurple: "#A855F7",
-            neoncyan: "#38BDF8",
-            muted: "#8A93A6",
-          },
-          fontFamily: {
-            sans: ["Inter", "system-ui", "sans-serif"],
-            mono: ["JetBrains Mono", "ui-monospace", "monospace"],
-          },
-        },
-      },
-    };
-  </script>
 
   <style>
     body { background-color: #101216; }
@@ -67,6 +47,20 @@
     .gradient-text {
       background: linear-gradient(90deg, #A855F7, #38BDF8);
       -webkit-background-clip: text; background-clip: text; color: transparent;
+    }
+
+    /* Screenshot / GIF placeholder frame — premium border tint + soft shadow */
+    .mockup-container {
+      position: relative;
+      border: 1px solid #1f232d;
+      border-radius: 0.85rem;
+      background: linear-gradient(to bottom right, #0D0F14, #15181F);
+      overflow: hidden;
+      box-shadow: 0 24px 70px -28px rgba(0, 0, 0, 0.85);
+    }
+    .mockup-container::after { /* faint inner sheen */
+      content: ""; position: absolute; inset: 0; pointer-events: none;
+      background: radial-gradient(80% 60% at 50% 0%, rgba(168, 85, 247, 0.06), transparent 70%);
     }
 
     /* Feature card hover: animated neon border */
@@ -141,9 +135,10 @@
         <span class="font-mono text-sm font-bold tracking-widest gradient-text">OCTOSHELL</span>
       </a>
       <div class="hidden items-center gap-7 text-sm text-muted md:flex">
-        <a href="#features" class="transition-colors hover:text-white">Features</a>
-        <a href="#trace" class="transition-colors hover:text-white">How it tracks</a>
-        <a href="#compare" class="transition-colors hover:text-white">Compare</a>
+        <a href="#orchestrator" class="transition-colors hover:text-white">Tour</a>
+        <a href="#progress" class="transition-colors hover:text-white">How it tracks</a>
+        <a href="#principles" class="transition-colors hover:text-white">Principles</a>
+        <a href="#faq" class="transition-colors hover:text-white">FAQ</a>
       </div>
       <a href="https://github.com/savvasioakeim/OctoShell" target="_blank" rel="noopener"
          class="rounded-md border border-edge px-3.5 py-1.5 text-sm font-medium text-gray-200 transition-colors hover:border-neonpurple/60 hover:text-white">
@@ -161,11 +156,12 @@
           Tauri · Rust · React · Open Source
         </span>
         <h1 class="mt-5 text-4xl font-extrabold leading-[1.08] tracking-tight text-white md:text-5xl lg:text-6xl">
-          The Native <span class="gradient-text">AI Workspace</span><br />for Windows Developers.
+          A native <span class="gradient-text">AI workspace</span><br />for Windows developers.
         </h1>
         <p class="mt-5 max-w-xl text-base leading-relaxed text-muted md:text-lg">
-          An open-source, blazing-fast terminal orchestra powered by Tauri, Rust, and
-          multi-agent synergy. <span class="text-gray-200">Bring your own keys, own your context.</span>
+          An open source workspace that helps you run and coordinate coding agents, built with
+          Tauri and Rust. It works with Claude, Gemini, and other agents, or local models through
+          Ollama. <span class="text-gray-200">Bring your own keys, own your context.</span>
         </p>
         <div class="mt-8 flex flex-wrap items-center gap-4">
           <a href="https://github.com/savvasioakeim/OctoShell/releases" target="_blank" rel="noopener"
@@ -178,14 +174,14 @@
             View Source on GitHub
           </a>
         </div>
-        <p class="mt-4 font-mono text-xs text-muted/80">// BYOK — no subscription, pay only raw API tokens.</p>
+        <p class="mt-4 font-mono text-xs text-muted/80">// Use your existing Claude Code or Gemini login, or bring your own API key.</p>
       </div>
 
       <!-- Hero artwork -->
       <div class="reveal flex justify-center md:justify-end">
         <div class="relative">
           <div class="absolute -inset-6 -z-10 rounded-full bg-neonpurple/20 blur-3xl"></div>
-          <img src="assets/octoshell-logo.png" alt="OctoShell — Orchestrate. Build. Test. Deploy."
+          <img src="assets/octoshell-logo.png" alt="OctoShell. Orchestrate, build, test, deploy."
                class="w-[320px] max-w-full rounded-2xl md:w-[420px]" />
         </div>
       </div>
@@ -194,12 +190,14 @@
     <!-- App window mockup -->
     <div class="reveal mx-auto mt-16 max-w-5xl">
       <div class="overflow-hidden rounded-xl border border-edge bg-chrome shadow-[0_24px_80px_-24px_rgba(0,0,0,.8)]">
-        <!-- title bar -->
-        <div class="flex items-center gap-2 border-b border-edge bg-panel/60 px-4 py-2.5">
-          <span class="h-3 w-3 rounded-full bg-[#ff5f57]"></span>
-          <span class="h-3 w-3 rounded-full bg-[#febc2e]"></span>
-          <span class="h-3 w-3 rounded-full bg-[#28c840]"></span>
-          <span class="ml-3 font-mono text-xs text-muted">octoshell — ~/workshop/OctoShell</span>
+        <!-- title bar (Windows-style caption buttons, this is a native Windows app) -->
+        <div class="flex items-center border-b border-edge bg-panel/60 px-4 py-2">
+          <span class="font-mono text-xs text-muted">octoshell · ~/workshop/OctoShell</span>
+          <div class="ml-auto flex items-center gap-4 text-muted/70">
+            <span class="text-sm leading-none">&#x2500;</span>
+            <span class="text-[11px] leading-none">&#x25A2;</span>
+            <span class="text-sm leading-none">&#x2715;</span>
+          </div>
         </div>
         <!-- screenshot placeholder: drop octoshell_yYw4MKZkos.jpg into assets/ and swap the div below for <img> -->
         <div class="relative aspect-[16/9] w-full bg-gradient-to-br from-[#0D0F14] to-[#15181F]">
@@ -213,61 +211,90 @@
     </div>
   </section>
 
-  <!-- ───────────────────────── FEATURES ───────────────────────── -->
-  <section id="features" class="mx-auto max-w-6xl px-5 py-20">
-    <div class="reveal mb-12 text-center">
-      <h2 class="text-3xl font-bold tracking-tight text-white md:text-4xl">The Core Traces</h2>
-      <p class="mx-auto mt-3 max-w-2xl text-muted">Three unfair advantages baked into every layer of the stack.</p>
-    </div>
-    <div class="grid gap-6 md:grid-cols-3">
-      <!-- Card 1 -->
-      <div class="feature-card reveal rounded-xl border border-edge bg-card/50 p-6">
-        <div class="mb-4 inline-flex h-11 w-11 items-center justify-center rounded-lg border border-neoncyan/30 bg-neoncyan/10 text-neoncyan">
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h7l-1 8 10-12h-7l1-8z"/></svg>
-        </div>
-        <h3 class="text-lg font-semibold text-white">Blazing-Fast Rust Backend</h3>
-        <p class="mt-2 text-sm leading-relaxed text-muted">
-          Built with Tauri, not Electron. A native WebView2 shell with a Rust core —
-          <span class="text-gray-200">~80% lighter resource footprint</span> and instant cold starts.
+  <!-- ═══════════ 01 — THE ORCHESTRATOR (split: text · shot) ═══════════ -->
+  <section id="orchestrator" class="mx-auto max-w-6xl px-5 py-24">
+    <div class="grid items-center gap-12 md:grid-cols-2">
+      <div class="reveal">
+        <span class="font-mono text-xs tracking-widest text-neonpurple">THE SPARK</span>
+        <h2 class="mt-3 text-3xl font-bold tracking-tight text-white md:text-4xl">01 · One prompt, a whole pipeline</h2>
+        <p class="mt-4 leading-relaxed text-slate-400">
+          Hand the orchestrator your tickets and a single goal. It fans them out into isolated,
+          parallel agents and keeps the loop going while you stay in command, approving as it goes.
         </p>
+        <!-- micro-prompt: what the user types -->
+        <div class="mt-6 rounded-lg border border-edge bg-[#0D0F14] px-4 py-3 font-mono text-sm shadow-inner">
+          <span class="text-neoncyan">&gt;</span>
+          <span class="text-slate-300">Create worktrees for all assigned tickets. Run tests. Open PRs when done.</span>
+          <span class="ml-0.5 inline-block h-4 w-1.5 translate-y-0.5 animate-pulse bg-neoncyan"></span>
+        </div>
       </div>
-      <!-- Card 2 -->
-      <div class="feature-card reveal rounded-xl border border-edge bg-card/50 p-6">
-        <div class="mb-4 inline-flex h-11 w-11 items-center justify-center rounded-lg border border-neonpurple/30 bg-neonpurple/10 text-neonpurple">
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="12" r="3"/><path d="M9 6h6a3 3 0 0 1 3 3M9 18h6a3 3 0 0 0 3-3"/></svg>
+      <div class="mockup-container reveal aspect-[16/11] w-full">
+        <!-- TODO: <img src="assets/shot-orchestrator.png" class="h-full w-full object-cover" alt="Orchestrator panel" /> -->
+        <div class="flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
+          <span class="font-mono text-sm text-slate-400">📸 Orchestrator panel</span>
+          <span class="font-mono text-xs text-slate-600">central panel with agent tasks · drop <code class="text-neoncyan">assets/shot-orchestrator.png</code></span>
         </div>
-        <h3 class="text-lg font-semibold text-white">Parallel Agent Orchestration</h3>
-        <p class="mt-2 text-sm leading-relaxed text-muted">
-          Dispatch automated sub-tasks, tests, and git worktrees simultaneously with
-          <span class="text-gray-200">smart self-healing loops</span> that drive a PR to merge.
-        </p>
-      </div>
-      <!-- Card 3 -->
-      <div class="feature-card reveal rounded-xl border border-edge bg-card/50 p-6">
-        <div class="mb-4 inline-flex h-11 w-11 items-center justify-center rounded-lg border border-neoncyan/30 bg-neoncyan/10 text-neoncyan">
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-        </div>
-        <h3 class="text-lg font-semibold text-white">100% Open Source &amp; Private</h3>
-        <p class="mt-2 text-sm leading-relaxed text-muted">
-          BYOK — Bring Your Own Key. No corporate markup, no data leaks.
-          <span class="text-gray-200">Your code stays on your machine.</span>
-        </p>
       </div>
     </div>
   </section>
 
-  <!-- ───────────────────────── TRACE SHOWCASE ───────────────────────── -->
-  <section id="trace" class="mx-auto max-w-6xl px-5 py-20">
+  <!-- ═══════════ 02 — ISOLATED WORKTREES (reverse: shot · text) ═══════════ -->
+  <section id="worktrees" class="mx-auto max-w-6xl px-5 py-24">
+    <div class="grid items-center gap-12 md:grid-cols-2">
+      <div class="reveal order-1 md:order-2">
+        <span class="font-mono text-xs tracking-widest text-neoncyan">THE FOUNDATION</span>
+        <h2 class="mt-3 text-3xl font-bold tracking-tight text-white md:text-4xl">02 · Dedicated worktrees, no collisions</h2>
+        <p class="mt-4 leading-relaxed text-slate-400">
+          Point the orchestrator at your tickets and each agent works in its own isolated Git
+          worktree. No manual branch switching, no stash conflicts, no broken local environments.
+        </p>
+        <!-- micro-visual: folder tree -->
+        <pre class="mt-6 overflow-x-auto rounded-lg border border-edge bg-[#0D0F14] px-4 py-3 font-mono text-xs leading-relaxed text-slate-300 shadow-inner"><span class="text-slate-500">project-root/</span>
+ ├── <span class="text-white">main/</span>
+ ├── <span class="text-neonpurple">feature-login-agent/</span>
+ └── <span class="text-neoncyan">bugfix-checkout-agent/</span></pre>
+      </div>
+      <div class="mockup-container reveal order-2 aspect-[16/11] w-full md:order-1">
+        <!-- TODO: <img src="assets/shot-worktrees.png" class="h-full w-full object-cover" alt="Projects & worktrees sidebar" /> -->
+        <div class="flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
+          <span class="font-mono text-sm text-slate-400">📸 Projects sidebar</span>
+          <span class="font-mono text-xs text-slate-600">left sidebar · active projects + worktrees · drop <code class="text-neoncyan">assets/shot-worktrees.png</code></span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════ 03 — LIVE AGENT EXECUTION (dominant centered shot) ═══════════ -->
+  <section id="live" class="mx-auto max-w-6xl px-5 py-24">
+    <div class="reveal mx-auto mb-10 max-w-3xl text-center">
+      <span class="font-mono text-xs tracking-widest text-neonpurple">THE WORKSPACE</span>
+      <h2 class="mt-3 text-3xl font-bold tracking-tight text-white md:text-4xl">03 · Total visibility, no black boxes</h2>
+      <p class="mt-4 leading-relaxed text-slate-400">
+        Watch agents run shell commands, read compiler output, make tool calls, and write files
+        as it happens. You stay the pilot in command.
+      </p>
+    </div>
+    <div class="mockup-container reveal aspect-[16/9] w-full">
+      <!-- TODO: <img src="assets/shot-live.png" class="h-full w-full object-cover" alt="Live agent streams & shell output" /> -->
+      <div class="flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
+        <span class="font-mono text-base text-slate-400">📸 Live agent workspace</span>
+        <span class="font-mono text-xs text-slate-600">central column · live streams, logs, shell output · drop <code class="text-neoncyan">assets/shot-live.png</code></span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════ 04 — SIGNATURE PROGRESS (centered, embeds the live trace) ═══════════ -->
+  <section id="progress" class="mx-auto max-w-6xl px-5 py-24">
     <div class="reveal rounded-2xl border border-edge bg-gradient-to-b from-card/60 to-chrome/40 p-8 md:p-14">
       <div class="mx-auto max-w-3xl text-center">
-        <h2 class="text-3xl font-bold tracking-tight text-white md:text-4xl">Watch every phase light up.</h2>
-        <p class="mt-3 text-muted">
-          OctoShell renders each agent run as a live PCB trace — nodes ignite from
-          <span class="text-neonpurple">neon purple</span> to <span class="text-neoncyan">neon cyan</span> as the task completes.
+        <span class="font-mono text-xs tracking-widest text-neoncyan">THE PULSE</span>
+        <h2 class="mt-3 text-3xl font-bold tracking-tight text-white md:text-4xl">04 · Watch every phase light up</h2>
+        <p class="mt-4 leading-relaxed text-slate-400">
+          OctoShell draws each agent's phase as a live PCB trace right in the interface. Nodes light
+          up from neon purple to cyan as a task moves from planning to writing code.
         </p>
       </div>
-
-      <!-- the animated trace -->
+      <!-- the animated horizontal progress trace (driven by JS below) -->
       <div class="mx-auto mt-12 max-w-2xl">
         <div id="trace-track" class="flex items-center">
           <!-- nodes + segments injected/animated by JS -->
@@ -279,75 +306,111 @@
           <span class="phase-label" data-i="3">Review</span>
         </div>
         <p class="mt-8 text-center font-mono text-sm text-muted">
-          <span id="trace-count" class="gradient-text font-bold">1/4</span> phases · self-paced, self-healing
+          <span id="trace-count" class="gradient-text font-bold">1/4</span> phases · it plans, tests, and retries on its own
         </p>
       </div>
     </div>
   </section>
 
-  <!-- ───────────────────────── WORKFLOW ───────────────────────── -->
-  <section id="workflow" class="mx-auto max-w-6xl px-5 py-20">
-    <div class="reveal mb-12 text-center">
-      <h2 class="text-3xl font-bold tracking-tight text-white md:text-4xl">One prompt. A whole pipeline.</h2>
-      <p class="mx-auto mt-3 max-w-2xl text-muted">
-        Hand OctoShell a goal and the orchestrator fans it out into isolated agents — then drives the loop until it's merged.
-      </p>
+  <!-- ═══════════ 05 — MULTI-PROJECT HUB (split: text · shot) ═══════════ -->
+  <section id="multiproject" class="mx-auto max-w-6xl px-5 py-24">
+    <div class="grid items-center gap-12 md:grid-cols-2">
+      <div class="reveal">
+        <span class="font-mono text-xs tracking-widest text-neonpurple">THE COMMAND CENTER</span>
+        <h2 class="mt-3 text-3xl font-bold tracking-tight text-white md:text-4xl">05 · Work across many repositories</h2>
+        <p class="mt-4 leading-relaxed text-slate-400">
+          Follow parallel agent progress across several repositories from one place. Handy when a
+          change spans more than one service, or a feature touches a few projects at once.
+        </p>
+      </div>
+      <div class="mockup-container reveal aspect-[16/11] w-full">
+        <!-- TODO: <img src="assets/shot-multiproject.png" class="h-full w-full object-cover" alt="Orchestrator status panel" /> -->
+        <div class="flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
+          <span class="font-mono text-sm text-slate-400">📸 Orchestrator status panel</span>
+          <span class="font-mono text-xs text-slate-600">right panel · concurrent tests running/done · drop <code class="text-neoncyan">assets/shot-multiproject.png</code></span>
+        </div>
+      </div>
     </div>
-    <ol class="grid gap-6 md:grid-cols-4">
-      <li class="reveal rounded-xl border border-edge bg-card/50 p-6">
-        <span class="font-mono text-xs text-neonpurple">01 · PLAN</span>
-        <h3 class="mt-2 text-base font-semibold text-white">Dispatch</h3>
-        <p class="mt-2 text-sm leading-relaxed text-muted">The orchestrator splits the task into ordered steps and spawns a dedicated agent per worktree.</p>
-      </li>
-      <li class="reveal rounded-xl border border-edge bg-card/50 p-6">
-        <span class="font-mono text-xs text-neonpurple">02 · BUILD</span>
-        <h3 class="mt-2 text-base font-semibold text-white">Parallel work</h3>
-        <p class="mt-2 text-sm leading-relaxed text-muted">Agents edit, run commands and commit in parallel — each in its own isolated git worktree, no collisions.</p>
-      </li>
-      <li class="reveal rounded-xl border border-edge bg-card/50 p-6">
-        <span class="font-mono text-xs text-neoncyan">03 · TEST</span>
-        <h3 class="mt-2 text-base font-semibold text-white">Self-healing</h3>
-        <p class="mt-2 text-sm leading-relaxed text-muted">Tests run on every change; failures feed straight back into the agent, which fixes and re-runs automatically.</p>
-      </li>
-      <li class="reveal rounded-xl border border-edge bg-card/50 p-6">
-        <span class="font-mono text-xs text-neoncyan">04 · REVIEW</span>
-        <h3 class="mt-2 text-base font-semibold text-white">Drive to merge</h3>
-        <p class="mt-2 text-sm leading-relaxed text-muted">The Smart PR button opens the PR, reads review comments, resolves them, and loops until it lands.</p>
-      </li>
-    </ol>
   </section>
 
-  <!-- ───────────────────────── COMPARE ───────────────────────── -->
-  <section id="compare" class="mx-auto max-w-6xl px-5 py-20">
-    <div class="reveal mb-12 text-center">
-      <h2 class="text-3xl font-bold tracking-tight text-white md:text-4xl">David vs. Goliath</h2>
-      <p class="mx-auto mt-3 max-w-2xl text-muted">Same firepower. None of the rent — or the data trade.</p>
-    </div>
-    <div class="grid gap-6 md:grid-cols-2">
-      <!-- Goliath -->
-      <div class="reveal rounded-xl border border-edge bg-card/30 p-7">
-        <h3 class="text-lg font-semibold text-gray-300">Proprietary AI Dev Tools</h3>
-        <p class="mt-1 font-mono text-2xl font-bold text-gray-400">$20–30<span class="text-base font-normal text-muted">/mo</span></p>
-        <ul class="mt-6 space-y-3 text-sm text-muted">
-          <li class="flex gap-3"><span class="text-red-400">✕</span> Recurring subscription, forever</li>
-          <li class="flex gap-3"><span class="text-red-400">✕</span> Your code routed through their cloud</li>
-          <li class="flex gap-3"><span class="text-red-400">✕</span> Markup baked on top of token cost</li>
-          <li class="flex gap-3"><span class="text-red-400">✕</span> Closed source — trust required</li>
-          <li class="flex gap-3"><span class="text-red-400">✕</span> Electron bloat, heavy RAM</li>
-        </ul>
+  <!-- ═══════════ 06 — SMART REVIEW (full-width grand finale, demo GIF) ═══════════ -->
+  <section id="review" class="mx-auto max-w-6xl px-5 py-24">
+    <div class="reveal rounded-2xl border border-edge bg-gradient-to-b from-card/50 to-chrome/30 p-6 md:p-10">
+      <div class="mx-auto mb-8 max-w-3xl text-center">
+        <span class="font-mono text-xs tracking-widest text-neoncyan">REVIEW AND QA</span>
+        <h2 class="mt-3 text-3xl font-bold tracking-tight text-white md:text-4xl">06 · A review pass before it reaches you</h2>
+        <p class="mt-4 leading-relaxed text-slate-400">
+          When an agent hits a test failure it reads the error, rewrites the file, and runs the tests
+          again on its own. You can also turn on a review agent that reads each change first and flags
+          anything worth a second look. When it looks good, QA mode starts your app's dev server for
+          you so you can click through the change and accept it or send it back.
+        </p>
       </div>
-      <!-- David -->
-      <div class="reveal relative overflow-hidden rounded-xl border border-neonpurple/40 bg-gradient-to-b from-neonpurple/10 to-card/40 p-7 glow-purple">
-        <span class="absolute right-4 top-4 rounded-full border border-neoncyan/40 bg-neoncyan/10 px-2.5 py-0.5 font-mono text-[10px] text-neoncyan">RECOMMENDED</span>
-        <h3 class="text-lg font-semibold gradient-text">OctoShell</h3>
-        <p class="mt-1 font-mono text-2xl font-bold text-white">Free<span class="text-base font-normal text-muted"> · BYOK</span></p>
-        <ul class="mt-6 space-y-3 text-sm text-gray-200">
-          <li class="flex gap-3"><span class="text-neoncyan">✓</span> Open source, MIT — yours to fork</li>
-          <li class="flex gap-3"><span class="text-neoncyan">✓</span> Privacy-first — code stays local</li>
-          <li class="flex gap-3"><span class="text-neoncyan">✓</span> Pay only raw API tokens, no markup</li>
-          <li class="flex gap-3"><span class="text-neoncyan">✓</span> Native Rust + Tauri, featherweight</li>
-          <li class="flex gap-3"><span class="text-neoncyan">✓</span> Multi-agent orchestration built in</li>
-        </ul>
+      <div class="mockup-container aspect-[16/9] w-full">
+        <!-- TODO: <img src="assets/demo-selfheal.gif" class="h-full w-full object-cover" alt="Self-healing demo" /> -->
+        <div class="flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
+          <span class="font-mono text-base text-slate-400">🎞️ The fix and retry loop</span>
+          <span class="font-mono text-xs text-slate-600">test fails → agent fixes → tests pass · drop <code class="text-neoncyan">assets/demo-selfheal.gif</code></span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ───────────────────────── CORE PRINCIPLES ───────────────────────── -->
+  <section id="principles" class="mx-auto max-w-6xl px-5 py-20">
+    <div class="reveal mb-12 text-center">
+      <span class="font-mono text-xs tracking-widest text-neoncyan">OUR PHILOSOPHY</span>
+      <h2 class="mt-3 text-3xl font-bold tracking-tight text-white md:text-4xl">Built on open source principles</h2>
+      <p class="mx-auto mt-3 max-w-2xl text-slate-400">
+        OctoShell aims to be transparent, light, and fully under your control. No account to create,
+        no telemetry, nothing hidden.
+      </p>
+    </div>
+    <div class="grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
+      <!-- Pillar 1 -->
+      <div class="feature-card reveal rounded-xl border border-edge bg-card/50 p-6">
+        <div class="mb-4 inline-flex h-11 w-11 items-center justify-center rounded-lg border border-neonpurple/30 bg-neonpurple/10 text-neonpurple">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M8.5 7a2.5 2.5 0 1 1-5 0 2.5 2.5 0 0 1 5 0zM20.5 17a2.5 2.5 0 1 1-5 0 2.5 2.5 0 0 1 5 0z"/></svg>
+        </div>
+        <h3 class="text-base font-semibold text-white">Open source, yours to keep</h3>
+        <p class="mt-2 text-sm leading-relaxed text-slate-400">
+          Licensed under MIT. The code is open and readable, and yours to fork, change, or self host
+          for as long as you like.
+        </p>
+      </div>
+      <!-- Pillar 2 -->
+      <div class="feature-card reveal rounded-xl border border-edge bg-card/50 p-6">
+        <div class="mb-4 inline-flex h-11 w-11 items-center justify-center rounded-lg border border-neoncyan/30 bg-neoncyan/10 text-neoncyan">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 7 5 5m-2-2 1.5-1.5a2.1 2.1 0 0 0-3-3L8 8.5a4 4 0 1 0 1.5 6.5"/><circle cx="6" cy="16" r="3"/></svg>
+        </div>
+        <h3 class="text-base font-semibold text-white">Your agents, your keys</h3>
+        <p class="mt-2 text-sm leading-relaxed text-slate-400">
+          Sign in with the Claude Code or Gemini CLI you already use, no API key required. Bring your
+          own key if you prefer, and you pay the provider directly. You can also run local models
+          through Ollama at no token cost.
+        </p>
+      </div>
+      <!-- Pillar 3 -->
+      <div class="feature-card reveal rounded-xl border border-edge bg-card/50 p-6">
+        <div class="mb-4 inline-flex h-11 w-11 items-center justify-center rounded-lg border border-neonpurple/30 bg-neonpurple/10 text-neonpurple">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
+        </div>
+        <h3 class="text-base font-semibold text-white">Runs locally, stays private</h3>
+        <p class="mt-2 text-sm leading-relaxed text-slate-400">
+          Your code context never leaves your machine. Agents run, files change, and Git worktrees
+          live entirely in your local environment.
+        </p>
+      </div>
+      <!-- Pillar 4 -->
+      <div class="feature-card reveal rounded-xl border border-edge bg-card/50 p-6">
+        <div class="mb-4 inline-flex h-11 w-11 items-center justify-center rounded-lg border border-neoncyan/30 bg-neoncyan/10 text-neoncyan">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z"/></svg>
+        </div>
+        <h3 class="text-base font-semibold text-white">Light and native on Windows</h3>
+        <p class="mt-2 text-sm leading-relaxed text-slate-400">
+          Built with Rust and Tauri, so it stays light on memory and starts quickly. The terminal,
+          PTY, and parsing run in native Rust, and it feels at home on Windows.
+        </p>
       </div>
     </div>
   </section>
@@ -356,24 +419,32 @@
   <section id="faq" class="mx-auto max-w-3xl px-5 py-20">
     <div class="reveal mb-12 text-center">
       <h2 class="text-3xl font-bold tracking-tight text-white md:text-4xl">Questions, answered.</h2>
-      <p class="mx-auto mt-3 max-w-2xl text-muted">The short version — no sales deck.</p>
+      <p class="mx-auto mt-3 max-w-2xl text-muted">The short version, no sales deck.</p>
     </div>
     <div class="space-y-4">
       <details class="reveal group rounded-xl border border-edge bg-card/50 p-5 [&_summary]:cursor-pointer">
         <summary class="flex items-center justify-between font-semibold text-white">What does “BYOK” actually mean?<span class="text-muted transition-transform group-open:rotate-45">+</span></summary>
-        <p class="mt-3 text-sm leading-relaxed text-muted">Bring Your Own Key. You plug in your own Anthropic (or other) API key, or sign in to the local <code class="text-neoncyan">claude</code> CLI. OctoShell never proxies your traffic — you pay the provider directly at raw token cost, with zero markup.</p>
+        <p class="mt-3 text-sm leading-relaxed text-muted">Bring Your Own Key. You plug in your own Anthropic (or other) API key, or sign in to the local <code class="text-neoncyan">claude</code> CLI. OctoShell never proxies your traffic. You pay the provider directly at token cost.</p>
       </details>
       <details class="reveal group rounded-xl border border-edge bg-card/50 p-5 [&_summary]:cursor-pointer">
         <summary class="flex items-center justify-between font-semibold text-white">Does my code leave my machine?<span class="text-muted transition-transform group-open:rotate-45">+</span></summary>
-        <p class="mt-3 text-sm leading-relaxed text-muted">Only what you choose to send to your model provider in a prompt. There's no OctoShell cloud, no telemetry, and no account — the app runs entirely as a native Windows process.</p>
+        <p class="mt-3 text-sm leading-relaxed text-muted">Only what you choose to send to your model provider in a prompt. There's no OctoShell cloud, no telemetry, and no account. The app runs entirely as a native Windows process.</p>
       </details>
       <details class="reveal group rounded-xl border border-edge bg-card/50 p-5 [&_summary]:cursor-pointer">
-        <summary class="flex items-center justify-between font-semibold text-white">Why Tauri instead of Electron?<span class="text-muted transition-transform group-open:rotate-45">+</span></summary>
-        <p class="mt-3 text-sm leading-relaxed text-muted">Tauri uses the OS WebView plus a Rust core, so the binary is a fraction of an Electron app's size and idles at a fraction of the RAM — while the terminal, PTY and parsing all run in native Rust.</p>
+        <summary class="flex items-center justify-between font-semibold text-white">Why Tauri?<span class="text-muted transition-transform group-open:rotate-45">+</span></summary>
+        <p class="mt-3 text-sm leading-relaxed text-muted">Tauri uses the operating system WebView plus a Rust core, so the download stays small and idle memory stays low. The terminal, PTY, and parsing run in native Rust.</p>
+      </details>
+      <details class="reveal group rounded-xl border border-edge bg-card/50 p-5 [&_summary]:cursor-pointer">
+        <summary class="flex items-center justify-between font-semibold text-white">Which agents can it drive?<span class="text-muted transition-transform group-open:rotate-45">+</span></summary>
+        <p class="mt-3 text-sm leading-relaxed text-muted">Claude and Gemini directly, plus Codex, Cursor, Copilot, and OpenCode through the Agent Client Protocol. You can also run local models with Ollama. Pick a different one per agent, orchestrator, or reviewer if you like.</p>
+      </details>
+      <details class="reveal group rounded-xl border border-edge bg-card/50 p-5 [&_summary]:cursor-pointer">
+        <summary class="flex items-center justify-between font-semibold text-white">What is QA mode?<span class="text-muted transition-transform group-open:rotate-45">+</span></summary>
+        <p class="mt-3 text-sm leading-relaxed text-muted">Once agents finish, OctoShell can start your app's dev server for you and open it, so you can click through the change and either accept it or send it back with notes. You never juggle terminals to run the app yourself.</p>
       </details>
       <details class="reveal group rounded-xl border border-edge bg-card/50 p-5 [&_summary]:cursor-pointer">
         <summary class="flex items-center justify-between font-semibold text-white">Is it really free?<span class="text-muted transition-transform group-open:rotate-45">+</span></summary>
-        <p class="mt-3 text-sm leading-relaxed text-muted">Yes — open source under MIT. Clone it, fork it, ship your own build. The only thing you ever pay for is your own model usage.</p>
+        <p class="mt-3 text-sm leading-relaxed text-muted">Yes. Open source under MIT. Clone it, fork it, ship your own build. The only thing you pay for is your own model usage.</p>
       </details>
     </div>
   </section>
@@ -406,9 +477,6 @@
       <div class="flex items-center gap-5 text-muted">
         <a href="https://github.com/savvasioakeim/OctoShell" target="_blank" rel="noopener" aria-label="GitHub" class="transition-colors hover:text-white">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 .5C5.7.5.5 5.7.5 12a11.5 11.5 0 0 0 7.9 10.9c.6.1.8-.2.8-.5v-2c-3.2.7-3.9-1.4-3.9-1.4-.5-1.3-1.3-1.7-1.3-1.7-1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.8 1.3 3.5 1 .1-.8.4-1.3.7-1.6-2.6-.3-5.3-1.3-5.3-5.7 0-1.3.5-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.2 0 0 1-.3 3.3 1.2a11.5 11.5 0 0 1 6 0C17.3 4.8 18.3 5 18.3 5c.6 1.7.2 2.9.1 3.2.8.8 1.2 1.8 1.2 3.1 0 4.4-2.7 5.4-5.3 5.7.4.4.8 1.1.8 2.2v3.3c0 .3.2.6.8.5A11.5 11.5 0 0 0 23.5 12C23.5 5.7 18.3.5 12 .5z"/></svg>
-        </a>
-        <a href="https://x.com" target="_blank" rel="noopener" aria-label="X / Twitter" class="transition-colors hover:text-white">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M18.9 2H22l-7.3 8.3L23.3 22h-6.8l-5.3-7-6.1 7H2l7.8-8.9L1 2h6.9l4.8 6.3L18.9 2zm-2.4 18h1.9L7.6 4H5.6l10.9 16z"/></svg>
         </a>
       </div>
       <p class="font-mono text-xs text-muted">Built by developers, for developers.</p>

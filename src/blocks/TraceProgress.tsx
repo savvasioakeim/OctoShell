@@ -26,30 +26,43 @@ export function TraceProgress({ steps }: { steps: AgentStep[] | null }) {
   const lit = (i: number) => steps[i].status !== "pending"; // completed or active
   const fracAt = (i: number) => (total > 1 ? i / (total - 1) : 1);
 
+  // The always-on title above the bar: the step in progress, else (all done) the
+  // last step, else the next pending one. Changes as the active task advances.
+  const activeIdx = steps.findIndex((s) => s.status === "in_progress");
+  const allDone = completed === total;
+  const curIdx = activeIdx >= 0 ? activeIdx : allDone ? total - 1 : Math.min(completed, total - 1);
+  const curText = steps[curIdx]?.text?.trim() || `Step ${curIdx + 1}`;
+  const curLabel = allDone ? `✓ ${curText}` : curText;
+
   return (
-    <div className="flex min-w-0 items-center gap-2 text-[11px]">
-      <div className="flex min-w-0 flex-1 items-center">
-        {steps.map((s, i) => {
-          const col = traceColor(fracAt(i));
-          const active = s.status === "in_progress";
-          const done = s.status === "completed";
-          const label = active ? `Current: ${s.text}` : done ? `✓ ${s.text}` : s.text || `Βήμα ${i + 1}`;
-          return (
-            <Fragment key={i}>
-              {i > 0 && (
-                <span
-                  className="h-px flex-1 rounded-full transition-colors"
-                  style={{
-                    background:
-                      lit(i - 1) && lit(i)
-                        ? `linear-gradient(90deg, ${traceColor(fracAt(i - 1))}, ${traceColor(fracAt(i))})`
-                        : TRACE_PENDING,
-                  }}
-                />
-              )}
-              {/* Node + instant CSS tooltip (group-hover toggles display → no delay,
-                  unlike the native title attribute). cursor-help signals the hint. */}
-              <span className="group relative flex shrink-0 cursor-help items-center">
+    <div className="flex min-w-0 flex-col gap-1">
+      {/* Current task title — always visible, centered, tinted to its trace color. */}
+      <div
+        className="truncate text-center text-[11px] font-medium leading-none"
+        style={{ color: traceColor(fracAt(curIdx)) }}
+        title={curLabel}
+      >
+        {curLabel}
+      </div>
+      <div className="flex min-w-0 items-center gap-2 text-[11px]">
+        <div className="flex min-w-0 flex-1 items-center">
+          {steps.map((s, i) => {
+            const col = traceColor(fracAt(i));
+            const active = s.status === "in_progress";
+            const done = s.status === "completed";
+            return (
+              <Fragment key={i}>
+                {i > 0 && (
+                  <span
+                    className="h-px flex-1 rounded-full transition-colors"
+                    style={{
+                      background:
+                        lit(i - 1) && lit(i)
+                          ? `linear-gradient(90deg, ${traceColor(fracAt(i - 1))}, ${traceColor(fracAt(i))})`
+                          : TRACE_PENDING,
+                    }}
+                  />
+                )}
                 <span
                   className={`shrink-0 rounded-full transition-all ${
                     active ? "h-3 w-3 animate-pulse" : "h-2 w-2"
@@ -62,17 +75,14 @@ export function TraceProgress({ steps }: { steps: AgentStep[] | null }) {
                       : { background: "transparent", border: `1.5px solid ${TRACE_PENDING}` } // ○ hollow
                   }
                 />
-                <span className="pointer-events-none absolute left-1/2 top-full z-50 mt-1.5 hidden -translate-x-1/2 whitespace-nowrap rounded border border-edge bg-chrome px-2 py-1 text-[11px] text-gray-100 shadow-lg group-hover:block">
-                  {label}
-                </span>
-              </span>
-            </Fragment>
-          );
-        })}
+              </Fragment>
+            );
+          })}
+        </div>
+        <span className="shrink-0 tabular-nums" style={{ color: traceColor(completed / total) }}>
+          {completed}/{total} steps · {pct}%
+        </span>
       </div>
-      <span className="shrink-0 tabular-nums" style={{ color: traceColor(completed / total) }}>
-        {completed}/{total} steps · {pct}%
-      </span>
     </div>
   );
 }

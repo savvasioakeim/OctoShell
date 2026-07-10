@@ -24,7 +24,20 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.22"
 # Server-side AI calls; rustls avoids a system OpenSSL dependency on Windows.
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+
+# Optional Docker sandbox for agent commands (docker.rs). bollard's default
+# features use rustls (not system OpenSSL), so they're consistent with our
+# Windows-friendly, OpenSSL-free stack; they also provide connect_with_local_defaults.
+bollard = "0.18"
+futures-util = "0.3"
+
+# Agent Client Protocol (ACP): the provider-agnostic path. OctoShell acts as an
+# ACP CLIENT that drives any ACP-speaking agent (Claude, Gemini, …) over a
+# subprocess. See acp.rs. tokio is needed directly for the async session tasks
+# and prompt/decision channels.
+agent-client-protocol = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "io-util", "process", "time"] }
 
 # Win32 Job Object: tie every spawned shell/agent to OctoShell's lifetime so a
 # crash or hot-reload can't orphan pwsh/claude/gemini processes (see jobctl.rs).

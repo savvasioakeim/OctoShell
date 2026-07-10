@@ -20,11 +20,11 @@ interface Macro {
 const MACROS: Macro[] = [
   {
     label: "🆚 VSCode",
-    title: "Άνοιξε το project folder στο VS Code",
+    title: "Open the project folder in VS Code",
     run: async (controller) => {
       const cwd = controller.getCwd();
       if (!cwd) {
-        controller.setInput("# (δεν υπάρχει ακόμα φάκελος project)");
+        controller.setInput("# (no project folder yet)");
         return;
       }
       await invoke("open_editor", { path: cwd });
@@ -32,7 +32,7 @@ const MACROS: Macro[] = [
   },
   {
     label: "✨ Git Smart Commit",
-    title: "Ανάλυσε το git status και πρότεινε commit+push στο input field",
+    title: "Analyse git status and propose commit+push in the input field",
     run: async (controller) => {
       // Prefer the previous block's output if it was a git status; else capture fresh.
       const last = controller.getLastCommandBlock();
@@ -44,7 +44,7 @@ const MACROS: Macro[] = [
         });
       }
       if (!status.trim()) {
-        controller.setInput("# Δεν υπάρχουν αλλαγές για commit");
+        controller.setInput("# No changes to commit");
         return;
       }
       const system =
@@ -60,7 +60,7 @@ const MACROS: Macro[] = [
   },
   {
     label: "🧪 Run tests",
-    title: "Τρέξε τα tests του project (auto-detect: npm / cargo / pytest / go)",
+    title: "Run the project tests (auto-detect: npm / cargo / pytest / go)",
     run: async (controller) => {
       const cwd = controller.getCwd();
       // Detect the right test command from project marker files (cheap probe).
@@ -72,7 +72,7 @@ const MACROS: Macro[] = [
         "elseif(Test-Path go.mod){'go test ./...'}else{'#none'}";
       const cmd = (await invoke<string>("run_capture", { cwd, command: probe })).trim();
       if (!cmd || cmd === "#none") {
-        controller.setInput("# Δεν βρέθηκε test command (npm/cargo/pytest/go)");
+        controller.setInput("# No test command found (npm/cargo/pytest/go)");
         return;
       }
       // Run it as a real command so its output lands in the feed as a block.

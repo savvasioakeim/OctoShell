@@ -52,7 +52,7 @@ export function ServiceBar() {
               {s.url && s.status === "running" && (
                 <button
                   onClick={() => void navigator.clipboard?.writeText(s.url!)}
-                  title="Αντίγραψε το URL"
+                  title="Copy URL"
                   className="text-[10px] text-sky-300/80 hover:text-sky-200"
                 >
                   {s.url.replace(/^https?:\/\//, "")} ⧉
@@ -60,7 +60,7 @@ export function ServiceBar() {
               )}
               <button
                 onClick={() => void serviceStore.restart(s.id)}
-                title="Restart — ξανατρέξε τον server"
+                title="Restart the server"
                 className="text-muted hover:text-accent"
               >
                 ↻
@@ -68,7 +68,7 @@ export function ServiceBar() {
               {s.status === "exited" ? (
                 <button
                   onClick={() => serviceStore.remove(s.id)}
-                  title="Καθάρισε"
+                  title="Clear"
                   className="text-muted hover:text-gray-200"
                 >
                   ✕
@@ -76,7 +76,7 @@ export function ServiceBar() {
               ) : (
                 <button
                   onClick={() => void serviceStore.stop(s.id)}
-                  title="Σταμάτα το service"
+                  title="Stop the service"
                   className="text-red-300 hover:text-red-200"
                 >
                   ◼
@@ -107,7 +107,7 @@ function LogPanel({ service, onClose }: { service: ServiceEntry; onClose: () => 
             <span className="text-red-300"> · exited ({service.exitCode ?? "?"})</span>
           )}
         </span>
-        <button onClick={onClose} className="hover:text-gray-200" title="Κλείσε τα logs">
+        <button onClick={onClose} className="hover:text-gray-200" title="Close logs">
           ▾
         </button>
       </div>

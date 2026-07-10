@@ -16,8 +16,12 @@ use std::thread;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-const MODEL: &str = "claude-sonnet-4-6";
+const MODEL: &str = "claude-sonnet-5";
 const API_URL: &str = "https://api.anthropic.com/v1/messages";
+/// Output cap for the sidebar's API transport. 1024 silently truncated longer
+/// answers mid-sentence; 8192 covers realistic assistant replies. (The CLI
+/// transport has no such cap — this only affected the `ANTHROPIC_API_KEY` path.)
+const MAX_TOKENS: u32 = 8192;
 
 #[cfg(windows)]
 const CLAUDE_BIN: &str = "claude.exe";
@@ -63,11 +67,18 @@ pub async fn ai_chat(
     system: Option<String>,
     model: Option<String>,
     config_dir: Option<String>,
+    base_url: Option<String>,
+    num_ctx: Option<u64>,
+    temperature: Option<f64>,
 ) -> Result<String, String> {
     let provider = provider.as_deref().unwrap_or("claude").to_string();
     let has_profile = config_dir.as_deref().map(|s| !s.is_empty()).unwrap_or(false);
-    // The Anthropic API path is claude-only; gemini always shells out to its CLI.
-    if provider == "claude" && !has_profile && std::env::var("ANTHROPIC_API_KEY").is_ok() {
+    // Local models (acp-ollama): the orchestrator is a pure planner (no tools), so
+    // it talks straight to Ollama's HTTP chat API — no OpenCode/ACP needed.
+    if provider == "acp-ollama" {
+        chat_via_ollama(messages, system, model, base_url, num_ctx, temperature).await
+    } else if provider == "claude" && !has_profile && std::env::var("ANTHROPIC_API_KEY").is_ok() {
+        // The Anthropic API path is claude-only; gemini always shells out to its CLI.
         chat_via_api(messages, system, model).await
     } else {
         // The CLI call is blocking; keep it off the async runtime threads. The
@@ -117,7 +128,7 @@ async fn chat_via_api(
         .unwrap_or(MODEL);
     let body = serde_json::json!({
         "model": model,
-        "max_tokens": 1024,
+        "max_tokens": MAX_TOKENS,
         "system": system.unwrap_or_default(),
         "messages": messages,
     });
@@ -145,6 +156,87 @@ async fn chat_via_api(
         .map(|b| b.text)
         .collect::<Vec<_>>()
         .join(""))
+}
+
+// ---------------------------------------------------------------------------
+// Transport 1b: local Ollama HTTP chat (orchestrator on a local model)
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct OllamaChatResp {
+    #[serde(default)]
+    message: OllamaChatMsg,
+    #[serde(default)]
+    error: Option<String>,
+}
+#[derive(Deserialize, Default)]
+struct OllamaChatMsg {
+    #[serde(default)]
+    content: String,
+}
+
+/// Non-streaming chat against Ollama's `/api/chat`. `model` may carry the
+/// `ollama/` provider prefix (from the model picker) — strip it. `system` becomes
+/// a leading system message; `num_ctx`/`temperature` are passed as options so the
+/// orchestrator's (often large) workspace context isn't silently truncated.
+async fn chat_via_ollama(
+    messages: Vec<ChatMessage>,
+    system: Option<String>,
+    model: Option<String>,
+    base_url: Option<String>,
+    num_ctx: Option<u64>,
+    temperature: Option<f64>,
+) -> Result<String, String> {
+    let base = base_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("http://localhost:11434")
+        .trim_end_matches('/');
+    let model = model.unwrap_or_default();
+    let model = model.strip_prefix("ollama/").unwrap_or(&model).trim();
+    if model.is_empty() {
+        return Err("no local model selected for the orchestrator (pick one in Settings › Local LLM)".into());
+    }
+
+    let mut msgs: Vec<serde_json::Value> = Vec::new();
+    if let Some(sys) = system.as_deref().filter(|s| !s.is_empty()) {
+        msgs.push(serde_json::json!({ "role": "system", "content": sys }));
+    }
+    for m in &messages {
+        msgs.push(serde_json::json!({ "role": m.role, "content": m.content }));
+    }
+
+    let mut options = serde_json::Map::new();
+    if let Some(n) = num_ctx {
+        options.insert("num_ctx".into(), n.into());
+    }
+    if let Some(t) = temperature {
+        options.insert("temperature".into(), serde_json::json!(t));
+    }
+    let body = serde_json::json!({
+        "model": model,
+        "messages": msgs,
+        "stream": false,
+        "options": options,
+    });
+
+    let resp = reqwest::Client::new()
+        .post(format!("{base}/api/chat"))
+        .json(&body)
+        .send()
+        .await
+        .map_err(|_| "could not reach Ollama (is it running?)".to_string())?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let detail = resp.text().await.unwrap_or_default();
+        return Err(format!("Ollama error {status}: {detail}"));
+    }
+    let parsed: OllamaChatResp = resp.json().await.map_err(|e| e.to_string())?;
+    if let Some(err) = parsed.error {
+        return Err(format!("Ollama: {err}"));
+    }
+    Ok(parsed.message.content.trim().to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -229,6 +321,12 @@ fn chat_via_cli(
         if let Some(m) = model.as_deref().filter(|s| !s.is_empty()) {
             cmd.arg("--model").arg(m);
         }
+        // The orchestrator is a pure planner — it runs no tools. But `claude
+        // --print` still loads every MCP server from the user's config, and ONE
+        // hung remote server blocks the whole reply forever (observed: a stuck
+        // remote MCP made the orchestrator never answer anything). Strict mode
+        // skips config MCP servers entirely; planning needs none of them.
+        cmd.arg("--strict-mcp-config");
         // Profile selection: point this `claude` at the chosen account's config dir.
         // With NO profile ("Default"), explicitly CLEAR the variable instead of just
         // leaving it — OctoShell inherits the parent environment, which may already

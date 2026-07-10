@@ -9,8 +9,9 @@ import { KEY, loadJSON, removeKey, saveJSON } from "../util/persist";
 import { deleteBlocksDb, loadBlocksDb, saveBlocksDb } from "../util/db";
 import { notify } from "../util/notify";
 import { playSfx } from "../util/sfx";
-import { parseAgentLine, type AgentProvider, type AgentStep } from "../agents/providers";
+import { acpCommandFor, acpSandboxCommandFor, isAcp, normalizeProvider, parseAgentLine, prepareOpencodeConfig, type AgentProvider, type AgentStep } from "../agents/providers";
 import { settingsStore } from "../settings/settingsStore";
+import { ReviewAgentController, buildReviewPrompt, fetchReviewOverview } from "../review/ReviewAgentController";
 
 /** Keep at most this many historical blocks per session in storage. */
 const MAX_PERSISTED_BLOCKS = 80;
@@ -280,16 +281,32 @@ export class ShellController {
     agentRateReset: null,
   };
 
+  /** This session's automated review agent (own conversation; see option β). Idle
+   *  until a coding turn dispatched by the orchestrator completes with the review
+   *  agent enabled in Settings. */
+  readonly review: ReviewAgentController;
+
   constructor(public readonly sessionId: string) {
+    this.review = new ReviewAgentController(sessionId);
     // A hidden, off-screen home for the live terminal between commands.
     this.liveHost = document.createElement("div");
     this.liveHost.style.cssText = "position:absolute;left:-99999px;top:0;width:900px;height:400px;";
     document.body.appendChild(this.liveHost);
 
-    const appearance = settingsStore.getSnapshot().appearance;
-    const font = appearance.fontFamily
-      ? `${JSON.stringify(appearance.fontFamily)}, JetBrains Mono, Cascadia Code, Consolas, monospace`
-      : "JetBrains Mono, Cascadia Code, Consolas, monospace";
+    const fontStack = (family: string) =>
+      family
+        ? `${JSON.stringify(family)}, JetBrains Mono, Cascadia Code, Consolas, monospace`
+        : "JetBrains Mono, Cascadia Code, Consolas, monospace";
+    const font = fontStack(settingsStore.getSnapshot().appearance.fontFamily);
+    // Live-apply font changes from Settings to this (long-lived) terminal too —
+    // otherwise the picker only visibly affects frozen blocks until a new
+    // terminal is opened, which reads as "the setting does nothing".
+    settingsStore.subscribe(() => {
+      const next = fontStack(settingsStore.getSnapshot().appearance.fontFamily);
+      if (this.liveTerm && this.liveTerm.options.fontFamily !== next) {
+        this.liveTerm.options.fontFamily = next;
+      }
+    });
     this.liveTerm = new Terminal({
       fontFamily: font,
       fontSize: 15,
@@ -317,6 +334,16 @@ export class ShellController {
     // occasional terminal query reply; in alt-screen mode it carries the user's
     // full-screen-app keyboard input.
     this.liveTerm.onData((d) => this.sendRaw(d));
+
+    // Copy-on-select for the live terminal: in the running command's terminal
+    // Ctrl+C interrupts (it can't also mean "copy"), so there's otherwise no way
+    // to copy output — e.g. an auth URL a CLI prints during an interactive login.
+    // Whenever there's a non-empty selection, mirror it to the clipboard. (Paste
+    // works already: Ctrl+V fires a browser paste that xterm forwards to stdin.)
+    this.liveTerm.onSelectionChange(() => {
+      const sel = this.liveTerm.getSelection();
+      if (sel) navigator.clipboard.writeText(sel).catch(() => {});
+    });
 
     // Detect entry/exit of the alternate screen buffer (vim/htop/less/REPLs).
     this.liveTerm.buffer.onBufferChange(() => this.onBufferChange());
@@ -445,7 +472,9 @@ export class ShellController {
     const d = settingsStore.getSnapshot().agent;
     this.agentSessionId = loadJSON<string | null>(KEY.agent(this.sessionId), null);
     this.agentModel = loadJSON<string | null>(KEY.model(this.sessionId), d.model);
-    this.agentProvider = loadJSON<AgentProvider>(KEY.provider(this.sessionId), d.provider);
+    // normalizeProvider migrates the legacy "acp" id and guards against any
+    // stale/unknown persisted value (which would otherwise crash the picker).
+    this.agentProvider = normalizeProvider(loadJSON(KEY.provider(this.sessionId), d.provider));
     this.agentConfigDir = loadJSON<string | null>(KEY.agentCfgDir(this.sessionId), settingsStore.configDirFor(d.profileId));
     this.agentApproval = loadJSON<boolean>(KEY.approval(this.sessionId), false);
     if (this.agentSessionId || this.agentModel || this.agentConfigDir) this.emit();
@@ -529,7 +558,7 @@ export class ShellController {
     });
     this.emit();
     const where = this.displayName || "OctoShell";
-    notify(`🛡 ${where}: ο agent ζητά έγκριση`, `${p.toolName} — χρειάζεται το ✓ σου`);
+    notify(`🛡 ${where}: the agent needs approval`, `${p.toolName} — waiting for your ✓`);
   }
 
   /** Send the user's approve/deny decision back to the waiting agent. */
@@ -548,7 +577,16 @@ export class ShellController {
   setAgentModel(model: string | null): void {
     this.agentModel = model;
     saveJSON(KEY.model(this.sessionId), model);
+    // ACP bakes the model into the adapter at spawn and reuses the session across
+    // prompts, so a running adapter must be torn down for the new model to apply.
+    if (isAcp(this.agentProvider)) this.resetAcpSession();
     this.emit();
+  }
+
+  /** End any running ACP adapter for this session so the next prompt respawns
+   *  with the current provider/model. No-op if none is running. */
+  private resetAcpSession(): void {
+    invoke("acp_cancel", { id: this.sessionId }).catch(() => {});
   }
 
   /** Choose the Claude Code profile (account config dir) for this project's agent.
@@ -568,6 +606,9 @@ export class ShellController {
    *  session can't carry across providers; the next turn starts fresh. */
   setAgentProvider(provider: AgentProvider): void {
     if (provider === this.agentProvider) return;
+    // Tear down a running ACP adapter before switching, or the next prompt would
+    // hit the OLD agent (backend keys sessions by id, not provider).
+    if (isAcp(this.agentProvider)) this.resetAcpSession();
     this.agentProvider = provider;
     this.agentSessionId = null;
     this.agentModel = null; // model names are provider-specific
@@ -775,19 +816,21 @@ export class ShellController {
   /** Send a prompt to the local `claude` agent; render its stream as blocks.
    *  `orchestrated` marks turns the assistant dispatched (vs. the user typing),
    *  so the board can light the whole tentacle route to this agent. */
-  runAgent(prompt: string, opts?: { orchestrated?: boolean }): void {
+  runAgent(prompt: string, opts?: { orchestrated?: boolean }): boolean {
     const text = prompt.trim();
-    if (!text) return;
+    if (!text) return false;
     if (this.agentBusy) {
       // A turn is in flight. The orchestrator never preempts (it dispatches to
-      // idle agents). A USER message takes over: cancel the running turn and
-      // queue this prompt to fire from onAgentDone — never two turns at once.
-      if (opts?.orchestrated) return;
+      // idle agents) — refused, and the CALLER must handle the false (silently
+      // dropping a dispatch here is how QA fixes went missing). A USER
+      // message takes over: cancel the running turn and queue this prompt to
+      // fire from onAgentDone — never two turns at once.
+      if (opts?.orchestrated) return false;
       this.pendingUserPrompt = text;
       this.inputValue = "";
       this.cancelAgent();
       this.emit();
-      return;
+      return true;
     }
     this.touched = true;
 
@@ -811,6 +854,7 @@ export class ShellController {
     this.emit();
 
     this.sendToAgent(text, this.agentSessionId);
+    return true;
   }
 
   /** Spawn one agent turn. Split out so a failed `--resume` can be retried as a
@@ -828,6 +872,36 @@ export class ShellController {
     const stepRule = this.agentProvider === "claude" ? STEP_PROTOCOL : "";
     const preamble = [rulesBlock, stepRule].filter(Boolean).join("\n\n");
     const full = preamble ? `${preamble}\n\n${prompt}` : prompt;
+
+    // ACP path: one long-lived session drives the chosen ACP agent over the
+    // protocol. The selected model is baked into the launch command (env prefix
+    // for Claude, `-m` for Gemini). Approval & terminal wiring land in acp.rs
+    // iteration 2; resume is implicit (the session stays alive across prompts).
+    if (isAcp(this.agentProvider)) {
+      // When the global sandbox setting is on, the backend runs the whole adapter
+      // inside Docker using these params (image + Linux command); otherwise it
+      // ignores them and launches `command` on the host.
+      const sandbox = acpSandboxCommandFor(this.agentProvider, this.agentModel);
+      // For local (acp-ollama) runs, generate the OpenCode config (base URL +
+      // temperature + context window) first and inject it via OPENCODE_CONFIG.
+      void prepareOpencodeConfig(this.agentProvider, settingsStore.getSnapshot().ollama).then((cfg) => {
+        invoke("acp_send", {
+          id: this.sessionId,
+          prompt: full,
+          cwd: this.cwd,
+          command: acpCommandFor(this.agentProvider, this.agentModel, {
+            opencodeConfig: cfg,
+            configDir: this.agentConfigDir,
+          }),
+          sandboxImage: sandbox?.image ?? null,
+          sandboxCommand: sandbox?.command ?? null,
+        }).catch((err) => {
+          this.onAgentDone(String(err));
+        });
+      });
+      return;
+    }
+
     invoke("agent_send", {
       id: this.sessionId,
       prompt: full,
@@ -843,7 +917,8 @@ export class ShellController {
   }
 
   cancelAgent(): void {
-    invoke("agent_cancel", { id: this.sessionId }).catch(() => {});
+    const cmd = isAcp(this.agentProvider) ? "acp_cancel" : "agent_cancel";
+    invoke(cmd, { id: this.sessionId }).catch(() => {});
   }
 
   /** Parse one stream-json line (provider-specific) into normalized events and
@@ -885,6 +960,11 @@ export class ShellController {
           block.isError = e.result.isError;
           block.status = e.result.isError ? "error" : "success";
         }
+      } else if (e.steps) {
+        // ACP plan update: the agent re-sends its whole plan, so replace the
+        // trace-bar progress wholesale (the native path's count-based machinery
+        // doesn't apply — ACP gives explicit per-step status).
+        this.agentProgress = e.steps.length ? e.steps : null;
       } else if (e.usage) {
         // Accumulate the turn's usage into the session running total.
         const t = this.agentTokens ?? { input: 0, output: 0, costUsd: 0 };
@@ -971,6 +1051,9 @@ export class ShellController {
       return;
     }
 
+    // Capture before the reset below: was the turn we just finished an orchestrated
+    // dispatch? (Only those get an automated review pass.)
+    const wasOrchestrated = this.agentOrchestrated;
     this.agentBusy = false;
     this.agentOrchestrated = false;
     this.streamingTextId = null;
@@ -1005,13 +1088,29 @@ export class ShellController {
       return;
     }
 
+    // A dispatched task just finished cleanly — kick off the automated review pass
+    // (when enabled). The review agent vets the diff before QA is ever offered.
+    if (!failed && wasOrchestrated && this.cwd && settingsStore.getSnapshot().reviewAgent.enabled) {
+      void this.startReviewPass();
+    }
+
     // Ping the user if they've tabbed away — "fan out & walk away".
     const where = this.displayName || "OctoShell";
     notify(
-      failed ? `🐙 ${where}: ο agent σταμάτησε` : `🐙 ${where}: ο agent τελείωσε`,
-      failed && error ? error : "Το turn ολοκληρώθηκε.",
+      failed ? `🐙 ${where}: the agent stopped` : `🐙 ${where}: the agent finished`,
+      failed && error ? error : "The turn completed.",
     );
     playSfx(failed ? "error" : "done");
+  }
+
+  /** Assemble and launch a review pass for the work just completed: the
+   *  orchestrator's task prompt as context + a compact git orientation. Best-effort;
+   *  an orientation-fetch failure still starts the review (the agent inspects git). */
+  private async startReviewPass(): Promise<void> {
+    const context = this.lastAgentPrompt ?? "";
+    const overview = await fetchReviewOverview(this.cwd);
+    const prompt = buildReviewPrompt(context, overview);
+    await this.review.start({ contextPrompt: context, prompt, cwd: this.cwd });
   }
 
   getBlocks(): Block[] {
@@ -1034,6 +1133,7 @@ export class ShellController {
     this.unlisteners.forEach((u) => u());
     invoke("close_tab", { id: this.sessionId }).catch(() => {});
     this.cancelAgent();
+    this.review.dispose();
     this.liveTerm.dispose();
     this.liveHost.remove();
   }

@@ -805,3 +805,60 @@ fn which(exe: &str) -> bool {
         .map(|paths| std::env::split_paths(&paths).any(|dir| dir.join(exe).is_file()))
         .unwrap_or(false)
 }
+
+/// PATH lookup for a *command* by bare name, matching however it's actually
+/// installed. On Windows a CLI shipped via npm is a shim — `foo`, `foo.cmd`,
+/// `foo.ps1` — not `foo.exe`, so a plain `which("foo.exe")` misses it (this is
+/// exactly why the Gemini CLI showed up as "not found"). We try the bare name
+/// plus every extension in PATHEXT (falling back to the common shim set).
+fn which_cmd(name: &str) -> bool {
+    if which(name) {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        let exts = std::env::var("PATHEXT")
+            .unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD;.PS1".into());
+        for ext in exts.split(';').filter(|e| !e.is_empty()) {
+            // PATHEXT entries include the leading dot, e.g. ".CMD".
+            if which(&format!("{name}{}", ext.to_ascii_lowercase())) {
+                return true;
+            }
+        }
+        // .ps1 shims (npm) aren't in the default PATHEXT — check explicitly.
+        which(&format!("{name}.ps1"))
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
+/// First-launch health check: is each CLI OctoShell depends on actually on
+/// PATH? Drives the onboarding screen so a missing tool shows up as a
+/// friendly checklist instead of a cryptic spawn failure deep in an agent
+/// run. OctoShell doesn't mandate any *specific* agent CLI — claude, gemini,
+/// and every ACP provider (codex, opencode, …) are equally valid front
+/// doors — so `node` is reported too: it's what unlocks the `npx`-launched
+/// ACP agents even when neither `claude` nor `gemini` is installed.
+#[derive(serde::Serialize)]
+pub struct HealthCheck {
+    claude: bool,
+    gemini: bool,
+    node: bool,
+    gh: bool,
+    pwsh: bool,
+}
+
+#[tauri::command]
+pub fn health_check() -> HealthCheck {
+    // Bare names — `which_cmd` matches .exe, npm shims (.cmd/.ps1) and bare
+    // scripts alike, so an npm-installed CLI (e.g. Gemini) is found too.
+    HealthCheck {
+        claude: which_cmd("claude"),
+        gemini: which_cmd("gemini"),
+        node: which_cmd("node"),
+        gh: which_cmd("gh"),
+        pwsh: which_cmd("pwsh"),
+    }
+}

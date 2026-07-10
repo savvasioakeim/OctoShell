@@ -2,8 +2,10 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { ShellController } from "./shell/ShellController";
+import { sandboxLoginCommandFor } from "./agents/providers";
 import { useShell } from "./shell/useShell";
 import { Feed, pendingMountCount, setMountBudget } from "./blocks/Feed";
+import { ReviewPanel, ReviewSwitch, useReview, type CenterView } from "./review/ReviewView";
 import { InputBar } from "./blocks/InputBar";
 import { AiSidebar } from "./ai/AiSidebar";
 import { MacroBar } from "./macros/MacroBar";
@@ -15,6 +17,7 @@ import { serviceStore } from "./services/serviceStore";
 import { SettingsPage } from "./settings/SettingsPage";
 import { settingsStore, useSettings } from "./settings/settingsStore";
 import { KEY, loadJSON, saveJSON } from "./util/persist";
+import { OnboardingOverlay } from "./onboarding/OnboardingOverlay";
 
 interface Tab {
   id: string;
@@ -171,7 +174,7 @@ function ResizeHandle({ onDrag, onReset }: { onDrag: (dx: number) => void; onRes
       onPointerDown={onPointerDown}
       onDoubleClick={onReset}
       style={{ cursor: "col-resize" }}
-      title="Σύρε για resize · διπλό κλικ για επαναφορά"
+      title="Drag to resize · double-click to reset"
       className="group flex w-2 shrink-0 items-center justify-center"
     >
       <span className="h-10 w-0.5 rounded-full bg-edge transition-colors group-hover:bg-accent" />
@@ -195,6 +198,7 @@ export function App({ initial }: { initial: ShellController }) {
   // (each panel virtualizes its feed). Left wired but off in case we revisit it.
   const [preloading, setPreloading] = useState(false);
   const [preloadProgress, setPreloadProgress] = useState(0);
+  const [onboarding, setOnboarding] = useState(() => !loadJSON<boolean>(KEY.onboardingDone, false));
   // User-resizable panel widths (px), persisted across restarts.
   const [layout, setLayout] = useState(() => loadJSON(KEY.layout, { left: 200, right: 344 }));
 
@@ -273,7 +277,7 @@ export function App({ initial }: { initial: ShellController }) {
     const id = crypto.randomUUID();
     setGroupsState((s) => ({
       ...s,
-      groups: [...s.groups, { id, name: name.trim() || "Ομάδα", color: GROUP_COLORS[s.groups.length % GROUP_COLORS.length] }],
+      groups: [...s.groups, { id, name: name.trim() || "Group", color: GROUP_COLORS[s.groups.length % GROUP_COLORS.length] }],
     }));
     return id;
   };
@@ -374,7 +378,7 @@ export function App({ initial }: { initial: ShellController }) {
   }, [tabs, hydrated, initial.sessionId]);
 
   const newProject = async () => {
-    const folder = await open({ directory: true, multiple: false, title: "Διάλεξε project folder" });
+    const folder = await open({ directory: true, multiple: false, title: "Pick a project folder" });
     if (typeof folder !== "string") return;
     // Already open? Just focus it instead of spawning a duplicate.
     const existing = tabs.find((t) => t.cwd === folder);
@@ -394,9 +398,9 @@ export function App({ initial }: { initial: ShellController }) {
    *  session (shows in the bar, gets its own agent), not an invisible on-disk dir. */
   const createWorktree = async (srcId: string, branch: string): Promise<Tab | { error: string }> => {
     const src = tabs.find((t) => t.id === srcId);
-    if (!src?.cwd) return { error: "δεν είναι git project (το home δεν είναι repo)" };
+    if (!src?.cwd) return { error: "not a git project (home is not a repo)" };
     const branchName = branch.trim().replace(/[^A-Za-z0-9._/-]/g, "-").replace(/^-+|-+$/g, "");
-    if (!branchName) return { error: "άκυρο όνομα branch" };
+    if (!branchName) return { error: "invalid branch name" };
     const dirName = branchName.replace(/\//g, "-");
     // New worktrees branch off the configured base branch (Settings → Workspace),
     // or the main worktree's HEAD when unset. Sanitised the same way as the branch.
@@ -558,7 +562,7 @@ export function App({ initial }: { initial: ShellController }) {
   }, [tabs, activeId]);
 
   // Attach the managed-services event stream once, so the bottom ServiceBar shows
-  // any server OctoShell starts (from the shell offer or, later, review mode).
+  // any server OctoShell starts (from the shell offer or, later, QA mode).
   useEffect(() => {
     serviceStore.init();
   }, []);
@@ -566,7 +570,8 @@ export function App({ initial }: { initial: ShellController }) {
   return (
     <div className="flex h-full flex-col">
       <ThemeApplier />
-      {preloading && <StartupOverlay progress={preloadProgress} count={tabs.length} />}
+      {onboarding && <OnboardingOverlay onDone={() => setOnboarding(false)} />}
+      {!onboarding && preloading && <StartupOverlay progress={preloadProgress} count={tabs.length} />}
       <Titlebar />
       <div className="relative flex flex-1 flex-col overflow-hidden bg-well">
         <div className="flex flex-1 overflow-hidden p-2">
@@ -623,7 +628,26 @@ export function App({ initial }: { initial: ShellController }) {
         <ServiceBar />
         {settingsOpen && (
           <div className="absolute inset-0 z-40">
-            <SettingsPage onClose={() => setSettingsOpen(false)} />
+            <SettingsPage
+              onClose={() => setSettingsOpen(false)}
+              onShowOnboarding={() => {
+                setSettingsOpen(false);
+                setOnboarding(true);
+              }}
+              onSandboxLogin={() => {
+                // Run the one-time sandbox login in the active project's terminal
+                // (OctoShell renders the CLI's interactive TUI); the user does
+                // the browser device-code step there. Provider-aware: uses the
+                // active project's agent CLI, falling back to the Claude adapter
+                // when that provider has no sandbox login (e.g. native providers).
+                const provider = active.controller.getSnapshot().agentProvider;
+                const cmd = sandboxLoginCommandFor(provider) ?? sandboxLoginCommandFor("acp-claude");
+                if (!cmd) return;
+                active.controller.setMode("shell");
+                active.controller.submit(cmd);
+                setSettingsOpen(false);
+              }}
+            />
           </div>
         )}
       </div>
@@ -638,7 +662,7 @@ function StartupOverlay({ progress, count }: { progress: number; count: number }
   return (
     <div className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-5 bg-ink">
       <div className="octo-spinner text-5xl">🐙</div>
-      <div className="text-sm font-medium text-gray-200">Φόρτωση OctoShell…</div>
+      <div className="text-sm font-medium text-gray-200">Loading OctoShell…</div>
       <div className="h-1.5 w-64 overflow-hidden rounded-full bg-edge">
         <div
           className="h-full rounded-full bg-accent transition-[width] duration-150 ease-out"
@@ -681,6 +705,11 @@ const CenterPanel = memo(function CenterPanel({
   active: boolean;
 }) {
   const { blocks, cwd, busy, input, altScreen, interacting, mode, agentBusy, agentOrchestrated, agentModel, agentProvider, agentConfigDir, agentTokens, agentContext, agentProgress, agentApiKey, agentRateReset, agentApproval } = useShell(controller);
+  const reviewSnap = useReview(controller);
+  const [view, setView] = useState<CenterView>("coding");
+  // The Review view only exists while a review agent is active; fall back to Coding
+  // if it's gone (or was never started).
+  const showReview = view === "review" && reviewSnap.active;
 
   return (
     <section
@@ -695,8 +724,20 @@ const CenterPanel = memo(function CenterPanel({
         </div>
         <MacroBar controller={controller} active={active} />
       </div>
-      {/* Chat panel — the conversation feed with the command input pinned below. */}
+      {/* Chat panel — the conversation feed with the command input pinned below.
+          In Review view it swaps to the review agent's feed + reviewer input. When a
+          review agent exists, a thin header strip holds the Coding⇄Review switch in
+          its own top-right panel (in the layout, so content never falls under it). */}
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-edge bg-card">
+      {reviewSnap.active && (
+        <div className="flex shrink-0 justify-end border-b border-edge bg-chrome/40 px-2 py-1.5">
+          <ReviewSwitch view={view} onChange={setView} busy={reviewSnap.busy} />
+        </div>
+      )}
+      {showReview ? (
+        <ReviewPanel controller={controller} snap={reviewSnap} />
+      ) : (
+      <>
       <Feed blocks={blocks} controller={controller} altScreen={altScreen} interacting={interacting} />
       <InputBar
         controller={controller}
@@ -717,6 +758,8 @@ const CenterPanel = memo(function CenterPanel({
         agentRateReset={agentRateReset}
         agentApproval={agentApproval}
       />
+      </>
+      )}
       </div>
     </section>
   );

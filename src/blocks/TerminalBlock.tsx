@@ -100,7 +100,7 @@ export function TerminalBlock({
             <div ref={liveRef} />
             {!liveKeyboard && (
               <div className="pointer-events-none mt-1 select-none text-[11px] text-muted/70">
-                κλικ για να πληκτρολογήσεις απευθείας σε αυτή την εντολή
+                click to type directly into this command
               </div>
             )}
           </div>
@@ -164,7 +164,7 @@ function FrozenOutput({ html }: { html: string }) {
               onClick={() => setExpanded((e) => !e)}
               className="mt-1 rounded bg-edge/80 px-2 py-0.5 text-[11px] text-gray-300 hover:bg-accent/40"
             >
-              {expanded ? "▲ Σύμπτυξη" : "▼ Εμφάνιση όλων"}
+              {expanded ? "▲ Collapse" : "▼ Show all"}
             </button>
           )}
         </>

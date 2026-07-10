@@ -47,7 +47,7 @@ export function AgentTextBlockView({ block }: { block: AgentTextBlock }) {
           onClick={() => setExpanded((e) => !e)}
           className="mt-1 rounded bg-edge/80 px-2 py-0.5 text-[11px] text-gray-300 hover:bg-accent/40"
         >
-          {expanded ? "▲ Λιγότερα" : `▼ Άλλες ${lines.length - TEXT_LINES_CAP} γραμμές`}
+          {expanded ? "▲ Less" : `▼ ${lines.length - TEXT_LINES_CAP} more lines`}
         </button>
       )}
     </div>
@@ -75,7 +75,7 @@ export function AgentApprovalBlockView({
       <div className="flex items-center gap-2 border-b border-edge/70 px-3 py-1.5 text-xs">
         <span>{pending ? "🛡" : block.status === "approved" ? "✅" : "🚫"}</span>
         <span className="font-semibold text-amber-300">
-          {pending ? "Έγκριση tool" : block.status === "approved" ? "Εγκρίθηκε" : "Απορρίφθηκε"}
+          {pending ? "Tool approval" : block.status === "approved" ? "Approved" : "Denied"}
         </span>
         <span className="font-semibold text-accent">{block.toolName}</span>
         <span className="text-muted">{fmtTime(block.startedAt)}</span>
@@ -133,18 +133,22 @@ export function AgentToolBlockView({ block }: { block: AgentToolBlock }) {
         <span className="text-muted">{fmtTime(block.startedAt)}</span>
       </div>
       <div className="px-3 py-2">
-        {isBash ? (
-          <div className="flex gap-2 overflow-x-auto rounded bg-well px-2 py-1.5">
-            <span className="select-none text-green-300">$</span>
-            <CodeBlock code={block.toolInput} lang="bash" className="flex-1 text-[14px]" />
-          </div>
-        ) : (
-          <CodeBlock
-            code={block.toolInput}
-            lang="json"
-            className="overflow-x-auto rounded bg-well px-2 py-1.5 text-[14px] text-gray-200"
-          />
-        )}
+        {/* ACP tool calls can arrive with an empty input (the command travels
+            via terminal/create) — a bare "{}" block is just noise, skip it. */}
+        {block.toolInput.trim() && block.toolInput.trim() !== "{}" ? (
+          isBash ? (
+            <div className="flex gap-2 overflow-x-auto rounded bg-well px-2 py-1.5">
+              <span className="select-none text-green-300">$</span>
+              <CodeBlock code={block.toolInput} lang="bash" className="flex-1 text-[14px]" />
+            </div>
+          ) : (
+            <CodeBlock
+              code={block.toolInput}
+              lang="json"
+              className="overflow-x-auto rounded bg-well px-2 py-1.5 text-[14px] text-gray-200"
+            />
+          )
+        ) : null}
         {block.result !== undefined && block.result !== "" && (
           <div className="relative mt-1.5">
             <pre
@@ -158,7 +162,7 @@ export function AgentToolBlockView({ block }: { block: AgentToolBlock }) {
                 onClick={() => setExpanded((e) => !e)}
                 className="mt-1 rounded bg-edge/80 px-2 py-0.5 text-[11px] text-gray-300 hover:bg-accent/40"
               >
-                {expanded ? "▲ Σύμπτυξη" : "▼ Εμφάνιση όλων"}
+                {expanded ? "▲ Collapse" : "▼ Show all"}
               </button>
             )}
           </div>

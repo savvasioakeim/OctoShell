@@ -16,7 +16,9 @@
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read};
 use std::net::TcpListener;
+use std::path::Path;
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -90,6 +92,69 @@ fn alloc_port(reserved: &Mutex<HashSet<u16>>, hint: Option<u16>) -> u16 {
     0
 }
 
+/// The project's own `PORT=` from its .env files. We inject `PORT` into the
+/// child's environment, and an injected env var BEATS dotenv (dotenv never
+/// overrides existing vars) — so if the project declares a port, we must use it
+/// as the allocation hint or we silently override the port the app expects.
+fn env_port_hint(cwd: &str) -> Option<u16> {
+    for f in [".env.local", ".env.development.local", ".env.development", ".env"] {
+        let Ok(text) = std::fs::read_to_string(Path::new(cwd).join(f)) else {
+            continue;
+        };
+        for line in text.lines() {
+            let line = line.trim();
+            let Some(rest) = line.strip_prefix("PORT") else { continue };
+            let Some(v) = rest.trim_start().strip_prefix('=') else { continue };
+            let v = v.trim().trim_matches('"').trim_matches('\'');
+            if let Ok(p) = v.parse::<u16>() {
+                if p > 0 {
+                    return Some(p);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// If `command` invokes an npm script the project doesn't have, swap in the best
+/// script it DOES have (dev → start → serve → preview). Callers (the
+/// orchestrator's review blocks in particular) guess "npm run dev" for every
+/// repo; a backend that only defines "start" then dies with `Missing script:
+/// "dev"` instead of coming up.
+fn fix_npm_script(cwd: &str, command: &str) -> String {
+    let c = command.trim();
+    let requested = if c == "npm start" {
+        Some("start")
+    } else if let Some(rest) = c.strip_prefix("npm run ") {
+        rest.split_whitespace().next()
+    } else {
+        None
+    };
+    let Some(req) = requested else { return command.into() };
+    let Ok(text) = std::fs::read_to_string(Path::new(cwd).join("package.json")) else {
+        return command.into();
+    };
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return command.into();
+    };
+    let Some(scripts) = json.get("scripts").and_then(|s| s.as_object()) else {
+        return command.into();
+    };
+    if scripts.contains_key(req) {
+        return command.into();
+    }
+    for cand in ["dev", "start", "serve", "preview"] {
+        if scripts.contains_key(cand) {
+            return if cand == "start" {
+                "npm start".into()
+            } else {
+                format!("npm run {cand}")
+            };
+        }
+    }
+    command.into()
+}
+
 /// Pull a bound port out of a typical dev-server log line (e.g.
 /// "Local:   http://localhost:5173/"). Lets us report the URL the server ACTUALLY
 /// bound — covering frameworks that ignore `PORT` or auto-increment on conflict.
@@ -121,7 +186,21 @@ impl ServiceManager {
         // One service per id: replace any existing run.
         self.stop(&id);
 
-        let port = alloc_port(&self.reserved, port_hint);
+        // Repair a guessed npm script against the project's real package.json.
+        let fixed = fix_npm_script(&cwd, &command);
+        if fixed != command {
+            let _ = app.emit(
+                "service://log",
+                ServiceLog {
+                    id: id.clone(),
+                    line: format!("octoshell: `{command}` is not in this package's scripts — running `{fixed}` instead"),
+                },
+            );
+        }
+        let command = fixed;
+
+        // Prefer the project's own .env PORT over our 3000-range default.
+        let port = alloc_port(&self.reserved, port_hint.or_else(|| env_port_hint(&cwd)));
         if port == 0 {
             return Err("could not allocate a free port".into());
         }
@@ -186,12 +265,24 @@ impl ServiceManager {
             },
         );
 
-        // stderr: stream as logs (many dev servers print their banner there).
-        spawn_log_reader(app.clone(), id.clone(), Box::new(stderr), false, port);
+        // Shared "detected bound port" (0 = not yet): BOTH stdout and stderr race
+        // to parse the first bound-URL line (many dev servers print their banner
+        // on stderr), the first hit across either stream wins, and stdout's
+        // reaper reads it back to release the refined port on exit.
+        let port_detected = Arc::new(AtomicU16::new(0));
+        // stderr: stream as logs AND detect the bound port (banner often here).
+        spawn_log_reader(
+            app.clone(),
+            id.clone(),
+            Box::new(stderr),
+            port_detected.clone(),
+            port,
+            self.reserved.clone(),
+        );
         // stdout: stream logs, refine the bound port, and reap the child on EOF.
         let services = self.services.clone();
         let reserved = self.reserved.clone();
-        spawn_stdout_reader(app, id, Box::new(stdout), port, services, reserved);
+        spawn_stdout_reader(app, id, Box::new(stdout), port_detected, port, services, reserved);
 
         Ok(port)
     }
@@ -204,35 +295,54 @@ impl ServiceManager {
     }
 }
 
-/// A plain log-draining reader (used for stderr): emit each line, optionally
-/// refine the bound port, never reap.
+/// Try to pull a bound port out of one log line. On the first successful parse
+/// across EITHER stream (guarded by the shared `detected` flag), reserve the
+/// real port and emit `service://ready`. First hit wins; later lines are ignored.
+fn maybe_emit_port(
+    line: &str,
+    detected: &AtomicU16,
+    reserved: &Mutex<HashSet<u16>>,
+    app: &AppHandle,
+    id: &str,
+    announced_port: u16,
+) {
+    if detected.load(Ordering::Relaxed) != 0 {
+        return;
+    }
+    let Some(p) = parse_port(line) else { return }; // parse_port only yields p > 0
+    // Claim the win atomically (0 → p) — the other stream may parse the same
+    // instant; whoever swaps first owns the detection.
+    if detected
+        .compare_exchange(0, p, Ordering::Relaxed, Ordering::Relaxed)
+        .is_err()
+    {
+        return;
+    }
+    if p != announced_port {
+        // The server bound a different port than we injected (it ignores PORT or
+        // auto-incremented). Reserve the real one too so we never hand it out.
+        reserved.lock().unwrap().insert(p);
+        let _ = app.emit(
+            "service://ready",
+            ServiceReady { id: id.to_string(), port: p, url: format!("http://localhost:{p}") },
+        );
+    }
+}
+
+/// A plain log-draining reader (used for stderr): emit each line and share in the
+/// port-detection race (banners are often on stderr), but never reap.
 fn spawn_log_reader(
     app: AppHandle,
     id: String,
     stream: Box<dyn Read + Send>,
-    mut detect_port: bool,
+    port_detected: Arc<AtomicU16>,
     announced_port: u16,
+    reserved: Arc<Mutex<HashSet<u16>>>,
 ) {
     thread::spawn(move || {
-        let mut last = announced_port;
         for line in BufReader::new(stream).lines() {
             let Ok(l) = line else { break };
-            if detect_port {
-                if let Some(p) = parse_port(&l) {
-                    if p != last {
-                        last = p;
-                        let _ = app.emit(
-                            "service://ready",
-                            ServiceReady {
-                                id: id.clone(),
-                                port: p,
-                                url: format!("http://localhost:{p}"),
-                            },
-                        );
-                    }
-                    detect_port = false; // first hit wins
-                }
-            }
+            maybe_emit_port(&l, &port_detected, &reserved, &app, &id, announced_port);
             if app
                 .emit("service://log", ServiceLog { id: id.clone(), line: l })
                 .is_err()
@@ -243,42 +353,22 @@ fn spawn_log_reader(
     });
 }
 
-/// The stdout reader owns reaping: it streams logs (refining the port from the
-/// first URL it sees), then on EOF removes the child, waits for its exit code,
+/// The stdout reader owns reaping: it streams logs (sharing the port-detection
+/// race with stderr), then on EOF removes the child, waits for its exit code,
 /// and emits `service://exit`.
 fn spawn_stdout_reader(
     app: AppHandle,
     id: String,
     stream: Box<dyn Read + Send>,
+    port_detected: Arc<AtomicU16>,
     announced_port: u16,
     services: Arc<Mutex<HashMap<String, Service>>>,
     reserved: Arc<Mutex<HashSet<u16>>>,
 ) {
     thread::spawn(move || {
-        let mut last = announced_port;
-        let mut detect = true;
         for line in BufReader::new(stream).lines() {
             let Ok(l) = line else { break };
-            if detect {
-                if let Some(p) = parse_port(&l) {
-                    if p != last {
-                        // The server bound a different port than we injected (it
-                        // ignores PORT or auto-incremented). Reserve the real one
-                        // too so we never hand it to another service.
-                        reserved.lock().unwrap().insert(p);
-                        last = p;
-                        let _ = app.emit(
-                            "service://ready",
-                            ServiceReady {
-                                id: id.clone(),
-                                port: p,
-                                url: format!("http://localhost:{p}"),
-                            },
-                        );
-                    }
-                    detect = false;
-                }
-            }
+            maybe_emit_port(&l, &port_detected, &reserved, &app, &id, announced_port);
             if app
                 .emit("service://log", ServiceLog { id: id.clone(), line: l })
                 .is_err()
@@ -295,7 +385,11 @@ fn spawn_stdout_reader(
             }
             None => -1,
         };
-        reserved.lock().unwrap().remove(&last);
+        // Also release the refined port, if either stream detected a different one.
+        let refined = port_detected.load(Ordering::Relaxed);
+        if refined != 0 {
+            reserved.lock().unwrap().remove(&refined);
+        }
         let _ = app.emit("service://exit", ServiceExit { id, code });
     });
 }

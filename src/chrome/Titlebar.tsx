@@ -37,12 +37,12 @@ export function Titlebar() {
       </div>
 
       <div className="flex h-full">
-        <button className={btn} title="Ελαχιστοποίηση" onClick={() => void appWindow.minimize()}>
+        <button className={btn} title="Minimize" onClick={() => void appWindow.minimize()}>
           <svg width="11" height="11" viewBox="0 0 11 11"><rect x="1" y="5" width="9" height="1" fill="currentColor" /></svg>
         </button>
         <button
           className={btn}
-          title={maximized ? "Επαναφορά" : "Μεγιστοποίηση"}
+          title={maximized ? "Restore" : "Maximize"}
           onClick={() => void appWindow.toggleMaximize()}
         >
           {maximized ? (
@@ -55,7 +55,7 @@ export function Titlebar() {
         </button>
         <button
           className="flex h-full w-[46px] items-center justify-center text-muted transition-colors hover:bg-red-600 hover:text-white"
-          title="Κλείσιμο"
+          title="Close"
           onClick={() => void appWindow.close()}
         >
           <svg width="11" height="11" viewBox="0 0 11 11" stroke="currentColor"><path d="M1 1 L10 10 M10 1 L1 10" /></svg>

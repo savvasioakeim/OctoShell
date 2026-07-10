@@ -1,17 +1,17 @@
-// Parse the orchestrator's ```octo-review fenced block into review items, and
-// strip it from the rendered prose (like parseActions does for ```octo-actions).
+// Parse the orchestrator's ```octo-qa fenced block into QA items, and strip it
+// from the rendered prose (like parseActions does for ```octo-actions).
 
-import type { ReviewItem } from "./reviewTypes";
+import type { QaItem } from "./qaTypes";
 
-const REVIEW_FENCE = /```octo-review\s*\n([\s\S]*?)```/i;
+const QA_FENCE = /```octo-qa\s*\n([\s\S]*?)```/i;
 
-/** Split an assistant reply into prose with the review block removed, plus the
- *  parsed review items (empty + unchanged text when there's no/!malformed block). */
-export function parseReview(text: string): { clean: string; items: ReviewItem[] } {
-  const m = text.match(REVIEW_FENCE);
+/** Split an assistant reply into prose with the QA block removed, plus the parsed
+ *  QA items (empty + unchanged text when there's no/!malformed block). */
+export function parseQa(text: string): { clean: string; items: QaItem[] } {
+  const m = text.match(QA_FENCE);
   if (!m) return { clean: text, items: [] };
 
-  const clean = text.replace(REVIEW_FENCE, "").replace(/\n{3,}/g, "\n\n").trim();
+  const clean = text.replace(QA_FENCE, "").replace(/\n{3,}/g, "\n\n").trim();
 
   let raw: unknown;
   try {
@@ -20,7 +20,7 @@ export function parseReview(text: string): { clean: string; items: ReviewItem[] 
     return { clean, items: [] };
   }
   const list = Array.isArray(raw) ? raw : [raw];
-  const items: ReviewItem[] = [];
+  const items: QaItem[] = [];
   for (const it of list) {
     const item = normalize(it);
     if (item) items.push(item);
@@ -28,7 +28,7 @@ export function parseReview(text: string): { clean: string; items: ReviewItem[] 
   return { clean, items };
 }
 
-function normalize(it: any): ReviewItem | null {
+function normalize(it: any): QaItem | null {
   if (!it || typeof it !== "object") return null;
   const title = str(it.title ?? it.feature);
   const whatToCheck = str(it.whatToCheck ?? it.check ?? it.description ?? it.desc);
@@ -45,7 +45,7 @@ function normalize(it: any): ReviewItem | null {
 }
 
 /** A backend needs both a repo/project and a start command to be actionable. */
-function normalizeBackend(b: any): ReviewItem["backend"] {
+function normalizeBackend(b: any): QaItem["backend"] {
   if (!b || typeof b !== "object") return undefined;
   const project = str(b.project ?? b.repo ?? b.name);
   const command = str(b.command ?? b.startCommand ?? b.start);

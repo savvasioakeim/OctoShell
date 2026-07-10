@@ -2,7 +2,226 @@
 // and we normalise every line into the same small event shape the ShellController
 // renders into blocks. Adding a provider = one parser here (+ args in agent.rs).
 
-export type AgentProvider = "claude" | "gemini";
+// "claude"/"gemini" are the bespoke stream-json integrations (agent.rs). The
+// `acp-*` providers all speak the Agent Client Protocol (acp.rs) — one backend
+// path, many agents. Adding an ACP agent = one entry in ACP_AGENTS below.
+export type AgentProvider =
+  | "claude"
+  | "gemini"
+  | "acp-claude"
+  | "acp-gemini"
+  | "acp-codex"
+  | "acp-opencode"
+  | "acp-cursor"
+  | "acp-copilot"
+  | "acp-kiro"
+  | "acp-ollama";
+
+/** An ACP-speaking agent: how to launch it, and how to set its model. */
+export interface AcpAgentDef {
+  /** Launch command (whitespace-split; `AcpAgent::from_str` parses it). */
+  command: string;
+  /** Env var that selects the model, prefixed onto the command as
+   *  `NAME=value` (ACP parses leading NAME=value tokens as env vars). Null when
+   *  the agent doesn't take a model via env. */
+  modelEnv: string | null;
+  /** Docker image to run the WHOLE adapter inside when the sandbox setting is on
+   *  (host isolation for every command the agent runs — not just delegated
+   *  terminals). Null = no sandbox support (adapter needs a host-installed CLI we
+   *  can't provide in a generic image); those fall back to host execution. */
+  dockerImage: string | null;
+  /** The adapter's launch command in Linux form (no `cmd /c` shim), run inside
+   *  the container via `sh -c`. Null when `dockerImage` is null. */
+  dockerCommand: string | null;
+  /** Interactive command (Linux form) that runs the UNDERLYING CLI inside the
+   *  shared sandbox volume so the user can complete its login flow once; its
+   *  credentials land in the volume and every sandboxed session reuses them.
+   *  Null = no sandbox support or no interactive login. */
+  loginCommand: string | null;
+}
+
+/** Registry of ACP agents, keyed by provider id. On Windows npx/gemini are .cmd
+ *  shims, so they go through cmd.exe. */
+export const ACP_AGENTS: Record<string, AcpAgentDef> = {
+  "acp-claude": {
+    command: "cmd /c npx -y @agentclientprotocol/claude-agent-acp",
+    modelEnv: "ANTHROPIC_MODEL",
+    // claude-code (which the adapter wraps) needs node ≥22.
+    dockerImage: "node:22",
+    dockerCommand: "npx -y @agentclientprotocol/claude-agent-acp",
+    loginCommand: "npx -y @anthropic-ai/claude-code@latest",
+  },
+  "acp-gemini": {
+    // Gemini CLI speaks ACP natively; model is selected via its own -m flag,
+    // appended in acpCommandFor rather than an env var.
+    // NOTE: Google sunset the Gemini CLI for INDIVIDUAL accounts on 2026-06-18,
+    // superseded by the Antigravity CLI (`agy`, announced 2026-05-19). The
+    // gemini-cli binary still installs and drives Code Assist Standard/
+    // Enterprise. `agy` itself doesn't speak ACP yet (an --acp/stdio JSON-RPC
+    // mode is only a feature request, google-antigravity/antigravity-cli#31),
+    // and the Antigravity *IDE* is a GUI Electron app with no headless entry
+    // point — so neither can be added as an adapter here yet. Revisit once
+    // `agy` ships either --acp or a stream-json headless mode.
+    command: "cmd /c npx -y -- @google/gemini-cli@latest --experimental-acp",
+    modelEnv: null,
+    dockerImage: "node:22",
+    dockerCommand: "npx -y -- @google/gemini-cli@latest --experimental-acp",
+    loginCommand: "npx -y -- @google/gemini-cli@latest",
+  },
+  "acp-codex": {
+    // OpenAI Codex via Zed's ACP adapter. Model selection through the adapter
+    // isn't confirmed yet, so it runs the agent's default (no modelEnv).
+    command: "cmd /c npx -y @zed-industries/codex-acp@latest",
+    modelEnv: null,
+    dockerImage: "node:22",
+    dockerCommand: "npx -y @zed-industries/codex-acp@latest",
+    // The adapter wraps the codex CLI; its interactive run offers the login flow.
+    loginCommand: "npx -y @openai/codex@latest",
+  },
+  // The rest speak ACP natively but need their own CLI installed & on PATH
+  // (like the native gemini provider). Commands are the canonical ACP-stdio
+  // invocations. Model selection per-agent isn't wired yet → agent default.
+  // No generic image ships their CLI, so they can't be sandboxed (dockerImage
+  // null → host execution even when the sandbox setting is on).
+  "acp-opencode": { command: "cmd /c opencode acp", modelEnv: null, dockerImage: null, dockerCommand: null, loginCommand: null },
+  // Local models via Ollama, driven through OpenCode's ACP server. OpenCode owns
+  // the agent loop (tool-use, edits) and speaks ACP; Ollama is just the model
+  // backend (OpenAI-compatible endpoint at localhost:11434). The model is passed
+  // as `-m ollama/<model>` (gemini-style trailing flag, modelEnv null), so the
+  // OLLAMA_MODELS values already carry the `ollama/` provider prefix. Requires
+  // OpenCode installed with an `ollama` provider configured in its config; the
+  // model runs fully local (no login, no cloud), hence loginCommand null. No
+  // generic image ships OpenCode+Ollama, so it isn't sandboxable (dockerImage
+  // null → host execution).
+  "acp-ollama": { command: "cmd /c opencode acp", modelEnv: null, dockerImage: null, dockerCommand: null, loginCommand: null },
+  "acp-cursor": { command: "cmd /c cursor-agent acp", modelEnv: null, dockerImage: null, dockerCommand: null, loginCommand: null },
+  "acp-copilot": { command: "cmd /c copilot --acp --stdio", modelEnv: null, dockerImage: null, dockerCommand: null, loginCommand: null },
+  "acp-kiro": { command: "cmd /c kiro-cli acp --trust-all-tools", modelEnv: null, dockerImage: null, dockerCommand: null, loginCommand: null },
+};
+
+/** Build the launch command for an ACP provider, injecting the selected model:
+ *  as an env prefix when the agent uses one, else (gemini) as a trailing `-m`.
+ *  `opencodeConfig` (acp-ollama only) is an OctoShell-owned OpenCode config path;
+ *  it's injected as a leading `OPENCODE_CONFIG=<path>` env prefix so local runs
+ *  pick up our ollama provider + inference defaults (base URL, temperature,
+ *  num_ctx). The path is space-free (see the backend's `opencode_config`), so the
+ *  ACP whitespace tokeniser keeps it as one token. */
+/** A "profile" (a named config/account folder) is set per provider via a
+ *  provider-specific env var. These are the CLIs whose config dir OctoShell can
+ *  point at a chosen folder — the equivalent of Claude's CLAUDE_CONFIG_DIR:
+ *    - acp-codex   → CODEX_HOME        (config + auth + sessions)
+ *    - acp-cursor  → CURSOR_CONFIG_DIR (cli-config.json + auth)
+ *    - acp-copilot → COPILOT_HOME      (config + auth)
+ *    - acp-opencode→ XDG_DATA_HOME     (opencode's data dir incl. auth.json)
+ *  Gemini's GEMINI_CONFIG_DIR is ignored on Windows (upstream bug), and
+ *  ollama/kiro have no per-account config dir, so they're intentionally absent. */
+const CONFIG_DIR_ENV: Partial<Record<AgentProvider, string>> = {
+  "acp-claude": "CLAUDE_CONFIG_DIR",
+  "acp-codex": "CODEX_HOME",
+  "acp-cursor": "CURSOR_CONFIG_DIR",
+  "acp-copilot": "COPILOT_HOME",
+  "acp-opencode": "XDG_DATA_HOME",
+};
+
+/** The env var that points this provider's config/account dir, or null if it has
+ *  no per-account config dir OctoShell can drive. */
+export function configDirEnvFor(provider: AgentProvider): string | null {
+  return CONFIG_DIR_ENV[provider] ?? null;
+}
+
+/** True if a profile (config-dir/account) picker is meaningful for this provider.
+ *  Native `claude` applies it via its own env (agent.rs/ai.rs), the ACP CLIs via
+ *  the command env prefix (see acpCommandFor). */
+export function supportsProfile(provider: AgentProvider): boolean {
+  return provider === "claude" || configDirEnvFor(provider) !== null;
+}
+
+export function acpCommandFor(
+  provider: AgentProvider,
+  model: string | null,
+  opts?: { opencodeConfig?: string | null; configDir?: string | null },
+): string {
+  const def = ACP_AGENTS[provider];
+  if (!def) return "";
+  let cmd = def.command;
+  if (model) cmd = def.modelEnv ? `${def.modelEnv}=${model} ${cmd}` : `${cmd} -m ${model}`;
+  // Profile selection: point the CLI's config/account dir env var at the chosen
+  // folder (forward-slashed so backslashes don't confuse the ACP tokeniser). NOTE:
+  // the tokeniser is whitespace-split, so a profile path containing spaces won't
+  // pass through — practically these dirs (…/.codex, …/.cursor) have no spaces.
+  const cfgEnv = configDirEnvFor(provider);
+  if (opts?.configDir && cfgEnv) {
+    cmd = `${cfgEnv}=${opts.configDir.replace(/\\/g, "/")} ${cmd}`;
+  }
+  if (opts?.opencodeConfig) cmd = `OPENCODE_CONFIG=${opts.opencodeConfig} ${cmd}`;
+  return cmd;
+}
+
+/** Write the OctoShell-owned OpenCode config for a local (acp-ollama) run and
+ *  return its path for {@link acpCommandFor}; null for any other provider or on
+ *  failure (the run then just falls back to OpenCode's own config). */
+export async function prepareOpencodeConfig(
+  provider: AgentProvider,
+  ollama: { baseUrl: string; temperature: number; contextWindow: number },
+): Promise<string | null> {
+  if (provider !== "acp-ollama") return null;
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return await invoke<string>("opencode_config", {
+      baseUrl: ollama.baseUrl,
+      temperature: ollama.temperature,
+      numCtx: ollama.contextWindow,
+    });
+  } catch {
+    return null;
+  }
+}
+
+/** One-time interactive login for a sandboxed ACP agent: runs the provider's
+ *  UNDERLYING CLI in the shared `$HOME` volume so its login (OAuth/device-code)
+ *  is stored there and reused by every sandboxed worktree — separate from the
+ *  host login. Run in an OctoShell terminal (it renders the interactive TUI);
+ *  the user completes the browser step. `-it` gets a TTY from the PTY; no
+ *  `cmd /c` (PowerShell runs it). Null when the provider can't be sandboxed. */
+export function sandboxLoginCommandFor(provider: AgentProvider): string | null {
+  const def = ACP_AGENTS[provider];
+  if (!def || !def.dockerImage || !def.loginCommand) return null;
+  return `docker run -it --rm --user node -e HOME=/home/node -v ${SANDBOX_HOME_VOLUME}:/home/node ${def.dockerImage} ${def.loginCommand}`;
+}
+
+/** The shared named volume holding sandbox logins + npm cache (must match
+ *  SANDBOX_HOME_VOLUME in acp.rs). */
+const SANDBOX_HOME_VOLUME = "octoshell-claude-home";
+
+/** The image + Linux launch command for running an ACP adapter INSIDE a Docker
+ *  container (whole-adapter sandboxing). Returns null when the provider has no
+ *  sandbox support (needs a host CLI) — the caller then runs it on the host even
+ *  with the sandbox setting on. Model injection mirrors {@link acpCommandFor}. */
+export function acpSandboxCommandFor(
+  provider: AgentProvider,
+  model: string | null,
+): { image: string; command: string } | null {
+  const def = ACP_AGENTS[provider];
+  if (!def || !def.dockerImage || !def.dockerCommand) return null;
+  let command = def.dockerCommand;
+  if (model) {
+    command = def.modelEnv ? `${def.modelEnv}=${model} ${command}` : `${command} -m ${model}`;
+  }
+  return { image: def.dockerImage, command };
+}
+
+/** True for any provider that runs over ACP (acp.rs). */
+export function isAcp(provider: AgentProvider): boolean {
+  return provider.startsWith("acp");
+}
+
+/** Coerce a persisted/unknown provider string to a valid one, migrating the
+ *  legacy generic "acp" id (→ "acp-claude") and defaulting anything unrecognised
+ *  to "claude". Prevents a stale localStorage value from crashing the UI. */
+export function normalizeProvider(p: unknown): AgentProvider {
+  if (p === "acp") return "acp-claude"; // legacy id, pre provider/model split
+  return PROVIDERS.some((x) => x.value === p) ? (p as AgentProvider) : "claude";
+}
 
 /** One planned step of a task (the agent's TodoWrite list), with its live status.
  *  Drives the trace progress bar. */
@@ -14,6 +233,14 @@ export interface AgentStep {
 export const PROVIDERS: { value: AgentProvider; label: string; icon: string }[] = [
   { value: "claude", label: "Claude", icon: "🐙" },
   { value: "gemini", label: "Gemini", icon: "✦" },
+  { value: "acp-claude", label: "Claude (ACP)", icon: "🐙" },
+  { value: "acp-codex", label: "Codex (ACP)", icon: "⬡" },
+  { value: "acp-opencode", label: "OpenCode (ACP)", icon: "▣" },
+  { value: "acp-cursor", label: "Cursor (ACP)", icon: "▮" },
+  { value: "acp-copilot", label: "Copilot (ACP)", icon: "🛩" },
+  { value: "acp-kiro", label: "Kiro (ACP)", icon: "◆" },
+  { value: "acp-gemini", label: "Gemini (ACP)", icon: "✦" },
+  { value: "acp-ollama", label: "Local · Ollama (ACP)", icon: "🦙" },
 ];
 
 /** A normalised stream event. Exactly one field is meaningful per event. */
@@ -26,6 +253,10 @@ export interface NormEvent {
   delta?: boolean;
   /** A tool invocation. */
   tool?: { id: string; name: string; input: string };
+  /** The agent's full plan (ACP `plan` update): the ordered steps with status,
+   *  replacing the current progress wholesale. Drives the trace bar for ACP
+   *  agents (the equivalent of the native path's TaskCreate/TaskUpdate). */
+  steps?: AgentStep[];
   /** A tool's result, keyed back to the tool's id. */
   result?: { id: string; content: string; isError: boolean };
   /** Token usage for the turn (from the provider's final result event). */
@@ -59,7 +290,95 @@ export function parseAgentLine(provider: AgentProvider, line: string): NormEvent
   } catch {
     return [];
   }
-  return provider === "gemini" ? parseGemini(ev) : parseClaude(ev);
+  if (provider === "gemini") return parseGemini(ev);
+  if (isAcp(provider)) return parseAcp(ev);
+  return parseClaude(ev);
+}
+
+// --- ACP (Agent Client Protocol, via acp.rs) ---
+// Each line is one serialized ACP `SessionUpdate`, internally tagged by
+// `sessionUpdate` (snake_case) with the variant's fields inlined. One
+// implementation covers every ACP-speaking agent (Claude, Gemini, …).
+function parseAcp(ev: any): NormEvent[] {
+  const out: NormEvent[] = [];
+  const kind = ev?.sessionUpdate;
+
+  if (kind === "agent_message_chunk") {
+    // Streaming assistant text. `content` is a ContentBlock; render text parts.
+    const text = acpText(ev.content);
+    if (text) out.push({ text, delta: true });
+    // agent_thought_chunk (internal reasoning) and user_message_chunk (our own
+    // prompt echo) are intentionally ignored.
+  } else if (kind === "tool_call") {
+    // A new tool invocation. `title` is the human label; input is best-effort
+    // from rawInput (shape is agent-specific).
+    const input =
+      ev.rawInput != null ? stringifyInput(ev.rawInput) : acpToolContent(ev.content);
+    out.push({
+      tool: {
+        id: String(ev.toolCallId ?? out.length),
+        name: String(ev.title ?? ev.kind ?? "tool"),
+        input,
+      },
+    });
+  } else if (kind === "tool_call_update") {
+    // Status/result update for a running tool call. Surface a result only once
+    // the call reaches a terminal status.
+    const status = ev.fields?.status ?? ev.status;
+    if (status === "completed" || status === "failed") {
+      out.push({
+        result: {
+          id: String(ev.toolCallId ?? ""),
+          content: acpToolContent(ev.fields?.content ?? ev.content),
+          isError: status === "failed",
+        },
+      });
+    }
+  } else if (kind === "plan") {
+    // The agent's task plan. `entries` is the full ordered list every time
+    // (ACP re-sends the whole plan on each change), so map it wholesale to steps
+    // and let the controller replace the trace bar's progress. ACP plan status is
+    // "pending" | "in_progress" | "completed" — the same shape as AgentStep.
+    const entries = Array.isArray(ev.entries) ? ev.entries : [];
+    const steps: AgentStep[] = entries
+      .map((e: any) => ({
+        text: String(e?.content ?? e?.title ?? "").trim(),
+        status:
+          e?.status === "in_progress" || e?.status === "completed"
+            ? e.status
+            : "pending",
+      }))
+      .filter((s: AgentStep) => s.text);
+    if (steps.length) out.push({ steps });
+  }
+  // usage_update / mode / config updates → ACP v1 has no standardised token
+  // usage update, so the meters stay driven by the native path only.
+  return out;
+}
+
+/** Extract plain text from an ACP ContentBlock (`{type:"text",text}`), else "". */
+function acpText(content: any): string {
+  if (content?.type === "text" && typeof content.text === "string") return content.text;
+  return "";
+}
+
+/** Flatten ACP ToolCallContent[] (each `{type:"content",content:ContentBlock}`
+ *  or a diff) into a readable string. */
+function acpToolContent(content: any): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((c: any) => (c?.type === "content" ? acpText(c.content) : acpText(c)))
+      .filter(Boolean)
+      .join("");
+  }
+  return content == null ? "" : JSON.stringify(content);
+}
+
+function stringifyInput(raw: any): string {
+  if (typeof raw === "string") return raw;
+  if (typeof raw?.command === "string") return raw.command; // shell-style tools
+  return JSON.stringify(raw, null, 2);
 }
 
 // --- Claude Code (claude --output-format stream-json --include-partial-messages) ---

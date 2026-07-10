@@ -135,19 +135,19 @@ export function SmartPrButton({
     if (!pr) { await cap(cwd, "gh pr create --fill 2>&1"); pr = await queryPr(cwd); }
     // seen=0 so any feedback already on the PR (e.g. when adopting an existing
     // one) shows up as actionable on the next Check.
-    if (pr) { setEntry("check", pr.number, 0); flash(`PR #${pr.number} έτοιμο`); }
-    else flash("Δεν δημιουργήθηκε PR — δες το terminal");
+    if (pr) { setEntry("check", pr.number, 0); flash(`PR #${pr.number} ready`); }
+    else flash("No PR was created — check the terminal");
   });
 
   const doCheck = run(async () => {
     const pr = await queryPr(cwd);
-    if (!pr) { setEntry("create"); flash("Δεν υπάρχει PR για το branch"); return; }
+    if (!pr) { setEntry("create"); flash("No PR for this branch"); return; }
     if (pr.state === "MERGED" || pr.state === "CLOSED") { setEntry("done", pr.number); flash(pr.state); return; }
     // New feedback (formal CHANGES_REQUESTED, or any review/comment we haven't
     // handled yet — needed since you can't request-changes on your own PR).
     const hasNew = pr.reviewDecision === "CHANGES_REQUESTED" || pr.feedback > (entry?.seen ?? 0);
-    if (hasNew) { setEntry("resolve", pr.number); flash("Νέα σχόλια — πάτα Resolve"); }
-    else flash(pr.reviewDecision === "APPROVED" ? "Approved ✓ — έτοιμο για merge" : "Κανένα νέο σχόλιο");
+    if (hasNew) { setEntry("resolve", pr.number); flash("New comments — press Resolve"); }
+    else flash(pr.reviewDecision === "APPROVED" ? "Approved ✓ — ready to merge" : "No new comments");
   });
 
   // Resolve: the agent reads the review comments and fixes the code + commits,
@@ -157,13 +157,13 @@ export function SmartPrButton({
     const comments = await cap(cwd, `gh pr view ${n} --comments 2>&1`);
     const pr = await queryPr(cwd);
     controller.runAgent(
-      `Στο PR #${n} ζητήθηκαν αλλαγές. Διάβασε τα παρακάτω review comments, ` +
-        `κάνε τις απαραίτητες διορθώσεις στον κώδικα και κάνε **commit**. ` +
-        `ΜΗΝ κάνεις push — θα γίνει χειροκίνητα μετά από review.\n\n${comments}`,
+      `Changes were requested on PR #${n}. Read the review comments below, ` +
+        `make the required code fixes and **commit** them. ` +
+        `Do NOT push — that happens manually after review.\n\n${comments}`,
     );
     // Mark this feedback as handled so the loop converges after the push.
     setEntry("update", n, pr?.feedback ?? entry?.seen ?? 0);
-    flash("Στάλθηκε στον agent → δες τις αλλαγές, μετά Update");
+    flash("Sent to the agent → review the changes, then Update");
   });
 
   // Update: push the agent's (reviewed) fixes, then back to Check.
@@ -171,7 +171,7 @@ export function SmartPrButton({
     const n = entry!.pr;
     await cap(cwd, `git push origin ${branch} 2>&1`);
     setEntry("check", n);
-    flash("Έγινε push → πάτα Check");
+    flash("Pushed → press Check");
   });
 
   const doDone = () => setMap((m) => { const c = { ...m }; delete c[branch]; return c; });
@@ -196,7 +196,7 @@ export function SmartPrButton({
         <button
           onClick={c.onClick}
           disabled={busy}
-          title="Smart PR: Create → Check → Resolve (ο agent φτιάχνει + commit) → Update (push) → loop μέχρι merge"
+          title="Smart PR: Create → Check → Resolve (the agent fixes + commits) → Update (push) → loop until merge"
           className={`block w-full whitespace-nowrap px-3 py-1.5 text-left text-xs hover:bg-edge disabled:opacity-70 ${
             actionable ? "text-accent" : "text-gray-200"
           }`}
@@ -225,7 +225,7 @@ export function SmartPrButton({
       <button
         onClick={c.onClick}
         disabled={busy}
-        title="Smart PR: Create → Check → Resolve (ο agent φτιάχνει + commit) → Update (push) → loop μέχρι merge"
+        title="Smart PR: Create → Check → Resolve (the agent fixes + commits) → Update (push) → loop until merge"
         className={`whitespace-nowrap rounded-md px-2.5 py-1 text-xs disabled:opacity-70 ${c.cls}`}
       >
         <span className="inline-flex items-center gap-1.5">
