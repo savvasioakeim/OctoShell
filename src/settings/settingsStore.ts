@@ -45,6 +45,13 @@ export interface WorkspaceSettings {
   baseBranch: string;
   /** Copy `.env*` files into a freshly-created worktree. */
   copyEnv: boolean;
+  /** Copy the base repo's installed dependency dirs (node_modules, vendor, …) into
+   *  a freshly-created worktree, so its dev server / tests run without a reinstall.
+   *  A git worktree never inherits these. */
+  copyDeps: boolean;
+  /** Ports to always show in the Ports panel (even when free), on top of whatever
+   *  is actually listening. The "basic ports we use", editable by the user. */
+  trackedPorts: number[];
   /** Which native shell the terminal launches. */
   defaultShell: DefaultShell;
 }
@@ -73,6 +80,9 @@ export interface ReviewAgentSettings {
   provider: AgentProvider;
   /** Selected model (null = provider default). */
   model: string | null;
+  /** Selected profile (a Claude Code CLAUDE_CONFIG_DIR account); null = home
+   *  default. Lets the reviewer run under a different account than the coder. */
+  profileId: string | null;
 }
 
 /** Local LLM (Ollama) integration: the base endpoint plus the shared generation
@@ -105,6 +115,14 @@ export interface SettingsState {
   reviewAgent: ReviewAgentSettings;
   /** Local LLM (Ollama) connection + inference defaults. */
   ollama: OllamaSettings;
+  /** MCP server names the ORCHESTRATOR is allowed to use (from the user's Claude
+   *  config). Empty = planner-only (no MCP loaded). Ticked per server in Settings
+   *  → MCP access; only their tools are pre-approved, never file/Bash tools. */
+  orchestratorMcp: string[];
+  /** Give the orchestrator READ-ONLY inspection tools (Read/Grep/Glob + a git/gh/ls
+   *  read-only Bash allowlist) so it can verify state instead of guessing. Never
+   *  Edit/Write or unrestricted Bash — code is written only by dispatched agents. */
+  orchestratorReadonly: boolean;
 }
 
 const DEFAULT_WORKSPACE: WorkspaceSettings = {
@@ -112,6 +130,8 @@ const DEFAULT_WORKSPACE: WorkspaceSettings = {
   autoClean: "off",
   baseBranch: "",
   copyEnv: true,
+  copyDeps: true,
+  trackedPorts: [3000, 5173, 1420, 8080, 4000],
   defaultShell: "powershell",
 };
 const DEFAULT_APPEARANCE: AppearanceSettings = {
@@ -120,7 +140,7 @@ const DEFAULT_APPEARANCE: AppearanceSettings = {
   sfx: false,
 };
 const DEFAULT_SYSTEM: SystemSettings = { scrollback: 1000, sandboxAgentCommands: false };
-const DEFAULT_REVIEW_AGENT: ReviewAgentSettings = { enabled: false, provider: "claude", model: null };
+const DEFAULT_REVIEW_AGENT: ReviewAgentSettings = { enabled: false, provider: "claude", model: null, profileId: null };
 const DEFAULT_OLLAMA: OllamaSettings = {
   baseUrl: "http://localhost:11434",
   contextWindow: 8192,
@@ -155,6 +175,8 @@ class SettingsStore {
       system: { ...DEFAULT_SYSTEM, ...loadJSON<Partial<SystemSettings>>(KEY.systemSettings, {}) },
       reviewAgent: { ...DEFAULT_REVIEW_AGENT, ...loadJSON<Partial<ReviewAgentSettings>>(KEY.reviewAgent, {}) },
       ollama: { ...DEFAULT_OLLAMA, ...loadJSON<Partial<OllamaSettings>>(KEY.ollamaSettings, {}) },
+      orchestratorMcp: loadJSON<string[]>(KEY.orchestratorMcp, []),
+      orchestratorReadonly: loadJSON<boolean>(KEY.orchestratorReadonly, true),
     };
     // Push the persisted sandbox flag to the backend once at startup so the ACP
     // terminal routing matches the UI from the first turn (fire-and-forget).
@@ -186,7 +208,13 @@ class SettingsStore {
     saveJSON(KEY.systemSettings, next.system);
     saveJSON(KEY.reviewAgent, next.reviewAgent);
     saveJSON(KEY.ollamaSettings, next.ollama);
+    saveJSON(KEY.orchestratorMcp, next.orchestratorMcp);
+    saveJSON(KEY.orchestratorReadonly, next.orchestratorReadonly);
     this.listeners.forEach((l) => l());
+  }
+
+  setOrchestratorReadonly(on: boolean): void {
+    this.commit({ ...this.state, orchestratorReadonly: on });
   }
 
   addProfile(name: string, configDir: string): Profile {
@@ -235,6 +263,13 @@ class SettingsStore {
   }
   setOllama(patch: Partial<OllamaSettings>): void {
     this.commit({ ...this.state, ollama: { ...this.state.ollama, ...patch } });
+  }
+  /** Toggle whether the orchestrator may use a given MCP server. */
+  setOrchestratorMcp(name: string, allowed: boolean): void {
+    const set = new Set(this.state.orchestratorMcp);
+    if (allowed) set.add(name);
+    else set.delete(name);
+    this.commit({ ...this.state, orchestratorMcp: [...set] });
   }
 
   /** Resolve a profile id to its config dir (null = home default). */

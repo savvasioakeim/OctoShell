@@ -37,7 +37,7 @@ export function AgentTextBlockView({ block }: { block: AgentTextBlock }) {
     >
       <div className="mb-1 flex items-center gap-2 text-[11px]">
         <span className={isUser ? "font-semibold text-gray-300" : "font-semibold text-accent"}>
-          {isUser ? "🧑 you" : `${prov.icon} ${prov.label.toLowerCase()}`}
+          {isUser ? "you" : prov.label.toLowerCase()}
         </span>
         <span className="text-muted">{fmtTime(block.startedAt)}</span>
       </div>
@@ -115,9 +115,26 @@ export function AgentApprovalBlockView({
 }
 
 /** A tool the agent invoked (command/input) plus its result. */
+/** Strip a markdown code fence that wraps an ENTIRE tool result.
+ *
+ *  ACP adapters hand terminal output back pre-formatted for chat (```console …
+ *  ```), but we render results in a <pre> — so the fence markers showed up as
+ *  literal ``` lines around every command's output. The payload is already
+ *  monospace here, so the fence carries no information: drop it. Anything more
+ *  complex (prose plus several fences) is left untouched. */
+function unfence(text: string): string {
+  const m = text.match(/^\s*```[^\n]*\n([\s\S]*?)\n?```\s*$/);
+  return m && !m[1].includes("```") ? m[1] : text;
+}
+
 export function AgentToolBlockView({ block }: { block: AgentToolBlock }) {
   const [expanded, setExpanded] = useState(false);
   const isBash = block.toolName === "Bash";
+  const result = block.result ? unfence(block.result) : "";
+  // A tool can fail with nothing to show (ACP's Terminal reports the failure out
+  // of band). An empty red block told the user only that *something* broke, so
+  // say that explicitly instead of rendering nothing.
+  const silentFailure = !result && (block.isError || block.status === "error");
   const dot =
     block.status === "running"
       ? "bg-yellow-400 animate-pulse"
@@ -149,15 +166,23 @@ export function AgentToolBlockView({ block }: { block: AgentToolBlock }) {
             />
           )
         ) : null}
-        {block.result !== undefined && block.result !== "" && (
+        {silentFailure && (
+          <div className="mt-1.5 rounded border border-red-500/30 bg-red-500/10 px-2 py-1.5 text-[12px] text-red-300">
+            ⚠️ {block.toolName} failed but returned no output — check the agent's next
+            message, or run the command yourself in Shell mode to see the error.
+          </div>
+        )}
+        {result !== "" && (
           <div className="relative mt-1.5">
             <pre
-              className="overflow-auto whitespace-pre-wrap break-words rounded bg-well/60 px-2 py-1.5 text-[14px] text-gray-300"
+              className={`overflow-auto whitespace-pre-wrap break-words rounded px-2 py-1.5 text-[14px] ${
+                block.isError ? "bg-red-500/10 text-red-200" : "bg-well/60 text-gray-300"
+              }`}
               style={expanded ? undefined : { maxHeight: RESULT_MAX_PX }}
             >
-              {expanded ? block.result : block.result.slice(0, RESULT_CHARS_CAP)}
+              {expanded ? result : result.slice(0, RESULT_CHARS_CAP)}
             </pre>
-            {block.result.length > 600 && (
+            {result.length > 600 && (
               <button
                 onClick={() => setExpanded((e) => !e)}
                 className="mt-1 rounded bg-edge/80 px-2 py-0.5 text-[11px] text-gray-300 hover:bg-accent/40"

@@ -61,35 +61,45 @@ struct ServiceExit {
     code: i32,
 }
 
-/// Find a free TCP port, preferring `hint`, then the familiar dev range
-/// (3000–3099), then an OS-assigned ephemeral one. `reserved` guards against two
-/// in-flight starts picking the same port. The bind-test races the eventual child
-/// bind (we drop the listener so the child can take it), which is acceptable: a
-/// hard-coded server that ignores `PORT` may still collide, and that's surfaced
-/// via the log stream rather than silently. Returns 0 if nothing is free.
-fn alloc_port(reserved: &Mutex<HashSet<u16>>, hint: Option<u16>) -> u16 {
-    let free = |p: u16| TcpListener::bind(("127.0.0.1", p)).is_ok();
-    let mut res = reserved.lock().unwrap();
-    if let Some(h) = hint {
-        if h != 0 && !res.contains(&h) && free(h) {
-            res.insert(h);
-            return h;
-        }
+/// The port a service gets: the project's OWN port, always. `hint` (explicit or
+/// from .env), else 3000.
+///
+/// We deliberately do NOT hunt for a free port. Shifting a busy 3000 to 3001 made
+/// every consumer guess which port a server actually landed on — QA opened the
+/// wrong URL, a frontend called an API that had moved, and the "free" bind-test
+/// raced the child's real bind anyway. A dev server is only useful on the port its
+/// project expects, so instead of moving ours out of the way we clear the port
+/// (see `free_port`): the newest start wins and the stale server dies.
+fn service_port(hint: Option<u16>) -> u16 {
+    hint.filter(|p| *p != 0).unwrap_or(3000)
+}
+
+/// Make `port` available by killing whatever still listens on it, and say so.
+/// Every kill is announced on the service log — silently taking a port from
+/// another process is exactly the kind of invisible action that costs debugging
+/// time later. Returns the log lines describing what was stopped.
+fn free_port(port: u16) -> Vec<String> {
+    let mut notes = Vec::new();
+    if TcpListener::bind(("127.0.0.1", port)).is_ok() {
+        return notes; // already free
     }
-    for p in 3000u16..3100 {
-        if !res.contains(&p) && free(p) {
-            res.insert(p);
-            return p;
-        }
+    for pid in pids_on_port(port) {
+        #[cfg(windows)]
+        let killed = capture("taskkill", &["/F", "/T", "/PID", &pid.to_string()]).is_some();
+        #[cfg(not(windows))]
+        let killed = Command::new("kill").arg("-9").arg(pid.to_string()).status().is_ok();
+        notes.push(if killed {
+            format!("octoshell: port {port} was in use by pid {pid} — stopped it to free the port")
+        } else {
+            format!("octoshell: port {port} is in use by pid {pid} and could NOT be freed — the server will likely fail to bind")
+        });
     }
-    if let Ok(l) = TcpListener::bind(("127.0.0.1", 0)) {
-        if let Ok(addr) = l.local_addr() {
-            let p = addr.port();
-            res.insert(p);
-            return p;
-        }
+    if notes.is_empty() {
+        notes.push(format!(
+            "octoshell: port {port} looks busy but no owning process was found — the server may fail to bind"
+        ));
     }
-    0
+    notes
 }
 
 /// The project's own `PORT=` from its .env files. We inject `PORT` into the
@@ -155,6 +165,58 @@ fn fix_npm_script(cwd: &str, command: &str) -> String {
     command.into()
 }
 
+/// The dependency-install command for a JS project, chosen by its lockfile
+/// (npm / pnpm / yarn / bun). Defaults to `npm install`.
+fn install_command(cwd: &str) -> &'static str {
+    let dir = Path::new(cwd);
+    if dir.join("pnpm-lock.yaml").exists() {
+        "pnpm install"
+    } else if dir.join("yarn.lock").exists() {
+        "yarn install"
+    } else if dir.join("bun.lockb").exists() {
+        "bun install"
+    } else {
+        "npm install"
+    }
+}
+
+/// True when a directory is absent or has no entries. A `git worktree add` leaves
+/// an EMPTY `node_modules` in some setups (and a never-installed repo has one too),
+/// so a bare `.exists()` check isn't enough — an empty dir still means "install me".
+fn dir_missing_or_empty(path: &Path) -> bool {
+    match std::fs::read_dir(path) {
+        Ok(mut entries) => entries.next().is_none(),
+        Err(_) => true, // missing / unreadable
+    }
+}
+
+/// Wrap a server command so it FIRST installs dependencies when they're missing.
+/// A JS project (has `package.json`) with no — or an EMPTY — `node_modules` (the
+/// norm for a fresh `git worktree`, which never inherits them) would otherwise
+/// crash on its first import (e.g. `ERR_MODULE_NOT_FOUND`). Returns `command`
+/// unchanged when there's nothing to guard. We decide here (not with a runtime
+/// `if not exist`, which can't tell an empty dir from a populated one) and, when an
+/// install is needed, prepend it UNCONDITIONALLY. Its output streams through the
+/// same stdout pipe, so the user sees progress.
+fn with_install_guard(cwd: &str, command: &str) -> String {
+    if cwd.is_empty() {
+        return command.into();
+    }
+    let dir = Path::new(cwd);
+    if !dir.join("package.json").exists() || !dir_missing_or_empty(&dir.join("node_modules")) {
+        return command.into();
+    }
+    let install = install_command(cwd);
+    #[cfg(windows)]
+    {
+        format!("echo octoshell: installing dependencies ({install})... && {install} && ( {command} )")
+    }
+    #[cfg(not(windows))]
+    {
+        format!("echo 'octoshell: installing dependencies ({install})...'; {install} || exit 1; {command}")
+    }
+}
+
 /// Pull a bound port out of a typical dev-server log line (e.g.
 /// "Local:   http://localhost:5173/"). Lets us report the URL the server ACTUALLY
 /// bound — covering frameworks that ignore `PORT` or auto-increment on conflict.
@@ -197,13 +259,38 @@ impl ServiceManager {
                 },
             );
         }
-        let command = fixed;
+        // A fresh worktree (or a never-installed repo) has no node_modules, so the
+        // server would crash on its first import. Auto-install first when missing.
+        let command = with_install_guard(&cwd, &fixed);
 
-        // Prefer the project's own .env PORT over our 3000-range default.
-        let port = alloc_port(&self.reserved, port_hint.or_else(|| env_port_hint(&cwd)));
-        if port == 0 {
-            return Err("could not allocate a free port".into());
+        // The project's own port, always — then clear it, so starting a server
+        // replaces whatever was on that port instead of drifting to another one.
+        let port = service_port(port_hint.or_else(|| env_port_hint(&cwd)));
+        // Retire any MANAGED service already on this port through `stop`, so its
+        // bookkeeping (map entry, reservation) is cleaned up rather than leaving a
+        // zombie entry pointing at a process free_port would just kill.
+        let stale: Vec<String> = self
+            .services
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, s)| s.port == port)
+            .map(|(k, _)| k.clone())
+            .collect();
+        for other in stale {
+            let _ = app.emit(
+                "service://log",
+                ServiceLog {
+                    id: id.clone(),
+                    line: format!("octoshell: stopping `{other}` — it was serving port {port}"),
+                },
+            );
+            self.stop(&other);
         }
+        for line in free_port(port) {
+            let _ = app.emit("service://log", ServiceLog { id: id.clone(), line });
+        }
+        self.reserved.lock().unwrap().insert(port);
 
         // The command is a shell line ("npm run dev"); npm/next are shims, so run
         // it through the platform shell rather than spawning the binary directly.
@@ -289,6 +376,21 @@ impl ServiceManager {
 
     pub fn stop(&self, id: &str) {
         if let Some(mut s) = self.services.lock().unwrap().remove(id) {
+            // The service runs as `cmd /c <command>` (or `sh -c`), so `child` is the
+            // WRAPPER shell — killing only it leaves the real server (node/etc.) alive
+            // and still holding its port. Kill the whole process TREE by pid, then
+            // reap the handle. (Windows: taskkill /T; Unix: negative-pid group kill.)
+            let pid = s.child.id();
+            #[cfg(windows)]
+            {
+                let _ = capture("taskkill", &["/F", "/T", "/PID", &pid.to_string()]);
+            }
+            #[cfg(not(windows))]
+            {
+                // Best-effort: kill the process group if we're its leader, else the pid.
+                let _ = Command::new("kill").arg("-TERM").arg(format!("-{pid}")).status();
+                let _ = Command::new("kill").arg("-TERM").arg(pid.to_string()).status();
+            }
             let _ = s.child.kill();
             self.reserved.lock().unwrap().remove(&s.port);
         }
@@ -410,4 +512,135 @@ pub fn service_start(
 pub fn service_stop(manager: State<'_, ServiceManager>, id: String) -> Result<(), String> {
     manager.stop(&id);
     Ok(())
+}
+
+/// One listening TCP port, with the process holding it (best-effort name).
+#[derive(Serialize, Clone)]
+pub struct PortInfo {
+    port: u16,
+    pid: u32,
+    process: String,
+}
+
+/// Run a command with no console window (Windows), capturing stdout.
+fn capture(program: &str, args: &[&str]) -> Option<String> {
+    let mut cmd = Command::new(program);
+    cmd.args(args);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let out = cmd.output().ok()?;
+    Some(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// PIDs currently LISTENING on `port` (Windows: parsed from `netstat -ano`).
+#[cfg(windows)]
+fn pids_on_port(port: u16) -> Vec<u32> {
+    let Some(text) = capture("netstat", &["-ano", "-p", "tcp"]) else { return vec![] };
+    let mut pids = Vec::new();
+    for line in text.lines() {
+        let f: Vec<&str> = line.split_whitespace().collect();
+        // Proto Local Foreign State PID
+        if f.len() >= 5 && f[3].eq_ignore_ascii_case("LISTENING") {
+            if f[1].rsplit(':').next().and_then(|p| p.parse::<u16>().ok()) == Some(port) {
+                if let Ok(pid) = f[4].parse::<u32>() {
+                    if pid != 0 && !pids.contains(&pid) {
+                        pids.push(pid);
+                    }
+                }
+            }
+        }
+    }
+    pids
+}
+
+#[cfg(not(windows))]
+fn pids_on_port(port: u16) -> Vec<u32> {
+    let Some(text) = capture("lsof", &["-tiTCP", &format!("-sTCP:LISTEN"), "-P", "-n", &format!("-i:{port}")]) else { return vec![] };
+    text.lines().filter_map(|l| l.trim().parse::<u32>().ok()).collect()
+}
+
+/// Every LISTENING TCP port on the machine, with its owning process. Powers the
+/// Ports panel — so the user can see and kill whatever holds a port (e.g. a stale
+/// dev server on 3000). Deduped by (port, pid), sorted by port.
+#[tauri::command]
+pub fn list_ports() -> Vec<PortInfo> {
+    #[cfg(windows)]
+    {
+        // PID → image name, from one tasklist call (CSV, no header).
+        let mut names: HashMap<u32, String> = HashMap::new();
+        if let Some(tl) = capture("tasklist", &["/fo", "csv", "/nh"]) {
+            for line in tl.lines() {
+                let cols: Vec<&str> = line.split("\",\"").collect();
+                if cols.len() >= 2 {
+                    let name = cols[0].trim_matches('"').to_string();
+                    if let Ok(pid) = cols[1].trim_matches('"').trim().parse::<u32>() {
+                        names.insert(pid, name);
+                    }
+                }
+            }
+        }
+        let Some(text) = capture("netstat", &["-ano", "-p", "tcp"]) else { return vec![] };
+        let mut seen: HashSet<(u16, u32)> = HashSet::new();
+        let mut out: Vec<PortInfo> = Vec::new();
+        for line in text.lines() {
+            let f: Vec<&str> = line.split_whitespace().collect();
+            if f.len() >= 5 && f[3].eq_ignore_ascii_case("LISTENING") {
+                let port = f[1].rsplit(':').next().and_then(|p| p.parse::<u16>().ok());
+                let pid = f[4].parse::<u32>().ok();
+                if let (Some(port), Some(pid)) = (port, pid) {
+                    if pid != 0 && seen.insert((port, pid)) {
+                        let process = names.get(&pid).cloned().unwrap_or_else(|| "?".into());
+                        out.push(PortInfo { port, pid, process });
+                    }
+                }
+            }
+        }
+        out.sort_by(|a, b| a.port.cmp(&b.port).then(a.pid.cmp(&b.pid)));
+        out
+    }
+    #[cfg(not(windows))]
+    {
+        let Some(text) = capture("lsof", &["-nP", "-iTCP", "-sTCP:LISTEN"]) else { return vec![] };
+        let mut seen: HashSet<(u16, u32)> = HashSet::new();
+        let mut out: Vec<PortInfo> = Vec::new();
+        for line in text.lines().skip(1) {
+            let f: Vec<&str> = line.split_whitespace().collect();
+            if f.len() >= 9 {
+                let pid = f[1].parse::<u32>().ok();
+                let port = f[8].rsplit(':').next().and_then(|p| p.parse::<u16>().ok());
+                if let (Some(pid), Some(port)) = (pid, port) {
+                    if seen.insert((port, pid)) {
+                        out.push(PortInfo { port, pid, process: f[0].to_string() });
+                    }
+                }
+            }
+        }
+        out.sort_by(|a, b| a.port.cmp(&b.port).then(a.pid.cmp(&b.pid)));
+        out
+    }
+}
+
+/// Kill whatever process is LISTENING on `port` (all of them). Used by the Ports
+/// panel's per-port kill button. Returns the count killed.
+#[tauri::command]
+pub fn kill_port(port: u16) -> Result<u32, String> {
+    let pids = pids_on_port(port);
+    if pids.is_empty() {
+        return Ok(0);
+    }
+    let mut killed = 0;
+    for pid in pids {
+        #[cfg(windows)]
+        let ok = capture("taskkill", &["/F", "/PID", &pid.to_string()]).is_some();
+        #[cfg(not(windows))]
+        let ok = Command::new("kill").arg("-9").arg(pid.to_string()).status().map(|s| s.success()).unwrap_or(false);
+        if ok {
+            killed += 1;
+        }
+    }
+    Ok(killed)
 }

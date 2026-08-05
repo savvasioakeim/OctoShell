@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -15,16 +15,30 @@ import {
 } from "./settingsStore";
 import { PROVIDERS, supportsProfile, type AgentProvider } from "../agents/providers";
 import { useOllamaModels, ollamaModelOptions, refreshOllamaModels } from "../agents/ollamaModels";
+import { strategyStore, useStrategy } from "../strategy/strategyStore";
+import type { StrategyRole } from "../strategy/roles";
 import { vacuumDb, type VacuumResult } from "../util/db";
+import { projectConfigStore, useProjectScripts } from "../projects/projectConfig";
 
-type TabId = "ai" | "local" | "workspace" | "appearance" | "system";
+type TabId = "ai" | "local" | "roles" | "projects" | "workspace" | "appearance" | "system";
 const TABS: { id: TabId; label: string }[] = [
-  { id: "ai", label: "👤 Profiles & AI" },
-  { id: "local", label: "🦙 Local LLM" },
-  { id: "workspace", label: "🌿 Workspace & Git" },
-  { id: "appearance", label: "🎨 Appearance" },
-  { id: "system", label: "🗄️ System & Database" },
+  { id: "ai", label: "Profiles & AI" },
+  { id: "local", label: "Local LLM" },
+  { id: "roles", label: "Strategy Roles" },
+  { id: "projects", label: "Project Scripts" },
+  { id: "workspace", label: "Workspace & Git" },
+  { id: "appearance", label: "Appearance" },
+  { id: "system", label: "System & Database" },
 ];
+
+/** An open project, passed in so the Project Scripts tab can list them. */
+export interface SettingsProject {
+  id: string;
+  name: string;
+  cwd: string;
+  /** Set when this project is a worktree nested under that parent project. */
+  parentId?: string;
+}
 
 /** Monospace fonts offered for the terminal/feed ("" = the app's theme default). */
 const FONTS: { label: string; value: string }[] = [
@@ -41,8 +55,22 @@ const FONTS: { label: string; value: string }[] = [
  * defaults & profiles, the Git/worktree automation, the look & feel, and storage
  * maintenance. Everything reads/writes the shared {@link settingsStore}.
  */
-export function SettingsPage({ onClose, onSandboxLogin, onShowOnboarding }: { onClose: () => void; onSandboxLogin: () => void; onShowOnboarding: () => void }) {
-  const [tab, setTab] = useState<TabId>("ai");
+export function SettingsPage({
+  onClose,
+  onSandboxLogin,
+  onShowOnboarding,
+  initialTab,
+  focusProjectCwd,
+  projects = [],
+}: {
+  onClose: () => void;
+  onSandboxLogin: () => void;
+  onShowOnboarding: () => void;
+  initialTab?: string;
+  focusProjectCwd?: string;
+  projects?: SettingsProject[];
+}) {
+  const [tab, setTab] = useState<TabId>((initialTab as TabId) || "ai");
 
   return (
     <div className="flex h-full flex-col bg-well text-gray-100">
@@ -59,19 +87,20 @@ export function SettingsPage({ onClose, onSandboxLogin, onShowOnboarding }: { on
       <div className="flex flex-1 gap-2 overflow-hidden px-2 pb-2">
         {/* Vertical tab rail — its own panel. */}
         <nav className="flex w-52 shrink-0 flex-col gap-1 rounded-xl border border-edge bg-panel p-2">
-          {TABS.map((t) => (
-            <button
-              key={t.id}
-              onClick={() => setTab(t.id)}
-              className={`rounded-lg px-3 py-2 text-left text-sm transition-colors ${
-                tab === t.id
-                  ? "bg-edge text-accent"
-                  : "text-muted hover:bg-edge/50 hover:text-gray-200"
-              }`}
-            >
-              {t.label}
-            </button>
-          ))}
+          {TABS.map((t) => {
+            const active = tab === t.id;
+            return (
+              <button
+                key={t.id}
+                onClick={() => setTab(t.id)}
+                className={`rounded-lg px-3 py-2 text-left text-sm transition-colors ${
+                  active ? "bg-edge" : "text-muted hover:bg-edge/50 hover:text-gray-200"
+                }`}
+              >
+                <span className={active ? "text-grad font-semibold" : undefined}>{t.label}</span>
+              </button>
+            );
+          })}
         </nav>
 
         {/* Content — one panel; sections are nested cards inside it. */}
@@ -79,6 +108,8 @@ export function SettingsPage({ onClose, onSandboxLogin, onShowOnboarding }: { on
           <div className="mx-auto max-w-2xl space-y-3">
             {tab === "ai" && <AiTab />}
             {tab === "local" && <LocalLlmTab />}
+            {tab === "roles" && <StrategyRolesTab />}
+            {tab === "projects" && <ProjectScriptsTab projects={projects} focusCwd={focusProjectCwd} />}
             {tab === "workspace" && <WorkspaceTab />}
             {tab === "appearance" && <AppearanceTab />}
             {tab === "system" && <SystemTab onSandboxLogin={onSandboxLogin} onShowOnboarding={onShowOnboarding} />}
@@ -93,7 +124,7 @@ export function SettingsPage({ onClose, onSandboxLogin, onShowOnboarding }: { on
 // Tab 1 — Profiles & AI
 // ---------------------------------------------------------------------------
 function AiTab() {
-  const { profiles, agent, orchestrator, globalRules, spendLimitUsd, reviewAgent } = useSettings();
+  const { profiles, agent, orchestrator, globalRules, spendLimitUsd, reviewAgent, orchestratorReadonly } = useSettings();
 
   const addProfile = async () => {
     const dir = await open({ directory: true, title: "Pick a profile folder (CLAUDE_CONFIG_DIR)" });
@@ -124,7 +155,7 @@ function AiTab() {
           ))}
           <button
             onClick={() => void addProfile()}
-            className="rounded bg-accent/20 px-3 py-1.5 text-sm text-accent hover:bg-accent/30"
+            className="btn-grad rounded px-3 py-1.5 text-sm font-medium"
           >
             + Add profile…
           </button>
@@ -202,8 +233,18 @@ function AiTab() {
               </p>
             </Field>
           )}
+          <div className="mt-3">
+            <ToggleRow
+              label="Read-only inspection"
+              desc="Let the orchestrator run read-only commands (git status/log/diff, git worktree list, gh pr view, ls/cat/rg…) and read files, so it verifies reality instead of guessing. It can NEVER write code or run other commands — only dispatched agents do that."
+              checked={orchestratorReadonly}
+              onChange={(v) => settingsStore.setOrchestratorReadonly(v)}
+            />
+          </div>
         </div>
       </Section>
+
+      <OrchestratorMcpSection />
 
       <Section
         title="Review agent"
@@ -231,6 +272,15 @@ function AiTab() {
                 onChange={(v) => settingsStore.setReviewAgent({ model: v })}
               />
             </Field>
+            {supportsProfile(reviewAgent.provider) && (
+              <Field label="Profile">
+                <ProfileSelect
+                  profiles={profiles}
+                  value={reviewAgent.profileId}
+                  onChange={(v) => settingsStore.setReviewAgent({ profileId: v })}
+                />
+              </Field>
+            )}
           </div>
         )}
       </Section>
@@ -274,6 +324,72 @@ function AiTab() {
         </div>
       </Section>
     </>
+  );
+}
+
+interface McpServer {
+  name: string;
+  transport: string;
+}
+
+/** Lists the MCP servers from the orchestrator's Claude config and lets the user
+ *  tick which ones it may use. Only the ticked servers' tools are pre-approved;
+ *  file/Bash tools are never granted, and nothing selected = pure planner. */
+function OrchestratorMcpSection() {
+  const { profiles, orchestrator, orchestratorMcp } = useSettings();
+  const configDir = profiles.find((p) => p.id === orchestrator.profileId)?.configDir ?? null;
+  const [servers, setServers] = useState<McpServer[] | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    setServers(null);
+    setErr(null);
+    invoke<McpServer[]>("list_mcp_servers", { configDir })
+      .then((s) => live && setServers(s))
+      .catch((e) => live && setErr(String(e)));
+    return () => {
+      live = false;
+    };
+  }, [configDir]);
+
+  return (
+    <Section
+      title="Orchestrator MCP access"
+      desc="Which of your configured MCP servers the orchestrator may use. Only the ticked servers' tools are enabled (and pre-approved) — it can never edit files or run shell commands through this. Leave all unticked for a pure planner. Applies to the Claude/Gemini orchestrator transport."
+    >
+      {err && <p className="text-xs text-red-300">Couldn't read MCP config: {err}</p>}
+      {!err && servers === null && <p className="text-xs text-muted">Loading MCP servers…</p>}
+      {!err && servers?.length === 0 && (
+        <p className="text-xs text-muted">
+          No MCP servers found in this profile's Claude config ({configDir ? configDir : "~/.claude.json"}).
+        </p>
+      )}
+      {servers && servers.length > 0 && (
+        <div className="space-y-1">
+          {servers.map((s) => {
+            const checked = orchestratorMcp.includes(s.name);
+            return (
+              <label
+                key={s.name}
+                className="flex cursor-pointer items-center gap-2 rounded border border-edge px-2 py-1.5 text-sm hover:border-accent"
+              >
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  onChange={(e) => settingsStore.setOrchestratorMcp(s.name, e.target.checked)}
+                  className="accent-accent"
+                />
+                <span className="font-medium">{s.name}</span>
+                <span className="ml-auto rounded bg-well px-1.5 py-0.5 text-[10px] uppercase text-muted">
+                  {s.transport}
+                </span>
+              </label>
+            );
+          })}
+        </div>
+      )}
+    </Section>
   );
 }
 
@@ -389,7 +505,7 @@ function LocalLlmTab() {
           <button
             onClick={() => void test()}
             disabled={conn.state === "testing"}
-            className="rounded-lg bg-accent/20 px-3 py-1.5 text-sm text-accent hover:bg-accent/30 disabled:opacity-60"
+            className="btn-grad rounded-lg px-3 py-1.5 text-sm font-medium"
           >
             {conn.state === "testing" ? "Testing…" : "Test connection"}
           </button>
@@ -451,7 +567,7 @@ function LocalLlmTab() {
             disabled={pull.active}
             className="rounded-lg border border-edge px-3 py-1.5 text-sm text-gray-200 hover:bg-edge disabled:opacity-60"
           >
-            📚 Browse models
+            Browse models
           </button>
         </div>
 
@@ -919,6 +1035,13 @@ function WorkspaceTab() {
             checked={workspace.copyEnv}
             onChange={(v) => set({ copyEnv: v })}
           />
+          <ToggleRow
+            label="Copy dependencies into new worktrees"
+            desc="Copies the base repo's installed deps (node_modules, vendor, …) so the worktree's dev server / tests run without a reinstall. A git worktree never inherits these."
+            checked={workspace.copyDeps}
+            onChange={(v) => set({ copyDeps: v })}
+          />
+          <TrackedPortsField ports={workspace.trackedPorts} onChange={(v) => set({ trackedPorts: v })} />
           <Field label="Auto-clean — when a worktree is deleted">
             <Select
               value={workspace.autoClean}
@@ -1074,9 +1197,9 @@ function SystemTab({ onSandboxLogin, onShowOnboarding }: { onSandboxLogin: () =>
         <div className="mt-3 flex items-center gap-3">
           <button
             onClick={onSandboxLogin}
-            className="rounded bg-accent/20 px-3 py-1.5 text-sm text-accent hover:bg-accent/30"
+            className="btn-grad rounded px-3 py-1.5 text-sm font-medium"
           >
-            🔑 Sandbox agent login (one-time)
+            Sandbox agent login (one-time)
           </button>
           <span className="text-xs text-muted">
             Opens a login in the active project's terminal, for that project's selected agent CLI
@@ -1092,9 +1215,9 @@ function SystemTab({ onSandboxLogin, onShowOnboarding }: { onSandboxLogin: () =>
       >
         <button
           onClick={onShowOnboarding}
-          className="rounded bg-accent/20 px-3 py-1.5 text-sm text-accent hover:bg-accent/30"
+          className="btn-grad rounded px-3 py-1.5 text-sm font-medium"
         >
-          🩺 Re-run health check
+          Re-run health check
         </button>
       </Section>
 
@@ -1105,9 +1228,9 @@ function SystemTab({ onSandboxLogin, onShowOnboarding }: { onSandboxLogin: () =>
         <button
           onClick={() => void runVacuum()}
           disabled={busy}
-          className="rounded bg-accent/20 px-3 py-1.5 text-sm text-accent hover:bg-accent/30 disabled:opacity-60"
+          className="btn-grad rounded px-3 py-1.5 text-sm font-medium disabled:opacity-60"
         >
-          {busy ? "Compacting…" : "🧹 Compact now"}
+          {busy ? "Compacting…" : "Compact now"}
         </button>
         {result && (
           <p className="mt-2 text-xs text-muted">
@@ -1123,6 +1246,157 @@ function SystemTab({ onSandboxLogin, onShowOnboarding }: { onSandboxLogin: () =>
 // ---------------------------------------------------------------------------
 // Shared bits
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Tab — Project Scripts (per-project dev/test command overrides)
+// ---------------------------------------------------------------------------
+function ProjectScriptsTab({ projects, focusCwd }: { projects: SettingsProject[]; focusCwd?: string }) {
+  // De-dupe by cwd (a repo + its worktrees can share a path root); keep first seen.
+  const seen = new Set<string>();
+  const rows = projects.filter((p) => {
+    const k = p.cwd.toLowerCase();
+    if (!p.cwd || seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+
+  // Group each top-level repo with its worktrees nested under it, so the page
+  // mirrors the sidebar's repo → worktree hierarchy instead of a flat list.
+  const byId = new Map(rows.map((p) => [p.id, p]));
+  const parents = rows.filter((p) => !p.parentId || !byId.has(p.parentId));
+  const childrenOf = (id: string) => rows.filter((p) => p.parentId === id && byId.has(p.parentId!));
+
+  return (
+    <Section
+      title="Project scripts"
+      desc="Pin the exact dev-server and test commands per project. When set, OctoShell uses these instead of guessing — so QA and managed-run stop falling back to the wrong npm script. Leave a field blank to keep auto-detection."
+    >
+      {rows.length === 0 ? (
+        <p className="text-xs text-muted">No open projects.</p>
+      ) : (
+        <div className="space-y-5">
+          {parents.map((repo) => {
+            const worktrees = childrenOf(repo.id);
+            return (
+              <div key={repo.id} className="space-y-2">
+                <ProjectScriptRow project={repo} focused={sameCwd(repo.cwd, focusCwd)} />
+                {worktrees.length > 0 && (
+                  <div className="ml-3 space-y-2 border-l border-edge/70 pl-3">
+                    <div className="text-[10px] uppercase tracking-wider text-muted/70">Worktrees</div>
+                    {worktrees.map((wt) => (
+                      <ProjectScriptRow key={wt.id} project={wt} focused={sameCwd(wt.cwd, focusCwd)} worktree />
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </Section>
+  );
+}
+
+function sameCwd(a: string, b?: string): boolean {
+  return !!b && a.toLowerCase() === b.toLowerCase();
+}
+
+function ProjectScriptRow({
+  project,
+  focused,
+  worktree = false,
+}: {
+  project: SettingsProject;
+  focused: boolean;
+  worktree?: boolean;
+}) {
+  const scripts = useProjectScripts(project.cwd);
+  const configured = !!(scripts.dev || scripts.test);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (focused) ref.current?.scrollIntoView({ block: "center", behavior: "smooth" });
+  }, [focused]);
+  return (
+    <div
+      ref={ref}
+      className={`rounded-lg border px-3.5 py-3 transition-colors ${
+        focused
+          ? "border-accent/70 bg-accent/[0.07] ring-1 ring-accent/40"
+          : worktree
+            ? "border-edge/70 bg-well/30"
+            : "border-edge bg-card"
+      }`}
+    >
+      <div className="mb-2.5 flex items-center gap-2">
+        <span className={worktree ? "text-accent/70" : "text-muted"}>{worktree ? "⑃" : "▼"}</span>
+        <span className="text-sm font-semibold text-gray-100">{project.name}</span>
+        {configured && (
+          <span className="rounded-full bg-emerald-500/15 px-1.5 py-0.5 text-[9px] font-medium text-emerald-300">
+            custom
+          </span>
+        )}
+        <span className="ml-auto truncate text-[11px] text-muted" title={project.cwd}>{project.cwd}</span>
+      </div>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <label className="flex flex-col gap-1">
+          <span className="text-[11px] uppercase tracking-wider text-muted">Dev server</span>
+          <input
+            defaultValue={scripts.dev ?? ""}
+            onChange={(e) => projectConfigStore.set(project.cwd, "dev", e.target.value)}
+            placeholder="e.g. npm run dev · npm start"
+            className="w-full rounded bg-ink px-2 py-1.5 text-xs text-gray-100 outline-none placeholder:text-muted/50 focus:ring-1 focus:ring-accent/50"
+          />
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-[11px] uppercase tracking-wider text-muted">Tests</span>
+          <input
+            defaultValue={scripts.test ?? ""}
+            onChange={(e) => projectConfigStore.set(project.cwd, "test", e.target.value)}
+            placeholder="e.g. npm test"
+            className="w-full rounded bg-ink px-2 py-1.5 text-xs text-gray-100 outline-none placeholder:text-muted/50 focus:ring-1 focus:ring-accent/50"
+          />
+        </label>
+      </div>
+    </div>
+  );
+}
+
+/** Editable list of ports the Ports panel always shows (the "basic ports we use"),
+ *  as chips plus an add field. */
+function TrackedPortsField({ ports, onChange }: { ports: number[]; onChange: (v: number[]) => void }) {
+  const [draft, setDraft] = useState("");
+  const add = () => {
+    const n = parseInt(draft.trim(), 10);
+    if (n > 0 && n < 65536 && !ports.includes(n)) onChange([...ports, n]);
+    setDraft("");
+  };
+  return (
+    <div className="rounded-lg border border-edge bg-card px-3 py-2.5">
+      <div className="text-sm font-medium text-gray-100">Tracked ports</div>
+      <p className="mb-2 mt-0.5 text-xs text-muted">
+        Always shown in the sidebar’s Ports panel (even when free), on top of whatever is actually listening.
+      </p>
+      <div className="flex flex-wrap items-center gap-1.5">
+        {ports.map((p) => (
+          <span key={p} className="flex items-center gap-1 rounded border border-edge bg-well/50 px-1.5 py-0.5 font-mono text-xs text-gray-200">
+            :{p}
+            <button onClick={() => onChange(ports.filter((x) => x !== p))} title="Remove" className="text-muted hover:text-red-300">
+              ✕
+            </button>
+          </span>
+        ))}
+        <input
+          value={draft}
+          onChange={(e) => setDraft(e.target.value.replace(/[^0-9]/g, ""))}
+          onKeyDown={(e) => { if (e.key === "Enter") add(); }}
+          onBlur={add}
+          placeholder="add port…"
+          className="w-24 rounded bg-ink px-2 py-0.5 text-xs text-gray-100 outline-none placeholder:text-muted/50 focus:ring-1 focus:ring-accent/50"
+        />
+      </div>
+    </div>
+  );
+}
+
 function Section({ title, desc, children }: { title: string; desc: string; children: React.ReactNode }) {
   return (
     <section className="overflow-hidden rounded-xl border border-edge bg-card transition-colors hover:border-edge/80">
@@ -1264,6 +1538,119 @@ function ToggleRow({
       <div className="pt-0.5">
         <Toggle checked={checked} onChange={onChange} label={checked ? "On" : "Off"} />
       </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Tab — Strategy Roles
+// ---------------------------------------------------------------------------
+
+/** Manage the roles a Strategy Mode participant can take. Built-in roles are
+ *  locked (prompt is viewable, not editable — clone to tweak); custom roles are
+ *  fully editable. A role's prompt primes the participant (who it is in the
+ *  discussion) before it ever sees the user's request. */
+function StrategyRolesTab() {
+  const { roles } = useStrategy();
+  const builtins = roles.filter((r) => r.builtin);
+  const custom = roles.filter((r) => !r.builtin);
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <h2 className="text-base font-semibold text-gray-100">Strategy Roles</h2>
+        <p className="mt-1 text-xs leading-relaxed text-muted">
+          A role gives a Strategy Mode participant an identity and a short prompt that primes it —
+          who it is in the discussion — before it reads your request. Built-in roles are locked so
+          you always have safe defaults; clone one or add your own to customise.
+        </p>
+      </div>
+
+      <section className="space-y-2">
+        <div className="text-xs font-semibold uppercase tracking-wide text-muted">Built-in (locked)</div>
+        {builtins.map((r) => (
+          <RoleCard key={r.id} role={r} />
+        ))}
+      </section>
+
+      <section className="space-y-2">
+        <div className="flex items-center justify-between">
+          <div className="text-xs font-semibold uppercase tracking-wide text-muted">Your roles</div>
+          <button
+            onClick={() => strategyStore.addRole()}
+            className="rounded border border-edge px-2 py-1 text-[11px] text-muted hover:bg-edge/50 hover:text-gray-200"
+          >
+            ＋ Add role
+          </button>
+        </div>
+        {custom.length === 0 && (
+          <div className="rounded-lg border border-dashed border-edge px-3 py-4 text-center text-xs text-muted">
+            No custom roles yet. Add one, or clone a built-in to use it as a template.
+          </div>
+        )}
+        {custom.map((r) => (
+          <RoleCard key={r.id} role={r} />
+        ))}
+      </section>
+    </div>
+  );
+}
+
+function RoleCard({ role }: { role: StrategyRole }) {
+  const [open, setOpen] = useState(!role.builtin);
+  return (
+    <div className={`rounded-lg border bg-card ${role.builtin ? "border-edge" : "border-accent/30"}`}>
+      <div className="flex items-center gap-2 px-3 py-2">
+        {role.builtin ? (
+          <>
+            <span className="text-xs">🔒</span>
+            <span className="flex-1 text-sm font-medium text-gray-100">{role.name}</span>
+            <button
+              onClick={() => setOpen((v) => !v)}
+              className="rounded px-2 py-0.5 text-[11px] text-muted hover:bg-edge hover:text-gray-200"
+            >
+              {open ? "Hide prompt" : "View prompt"}
+            </button>
+            <button
+              onClick={() => strategyStore.cloneRole(role.id)}
+              className="rounded border border-edge px-2 py-0.5 text-[11px] text-muted hover:bg-edge/50 hover:text-gray-200"
+              title="Copy into an editable custom role"
+            >
+              ⎘ Clone
+            </button>
+          </>
+        ) : (
+          <>
+            <input
+              value={role.name}
+              onChange={(e) => strategyStore.updateRole(role.id, { name: e.target.value })}
+              className="flex-1 rounded border border-edge bg-panel px-2 py-1 text-sm font-medium text-gray-100 outline-none focus:border-accent"
+            />
+            <button
+              onClick={() => strategyStore.deleteRole(role.id)}
+              className="rounded px-1.5 py-1 text-[11px] text-muted hover:text-red-300"
+              title="Delete role"
+            >
+              ✕
+            </button>
+          </>
+        )}
+      </div>
+      {open && (
+        <div className="border-t border-edge px-3 py-2">
+          {role.builtin ? (
+            <p className="whitespace-pre-wrap text-xs leading-relaxed text-gray-300">{role.prompt}</p>
+          ) : (
+            <textarea
+              value={role.prompt}
+              onChange={(e) => strategyStore.updateRole(role.id, { prompt: e.target.value })}
+              rows={4}
+              placeholder="Describe who this participant is and the lens they bring to the discussion…"
+              className="w-full resize-y rounded border border-edge bg-panel px-2 py-1.5 text-xs leading-relaxed text-gray-200 outline-none focus:border-accent"
+            />
+          )}
+        </div>
+      )}
     </div>
   );
 }

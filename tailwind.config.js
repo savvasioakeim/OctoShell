@@ -12,7 +12,7 @@ export default {
         card: "#15181F", // block surfaces — clearly dark, the main reading surface
         well: "#0D0F14", // code wells inside blocks — darkest layer
         edge: "#313747", // borders / selection
-        accent: "#7E57C2", // Palenight purple (white text reads well on it)
+        accent: "#7c5cff", // neon violet — matches the worktree/nav gradient's violet stop
         muted: "#8087A8", // secondary text (between comment + foreground)
       },
       fontFamily: {

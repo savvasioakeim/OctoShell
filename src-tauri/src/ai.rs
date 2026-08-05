@@ -70,6 +70,13 @@ pub async fn ai_chat(
     base_url: Option<String>,
     num_ctx: Option<u64>,
     temperature: Option<f64>,
+    // MCP server names the orchestrator may use (from Settings). Empty/None =
+    // planner-only (no MCP servers loaded, the safe default).
+    allowed_mcp: Option<Vec<String>>,
+    // When true, the orchestrator gets READ-ONLY inspection tools (Read/Grep/Glob +
+    // a git/gh/ls read-only Bash allowlist) so it can verify state instead of
+    // guessing. Never Edit/Write or unrestricted Bash — it must not write code.
+    readonly: Option<bool>,
 ) -> Result<String, String> {
     let provider = provider.as_deref().unwrap_or("claude").to_string();
     let has_profile = config_dir.as_deref().map(|s| !s.is_empty()).unwrap_or(false);
@@ -85,7 +92,7 @@ pub async fn ai_chat(
         // child is registered under `request_id` so `ai_cancel` can kill it.
         let runs = manager.runs.clone();
         tauri::async_runtime::spawn_blocking(move || {
-            chat_via_cli(runs, request_id, provider, messages, system, model, config_dir)
+            chat_via_cli(runs, request_id, provider, messages, system, model, config_dir, allowed_mcp, readonly)
         })
         .await
         .map_err(|e| e.to_string())?
@@ -96,6 +103,67 @@ pub async fn ai_chat(
 pub fn ai_cancel(manager: State<'_, AiManager>, request_id: String) -> Result<(), String> {
     manager.cancel(&request_id);
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// MCP server discovery (for the Settings "orchestrator MCP access" toggles)
+// ---------------------------------------------------------------------------
+
+/// Where Claude Code keeps its config (and the user's `mcpServers`). A profile
+/// pins `CLAUDE_CONFIG_DIR` to a folder holding its own `.claude.json`; with no
+/// profile ("Default") it's `~/.claude.json`.
+fn claude_config_path(config_dir: Option<&str>) -> Option<std::path::PathBuf> {
+    match config_dir.filter(|s| !s.is_empty()) {
+        Some(dir) => Some(std::path::Path::new(dir).join(".claude.json")),
+        None => home_dir().map(|h| h.join(".claude.json")),
+    }
+}
+
+/// The user's home directory, without pulling in the `dirs` crate: `USERPROFILE`
+/// on Windows, `HOME` elsewhere.
+fn home_dir() -> Option<std::path::PathBuf> {
+    #[cfg(windows)]
+    let var = "USERPROFILE";
+    #[cfg(not(windows))]
+    let var = "HOME";
+    std::env::var_os(var).map(std::path::PathBuf::from)
+}
+
+/// The `mcpServers` object from the resolved config, or empty if none/unreadable.
+fn mcp_servers_map(config_dir: Option<&str>) -> serde_json::Map<String, serde_json::Value> {
+    claude_config_path(config_dir)
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .and_then(|v| v.get("mcpServers").and_then(|m| m.as_object()).cloned())
+        .unwrap_or_default()
+}
+
+/// One MCP server the user has configured, for the Settings checklist.
+#[derive(Serialize)]
+pub struct McpServerInfo {
+    pub name: String,
+    /// "http", "sse", or "stdio" — shown as a small hint in the UI.
+    pub transport: String,
+}
+
+/// List the MCP servers configured for a given profile (or the home default),
+/// so the user can tick which ones the orchestrator is allowed to use.
+#[tauri::command]
+pub fn list_mcp_servers(config_dir: Option<String>) -> Vec<McpServerInfo> {
+    let map = mcp_servers_map(config_dir.as_deref());
+    let mut out: Vec<McpServerInfo> = map
+        .iter()
+        .map(|(name, def)| {
+            let transport = if def.get("url").is_some() {
+                def.get("type").and_then(|t| t.as_str()).unwrap_or("http").to_string()
+            } else {
+                "stdio".to_string()
+            };
+            McpServerInfo { name: name.clone(), transport }
+        })
+        .collect();
+    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -263,6 +331,8 @@ fn chat_via_cli(
     system: Option<String>,
     model: Option<String>,
     config_dir: Option<String>,
+    allowed_mcp: Option<Vec<String>>,
+    readonly: Option<bool>,
 ) -> Result<String, String> {
     use std::io::Write;
 
@@ -321,12 +391,65 @@ fn chat_via_cli(
         if let Some(m) = model.as_deref().filter(|s| !s.is_empty()) {
             cmd.arg("--model").arg(m);
         }
-        // The orchestrator is a pure planner — it runs no tools. But `claude
-        // --print` still loads every MCP server from the user's config, and ONE
-        // hung remote server blocks the whole reply forever (observed: a stuck
-        // remote MCP made the orchestrator never answer anything). Strict mode
-        // skips config MCP servers entirely; planning needs none of them.
+        // MCP access is opt-in per server (Settings → MCP access). We NEVER load
+        // the whole config blindly: one hung remote MCP used to block the reply
+        // forever, and blanket tool access let the orchestrator edit files. So:
+        //   * nothing selected → `--strict-mcp-config` (no MCP at all — pure
+        //     planner, zero hang risk). This is the default.
+        //   * some selected → load ONLY those servers via an inline `--mcp-config`
+        //     (still strict, so config servers stay out), and pre-approve just
+        //     THEIR tools with `--allowedTools mcp__<server>`. That lets the
+        //     orchestrator call them headlessly WITHOUT `--dangerously-skip-
+        //     permissions`, so Bash / file edits stay denied. Startup/tool
+        //     timeouts bound a stuck server instead of hanging the turn.
+        let selected: Vec<String> = allowed_mcp
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|s| !s.trim().is_empty())
+            .collect();
         cmd.arg("--strict-mcp-config");
+        // Pre-approved tools accumulate here (headless `--print` denies anything not
+        // listed), then go out as ONE `--allowedTools`.
+        let mut allowed_tools: Vec<String> = Vec::new();
+        // READ-ONLY inspection toolset (Settings → Orchestrator). Lets the planner
+        // verify reality — git/gh/ls + file reads — but NEVER Edit/Write or blanket
+        // Bash, so it can't write code (only dispatched agents do). Anything not
+        // listed is denied by the headless CLI, so even a confused attempt is inert.
+        if readonly.unwrap_or(false) {
+            for t in [
+                "Read", "Grep", "Glob",
+                "Bash(git status:*)", "Bash(git log:*)", "Bash(git diff:*)",
+                "Bash(git show:*)", "Bash(git branch:*)", "Bash(git worktree list:*)",
+                "Bash(git remote:*)", "Bash(git rev-parse:*)", "Bash(git stash list:*)",
+                "Bash(gh pr view:*)", "Bash(gh pr list:*)", "Bash(gh pr checks:*)",
+                "Bash(gh run list:*)", "Bash(gh run view:*)",
+                "Bash(ls:*)", "Bash(cat:*)", "Bash(head:*)", "Bash(tail:*)",
+                "Bash(rg:*)", "Bash(find:*)", "Bash(which:*)", "Bash(npm ls:*)",
+            ] {
+                allowed_tools.push(t.to_string());
+            }
+        }
+        if !selected.is_empty() {
+            let all = mcp_servers_map(config_dir.as_deref());
+            let mut chosen = serde_json::Map::new();
+            for name in &selected {
+                if let Some(def) = all.get(name) {
+                    chosen.insert(name.clone(), def.clone());
+                }
+            }
+            if !chosen.is_empty() {
+                for n in chosen.keys() {
+                    allowed_tools.push(format!("mcp__{n}"));
+                }
+                let cfg = serde_json::json!({ "mcpServers": chosen }).to_string();
+                cmd.arg("--mcp-config").arg(cfg);
+                cmd.env("MCP_TIMEOUT", "8000"); // server startup budget (ms)
+                cmd.env("MCP_TOOL_TIMEOUT", "60000"); // per-tool-call budget (ms)
+            }
+        }
+        if !allowed_tools.is_empty() {
+            cmd.arg("--allowedTools").arg(allowed_tools.join(","));
+        }
         // Profile selection: point this `claude` at the chosen account's config dir.
         // With NO profile ("Default"), explicitly CLEAR the variable instead of just
         // leaving it — OctoShell inherits the parent environment, which may already
@@ -388,7 +511,19 @@ fn chat_via_cli(
     };
     match status {
         Some(st) if st.success() => Ok(out_s.trim().to_string()),
-        Some(st) => Err(format!("{provider} CLI exited with {st}: {}", err_s.trim())),
+        Some(st) => {
+            // `claude --print` writes its error to STDOUT (often as text/JSON), not
+            // stderr, so a bare exit code with empty stderr told us nothing. Surface
+            // whichever stream carried a message, preferring stderr, then stdout.
+            let detail = if !err_s.trim().is_empty() {
+                err_s.trim().to_string()
+            } else if !out_s.trim().is_empty() {
+                out_s.trim().to_string()
+            } else {
+                "(no output on stderr or stdout)".to_string()
+            };
+            Err(format!("{provider} CLI exited with {st}: {detail}"))
+        }
         None => Err(format!("{provider} CLI: could not get exit status")),
     }
 }

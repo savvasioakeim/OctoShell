@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { Mode, ShellController } from "../shell/ShellController";
 import { kindLabel, longestCommonPrefix, requestCompletion, type CMatch } from "../shell/completion";
-import { PROVIDERS, supportsProfile, type AgentProvider } from "../agents/providers";
+import { PROVIDERS, supportsProfile, isAcp, type AgentProvider } from "../agents/providers";
 import { useOllamaModels, ollamaModelOptions } from "../agents/ollamaModels";
 import { isServerCommand } from "../services/serviceDetect";
 import { serviceStore } from "../services/serviceStore";
@@ -496,7 +496,7 @@ export function InputBar({ controller, cwd, busy, value, altScreen, interacting,
               title="Agent provider (CLI)"
               className="flex items-center gap-1 rounded border border-edge px-1.5 py-0.5 text-[11px] text-muted hover:bg-edge hover:text-gray-200"
             >
-              {prov.icon} {prov.label}
+              {prov.label}
             </button>
             {providerMenu && (
               <div
@@ -524,7 +524,6 @@ export function InputBar({ controller, cwd, busy, value, altScreen, interacting,
                                 : "text-gray-200 hover:bg-edge"
                             }`}
                           >
-                            <span className="w-4 text-center">{p.icon}</span>
                             <span className="flex-1">{p.label.replace(" (ACP)", "")}</span>
                             {p.value === agentProvider && <span className="text-accent">✓</span>}
                           </button>
@@ -622,7 +621,7 @@ export function InputBar({ controller, cwd, busy, value, altScreen, interacting,
           </div>
         )}
 
-        {agent && agentProvider === "claude" && (
+        {agent && (agentProvider === "claude" || isAcp(agentProvider)) && (
           <button
             onClick={() => controller.setAgentApproval(!agentApproval)}
             title={
@@ -677,11 +676,33 @@ export function InputBar({ controller, cwd, busy, value, altScreen, interacting,
         )}
         <span className="flex-1" />
         {agent ? (
-          agentBusy && <span className="shrink-0 text-accent">● {prov.label} is thinking…</span>
+          agentBusy && (
+            <span className="flex shrink-0 items-center gap-2">
+              <span className="text-accent">● {prov.label} is thinking…</span>
+              <button
+                onClick={() => controller.stop()}
+                title="Stop the agent (also releases the orchestrator's live-watch hold)"
+                className="flex items-center gap-1 rounded border border-red-400/50 bg-red-500/15 px-1.5 py-0.5 text-[11px] font-medium text-red-300 hover:bg-red-500/25"
+              >
+                ■ Stop
+              </button>
+            </span>
+          )
         ) : altScreen || interacting ? (
           <span className="shrink-0 text-accent">⌨ click for a new command</span>
         ) : (
-          busy && <span className="shrink-0 text-yellow-400">● running…</span>
+          busy && (
+            <span className="flex shrink-0 items-center gap-2">
+              <span className="text-yellow-400">● running…</span>
+              <button
+                onClick={() => void controller.killCommand()}
+                title="Kill the running command (use when Ctrl+C won't stop it — e.g. a dev server)"
+                className="flex items-center gap-1 rounded border border-red-400/50 bg-red-500/15 px-1.5 py-0.5 text-[11px] font-medium text-red-300 hover:bg-red-500/25"
+              >
+                ■ Kill
+              </button>
+            </span>
+          )
         )}
       </div>
 

@@ -230,17 +230,19 @@ export interface AgentStep {
   status: "pending" | "in_progress" | "completed";
 }
 
-export const PROVIDERS: { value: AgentProvider; label: string; icon: string }[] = [
-  { value: "claude", label: "Claude", icon: "🐙" },
-  { value: "gemini", label: "Gemini", icon: "✦" },
-  { value: "acp-claude", label: "Claude (ACP)", icon: "🐙" },
-  { value: "acp-codex", label: "Codex (ACP)", icon: "⬡" },
-  { value: "acp-opencode", label: "OpenCode (ACP)", icon: "▣" },
-  { value: "acp-cursor", label: "Cursor (ACP)", icon: "▮" },
-  { value: "acp-copilot", label: "Copilot (ACP)", icon: "🛩" },
-  { value: "acp-kiro", label: "Kiro (ACP)", icon: "◆" },
-  { value: "acp-gemini", label: "Gemini (ACP)", icon: "✦" },
-  { value: "acp-ollama", label: "Local · Ollama (ACP)", icon: "🦙" },
+// No brand logos: shipping official provider marks carries trademark/asset
+// constraints, so agents are identified by name only (labels, no icon).
+export const PROVIDERS: { value: AgentProvider; label: string }[] = [
+  { value: "claude", label: "Claude" },
+  { value: "gemini", label: "Gemini" },
+  { value: "acp-claude", label: "Claude (ACP)" },
+  { value: "acp-codex", label: "Codex (ACP)" },
+  { value: "acp-opencode", label: "OpenCode (ACP)" },
+  { value: "acp-cursor", label: "Cursor (ACP)" },
+  { value: "acp-copilot", label: "Copilot (ACP)" },
+  { value: "acp-kiro", label: "Kiro (ACP)" },
+  { value: "acp-gemini", label: "Gemini (ACP)" },
+  { value: "acp-ollama", label: "Local · Ollama (ACP)" },
 ];
 
 /** A normalised stream event. Exactly one field is meaningful per event. */
@@ -368,11 +370,25 @@ function acpToolContent(content: any): string {
   if (typeof content === "string") return content;
   if (Array.isArray(content)) {
     return content
-      .map((c: any) => (c?.type === "content" ? acpText(c.content) : acpText(c)))
+      .map((c: any) =>
+        c?.type === "terminal" ? acpTerminal(c) : c?.type === "content" ? acpText(c.content) : acpText(c),
+      )
       .filter(Boolean)
       .join("");
   }
   return content == null ? "" : JSON.stringify(content);
+}
+
+/** Render a terminal tool-call part. ACP sends only a `terminalId` reference;
+ *  acp.rs resolves it and inlines the `output`/`exitCode` we captured, so the
+ *  command's real output — and the reason a failure failed — is renderable. */
+function acpTerminal(part: any): string {
+  const out = typeof part?.output === "string" ? part.output.trimEnd() : "";
+  const code = part?.exitCode;
+  if (typeof code === "number" && code !== 0) {
+    return out ? `${out}\n\n[exited with code ${code}]` : `[exited with code ${code}, no output]`;
+  }
+  return out;
 }
 
 function stringifyInput(raw: any): string {

@@ -5,7 +5,10 @@
 
 export type OrchestratorAction =
   | { kind: "dispatch"; project: string; prompt: string; branch?: string }
-  | { kind: "cancel"; project: string };
+  // `branch` disambiguates: one ticket can have same-named worktrees in several
+  // repos, so project alone can't say which agent to hit.
+  | { kind: "cancel"; project: string; branch?: string }
+  | { kind: "review"; project: string; branch?: string };
 
 /** Matches a ```octo-actions … ``` fenced block (the only place actions live). */
 const ACTIONS_FENCE = /```octo-actions\s*\n([\s\S]*?)```/i;
@@ -42,17 +45,23 @@ function normalize(item: any): OrchestratorAction | null {
   const verb = String(item.action ?? item.kind ?? "").toLowerCase();
   const project = typeof item.project === "string" ? item.project.trim() : "";
   if (!project) return null;
+  // Optional branch/worktree target. On dispatch it names the worktree to run in
+  // (created on first use, reused after); on cancel/review it disambiguates which
+  // of several same-named worktrees is meant. `worktree` is accepted as an alias.
+  const rawBranch = item.branch ?? item.worktree;
+  const branch = typeof rawBranch === "string" && rawBranch.trim() ? rawBranch.trim() : undefined;
   if (verb === "dispatch" || verb === "send" || verb === "run") {
     const prompt = typeof item.prompt === "string" ? item.prompt.trim() : "";
     if (!prompt) return null;
-    // Optional: run the task in a FRESH isolated worktree off `project`. The branch
-    // name doubles as the worktree label. `worktree` is accepted as an alias.
-    const rawBranch = item.branch ?? item.worktree;
-    const branch = typeof rawBranch === "string" && rawBranch.trim() ? rawBranch.trim() : undefined;
     return branch ? { kind: "dispatch", project, prompt, branch } : { kind: "dispatch", project, prompt };
   }
   if (verb === "cancel" || verb === "stop") {
-    return { kind: "cancel", project };
+    return branch ? { kind: "cancel", project, branch } : { kind: "cancel", project };
+  }
+  // Start OctoShell's built-in (independent) review agent on a project whose
+  // dispatched work is finished — vets the diff and emits a verdict that gates QA.
+  if (verb === "review") {
+    return branch ? { kind: "review", project, branch } : { kind: "review", project };
   }
   return null;
 }

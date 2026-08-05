@@ -35,6 +35,7 @@ There is no e2e suite yet — describe the manual verification you did in the PR
 | Agents (claude/gemini native) | `src/agents/providers.ts`, `src-tauri/src/agent.rs` |
 | ACP agents | `src/agents/providers.ts` (`ACP_AGENTS`), `src-tauri/src/acp.rs` |
 | Review mode | `src/review/`, wiring in `AiSidebar.tsx` |
+| Strategy mode | `src/strategy/` (planning workspace), handoff via `orchestratorBridge.ts` |
 | Managed services | `src/services/`, `src-tauri/src/service.rs` |
 | Docker sandbox | `src-tauri/src/docker.rs`, `acp.rs` (`docker_launch_args`) |
 | Settings | `src/settings/` |

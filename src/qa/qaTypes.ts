@@ -23,6 +23,11 @@ export interface QaBackend {
   project: string;
   /** Command that starts the backend dev server. */
   command: string;
+  /** The backend's OWN branch, when it differs from the feature branch (a single
+   *  ticket can span repos with different branch names). QA runs the backend from
+   *  the worktree on THIS branch; without it, it matches the feature branch and
+   *  falls back to the base (dev) checkout — which lacks the new API. */
+  branch?: string;
 }
 
 /** One feature to QA, as produced by the orchestrator. */
@@ -78,5 +83,9 @@ export interface QaServerPayload {
   id: string;
   role: ServerRole;
   url?: string;
-  status: "starting" | "running" | "error";
+  status: "starting" | "running" | "error" | "warning";
+  /** Human-readable detail — the error reason, or a warning (e.g. "no worktree for
+   *  this branch — running from base (dev); the new API may be missing"). Shown so
+   *  a failed/degraded start says WHY instead of silently doing the wrong thing. */
+  message?: string;
 }

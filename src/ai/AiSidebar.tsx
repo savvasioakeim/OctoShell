@@ -3,13 +3,17 @@ import { AiClient, type ChatMessage } from "./AiClient";
 import type { Block, CommandBlock, ShellController, ShellSnapshot } from "../shell/ShellController";
 import { KEY, loadJSON, saveJSON } from "../util/persist";
 import { Markdown } from "../blocks/Markdown";
+import { WorkingNode } from "../blocks/WorkingNode";
+import strategyIcon from "../assets/strategy.png";
 import { parseActions, type OrchestratorAction } from "./actions";
 import { parseQa } from "../qa/parseQa";
 import { openQaWindow } from "../qa/qaHost";
 import type { QaItem, QaResult } from "../qa/qaTypes";
 import { aggregateReviews, type ReviewSnapshot } from "../review/ReviewAgentController";
 import { serviceStore } from "../services/serviceStore";
+import { projectConfigStore } from "../projects/projectConfig";
 import { supportsProfile } from "../agents/providers";
+import { registerOrchestrator } from "../strategy/orchestratorBridge";
 import { useSettings } from "../settings/settingsStore";
 import {
   statusOf,
@@ -73,17 +77,37 @@ interface Props {
   activeId: string;
   onSelect: (id: string) => void;
   /** Branch a fresh worktree off `sourceProjectId` and return it as its own
-   *  session (its own controller/agent), or null on failure. Lets the orchestrator
-   *  dispatch isolated work into a real, visible per-worktree agent. */
-  onCreateWorktree?: (sourceProjectId: string, branch: string) => Promise<ProjectRef | null>;
+   *  session (its own controller/agent), or `{error}` with the git failure reason.
+   *  Lets the orchestrator dispatch isolated work into a real, visible per-worktree
+   *  agent. */
+  onCreateWorktree?: (
+    sourceProjectId: string,
+    branch: string,
+  ) => Promise<ProjectRef | { error: string } | null>;
   /** Close + git-remove a project/worktree by id (used by QA auto-clean). */
   onCloseProject?: (id: string) => void;
+  /** Open the Strategy Mode planning workspace (overlay owned by App). */
+  onOpenStrategy?: () => void;
   /** Width in px (user-resizable). */
   width: number;
 }
 
 function truncate(s: string, n = 400): string {
   return s.length > n ? s.slice(0, n) + "\n…(truncated)…" : s;
+}
+
+/** Canonical form for matching a branch against a worktree tab name: lowercased,
+ *  trimmed, and slashes folded to dashes — the same transform App.createWorktree
+ *  applies to name a worktree tab. Without this, "fix/x" never matches "fix-x". */
+function norm(s: string): string {
+  return s.toLowerCase().trim().replace(/\//g, "-");
+}
+
+/** Is this cwd an OctoShell worktree checkout (vs. the repo's base/dev checkout)?
+ *  Used to warn LOUDLY when QA resolves to a base checkout instead of the feature
+ *  worktree — the silent version of that fallback made QA test stale code. */
+function isWorktreeCwd(cwd: string): boolean {
+  return /\.octoshell[\\/]worktrees[\\/]/i.test(cwd);
 }
 
 /** A compact, model-readable digest of a project's recent activity. */
@@ -172,7 +196,7 @@ function useAllReviews(projects: ProjectRef[]): Map<string, ReviewSnapshot> {
  * about and coordinate work across all of them from one place. The "Agents"
  * overview lets the user jump to a project or cancel a running agent.
  */
-export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseProject, width }: Props) {
+export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseProject, onOpenStrategy, width }: Props) {
   const snaps = useAllSnapshots(tabs);
   const reviews = useAllReviews(tabs);
   // Chat sessions: the active session's content IS the live messages/actionState,
@@ -180,12 +204,19 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
   const [sessions, setSessions] = useState<ChatSession[]>(loadSessions);
   const [chatId, setChatId] = useState<string>(() => sessions[0].id);
   const [sessionMenu, setSessionMenu] = useState(false);
+  const [chatSearch, setChatSearch] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>(() => sessions[0].messages);
   const [input, setInput] = useState("");
   const [thinking, setThinking] = useState(false);
+  // A plan handed over from Strategy Mode, queued to be asked once (see effects
+  // below). Kept in state so the newChat-clear lands before ask() runs.
+  const [pendingPlan, setPendingPlan] = useState<string | null>(null);
   // Which proposed actions the user already confirmed/dismissed — persisted so a
   // restart never re-shows a handled action as pending (and risks re-dispatch).
   const [actionState, setActionState] = useState<Record<string, ActionState>>(() => sessions[0].actionState);
+  // Why an action failed, keyed like actionState. Session-local (not persisted):
+  // a reason is only meaningful next to the run that produced it.
+  const [actionErr, setActionErr] = useState<Record<string, string>>({});
   // Autonomy toggles (persisted). `autoRun`: proposed actions run without a click.
   // `liveWatch`: after a dispatch, keep driving the plan — each time a watched
   // agent finishes a turn, the assistant is auto-pinged to take the next step.
@@ -416,7 +447,22 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
               : "";
           reportLine = `\n📋 agent's last report (${fmtAge(report.at)})${flag}: ${report.text}`;
         }
-        const digest = `## ${p.name} — ${snap?.cwd || "(home)"} [${status}]${activeMark}\n${body}${reportLine}`;
+        // The independent review agent's verdict — so the orchestrator TRUSTS it
+        // instead of re-inspecting the diff itself (its report doesn't otherwise
+        // reach here). PASS/BLOCKED gates whether QA should be offered.
+        let reviewLine = "";
+        const rev = p.controller.review.getSnapshot();
+        if (rev.active) {
+          const state = rev.busy
+            ? "running…"
+            : rev.verdict
+              ? rev.verdict.blocking
+                ? "❌ BLOCKED"
+                : "✅ PASS"
+              : "pending";
+          reviewLine = `\n🔎 review agent: ${state}${rev.verdict?.summary ? ` — ${rev.verdict.summary}` : ""}`;
+        }
+        const digest = `## ${p.name} — ${snap?.cwd || "(home)"} [${status}]${activeMark}\n${body}${reportLine}${reviewLine}`;
         // Cap each project's digest so one chatty project can't dominate the budget.
         return truncate(digest, PROJECT_DIGEST_CAP);
       })
@@ -443,6 +489,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
           ? ['- ISOLATED WORK → add a "branch": {"action":"dispatch","project":"<repo>","branch":"<branch-name>","prompt":"…"}. OctoShell then creates a git worktree off that repo as its OWN project (visible in the sidebar) with its OWN dedicated agent, and runs the prompt there. Use this for any task that should be isolated or run in parallel (e.g. a PR/feature per branch). Then DO NOT instruct the agent to run `git worktree add` itself — that makes an invisible folder handled by the wrong agent; let the "branch" field do it. Fan out parallel work as several branch-dispatches off the same repo, one per branch.']
           : ['- WORKTREES ARE DISABLED in settings: do NOT use the "branch" field. Dispatch every task directly to the named project\'s own agent. If two tasks target the same project, run them sequentially (don\'t interrupt a busy agent).']),
         '- "cancel" stops a running agent: {"action":"cancel","project":"<name>"}.',
+        '- ALWAYS add "branch" to a "cancel" or "review" whose target is a worktree: {"action":"cancel","project":"<repo>","branch":"<branch-name>"}. The same branch name can exist as a worktree in several repos (a ticket spanning fe+be), and project alone can then hit the wrong agent. With "branch" the target is exact.',
         "- Prefer dispatching to idle agents; don't interrupt a busy one unless the user asks.",
         "- NEVER instruct an agent to start a long-running server (`npm run dev`, `next dev`, `vite`, etc.) — a blocking server never returns, so the agent's turn hangs forever. Agents should only build/commit/test-with-exit. Running servers is OctoShell's job: the user (or QA mode) starts them as managed services with their own port. If a task needs a live server, say so in prose and let OctoShell run it — don't put it in a dispatch prompt.",
         "- Propose multiple actions (one array, multiple objects) to fan work across projects in parallel.",
@@ -454,8 +501,14 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
         "- Keep the surrounding prose tight: a one-line intro before the list and a one-line next-step after it. Use `**bold**` for project/branch names and short `code` spans for commands, files and ports so they stand out.",
         "- QA MODE: when the tasks you dispatched are DONE and there's something the user should manually verify, ask in prose if they want to QA, and append a separate ```octo-qa fenced block — a JSON array, one object per feature: {\"title\":\"…\",\"branch\":\"<worktree branch>\",\"project\":\"<repo>\",\"startCommand\":\"<command that starts its dev server, e.g. npm run dev>\",\"whatToCheck\":\"<what the user should look at / how to test>\"}. OctoShell shows an \"Open QA Mode\" button that walks the user feature-by-feature (approve/decline + notes) and can start each server for them. You learned the ticket and what changed — put the concrete check steps in whatToCheck. Emit this block ONLY when there's real, finished work to QA.",
         "- QA BACKEND: if a feature can't be tested without a backend running (e.g. a frontend feature that calls an API), add a \"backend\" field to that item: {\"backend\":{\"project\":\"<backend repo name>\",\"command\":\"<command that starts the backend, e.g. npm run dev>\"}}. The QA window then shows a second \"backend\" start button. OctoShell runs it from the worktree on the SAME branch if one exists, otherwise from the backend repo's base branch — so you only need to name the backend repo and its start command, not a path.",
+        "- QA BACKEND BRANCH: CRITICAL when one ticket spans repos on DIFFERENT branch names (e.g. a fe_be ticket where the BE branch is `feat/rental-booking-notes` but the FE branch is `feat/rental-notes`). The backend must run from ITS OWN worktree, not the feature's. Add the backend's real branch: {\"backend\":{\"project\":\"<repo>\",\"command\":\"…\",\"branch\":\"<the BACKEND's branch>\"}}. Without it, OctoShell matches the feature branch, finds no backend worktree, and silently runs the backend from base (dev) — which LACKS the new API, so the QA tests stale code. Always set backend.branch when the backend's branch name differs from the item's branch.",
         ...(autoRun
           ? ["- AUTONOMOUS MODE: your actions run automatically (no user click). Don't ask for confirmation — just propose them and they execute."]
+          : []),
+        ...(settings.orchestratorReadonly
+          ? [
+              "- READ-ONLY TOOLS: you have inspection tools — Read/Grep/Glob for files, and read-only shell commands (git status/log/diff/show/branch/worktree list, gh pr view/list/checks, ls/cat/rg/find). USE them to VERIFY reality before you claim or plan anything — e.g. run `git -C <repo> worktree list` to check a worktree exists, `git log --oneline dev..HEAD` to confirm a fix landed on a branch, `gh pr view <n>` for PR state. Never guess when you can check. You CANNOT write files or run any other command: you have NO Edit/Write and no general Bash — so NEVER try to implement, edit, or commit code yourself; always dispatch that to an agent. If a tool call is denied, it's outside your read-only set — adjust, don't retry.",
+            ]
           : []),
         ...(liveWatch
           ? [
@@ -465,6 +518,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
         ...(settings.reviewAgent.enabled
           ? [
               "- REVIEW AGENT is enabled: after a coding agent finishes a dispatched task, OctoShell automatically runs an independent review agent over its diff BEFORE any QA. Therefore do NOT emit an ```octo-qa block on your own initiative. When every review has passed with no blocking issues, OctoShell pings you with `👁 (review agents)` — ONLY then offer QA. If a review finds a blocking problem, the user resolves it with the review agent first; just keep driving the plan and don't offer QA.",
+              '- You can ALSO trigger that review agent yourself when the automatic pass didn\'t run (e.g. a finished task whose review never started): {"action":"review","project":"<name>"}. It launches the SAME independent reviewer (its own fresh agent, not the coding agent) on that project\'s current diff. Use it sparingly — normally the automatic pass covers it.',
             ]
           : []),
       ].join("\n"),
@@ -481,7 +535,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
     return system.length > SYSTEM_CHAR_CAP
       ? system.slice(0, SYSTEM_CHAR_CAP) + "\n\n…(context truncated to fit limit)…"
       : system;
-  }, [tabs, snaps, activeId, autoRun, liveWatch, settings.globalRules, settings.workspace.orchestratorWorktrees]);
+  }, [tabs, snaps, activeId, autoRun, liveWatch, settings.globalRules, settings.workspace.orchestratorWorktrees, settings.reviewAgent.enabled, settings.orchestratorReadonly]);
 
   const ask = useCallback(
     async (userText: string) => {
@@ -502,6 +556,10 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
           baseUrl: aiProvider === "acp-ollama" ? settings.ollama.baseUrl : null,
           numCtx: aiProvider === "acp-ollama" ? settings.ollama.contextWindow : null,
           temperature: aiProvider === "acp-ollama" ? settings.ollama.temperature : null,
+          // MCP servers the user allowed the orchestrator to use (Settings → MCP).
+          allowedMcp: settings.orchestratorMcp,
+          // Read-only inspection tools (verify instead of guess; never write code).
+          readonly: settings.orchestratorReadonly,
         });
         if (cancelledReqRef.current.has(reqId)) return; // user pressed Stop
         setMessages([...next, { role: "assistant", content: reply }]);
@@ -518,6 +576,27 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
     },
     [messages, buildSystem, aiProvider, aiModel, profileId, profiles],
   );
+
+  // Strategy Mode → orchestrator handoff. Register a receiver; when a plan
+  // arrives, optionally start a fresh chat, then queue the plan text. The queued
+  // ask runs in a follow-up effect so it sees the cleared messages if newChat
+  // fired (both state updates batch into the same render).
+  useEffect(
+    () =>
+      registerOrchestrator(({ text, newChat: fresh }) => {
+        if (fresh) newChat();
+        setPendingPlan(text);
+      }),
+    [newChat],
+  );
+  useEffect(() => {
+    if (pendingPlan == null) return;
+    const text = pendingPlan;
+    setPendingPlan(null);
+    autoStepsRef.current = 0;
+    saveWatch();
+    void ask(text);
+  }, [pendingPlan, ask, saveWatch]);
 
   /** Emergency stop — like hitting Escape on the whole workspace. Cancels the
    *  orchestrator's in-flight turn AND every running agent, and stops the live-
@@ -560,6 +639,24 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
     [tabs, snaps],
   );
 
+  /** Find an ALREADY-OPEN worktree tab for this repo + branch. Strict: it must be a
+   *  worktree checkout of THIS repo sitting on THIS branch — never the base tab, so
+   *  a branch dispatch can't silently land on dev. Worktree tabs are named after the
+   *  sanitized branch (slashes → dashes), hence norm(). */
+  const findWorktreeTab = useCallback(
+    (project: string, branch: string): ProjectRef | undefined => {
+      const proj = project.toLowerCase().trim();
+      const b = norm(branch);
+      if (!proj || !b) return undefined;
+      return tabs.find((p) => {
+        const cwd = p.controller.getCwd().toLowerCase();
+        const n = norm(p.name);
+        return (n === b || n.includes(b)) && isWorktreeCwd(cwd) && cwd.includes(proj);
+      });
+    },
+    [tabs],
+  );
+
   /** Start watching a freshly-dispatched agent in live watch (follow to finish). */
   const watchDispatched = useCallback(
     (id: string) => {
@@ -576,22 +673,48 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
     async (key: string, a: OrchestratorAction) => {
       // Spend brake: refuse NEW agent work once the session cost limit is hit
       // (cancels still go through).
-      if (a.kind === "dispatch" && overSpendRef.current) {
+      // Every failure path records WHY (rendered on the card) — a dispatch that
+      // doesn't land must never look like a no-op.
+      const fail = (reason: string) => {
+        setActionErr((e) => ({ ...e, [key]: reason }));
         setActionState((s) => ({ ...s, [key]: "error" }));
+      };
+      if (a.kind === "dispatch" && overSpendRef.current) {
+        fail("session cost limit reached — raise it in Settings, then retry.");
         return;
       }
       // Worktree dispatch: branch a fresh, isolated session off the named project
       // and run the agent THERE — so it shows in the bar and gets its OWN agent,
       // instead of the named project's single agent doing work across worktrees.
       if (a.kind === "dispatch" && a.branch) {
+        // RE-DISPATCH FIRST: if a worktree for this repo+branch is already open, run
+        // the task THERE. Creating is only for the first dispatch — `git worktree add`
+        // fails once the worktree exists, which used to sink every follow-up task
+        // (post-review fixes landed nowhere and the card lied about the reason).
+        const open = findWorktreeTab(a.project, a.branch);
+        if (open) {
+          open.controller.setMode("agent");
+          if (!open.controller.runAgent(a.prompt, { orchestrated: true })) {
+            fail(`the agent in worktree "${open.name}" is still busy — stop it, then retry.`);
+            return;
+          }
+          watchDispatched(open.id);
+          onSelect(open.id);
+          setActionState((s) => ({ ...s, [key]: "done" }));
+          return;
+        }
         const src = resolveProject(a.project, "idle");
-        if (!src || !onCreateWorktree) {
-          setActionState((s) => ({ ...s, [key]: "error" }));
+        if (!src) {
+          fail(`no open project matches "${a.project}" — open the repo, then retry.`);
+          return;
+        }
+        if (!onCreateWorktree) {
+          fail("worktree creation is unavailable in this window.");
           return;
         }
         const wt = await onCreateWorktree(src.id, a.branch);
-        if (!wt) {
-          setActionState((s) => ({ ...s, [key]: "error" }));
+        if (!wt || "error" in wt) {
+          fail(`couldn't create worktree "${a.branch}" in ${src.name}: ${wt ? wt.error : "unknown error"}`);
           return;
         }
         wt.controller.setMode("agent");
@@ -602,22 +725,41 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
         return;
       }
 
-      const p = resolveProject(a.project, a.kind === "cancel" ? "running" : "idle");
+      // cancel/review may carry a branch to pin down WHICH worktree they mean —
+      // "feat-x" can exist in both the fe and be repo, and by name alone the target
+      // was a coin flip. With a branch the match is exact; without one, fall back to
+      // name resolution as before.
+      const byBranch = a.kind !== "dispatch" && a.branch ? findWorktreeTab(a.project, a.branch) : undefined;
+      if (a.kind !== "dispatch" && a.branch && !byBranch) {
+        fail(`no open worktree for "${a.project}" on branch "${a.branch}" — open it, then retry.`);
+        return;
+      }
+      const p = byBranch ?? resolveProject(a.project, a.kind === "cancel" ? "running" : "idle");
       if (!p) {
-        setActionState((s) => ({ ...s, [key]: "error" }));
+        fail(`no open project matches "${a.project}" — open it, then retry.`);
         return;
       }
       if (a.kind === "dispatch") {
         p.controller.setMode("agent");
-        p.controller.runAgent(a.prompt, { orchestrated: true });
+        // runAgent refuses (returns false) when that agent is already busy — an
+        // orchestrated dispatch never preempts. Surface it instead of dropping it
+        // silently (that's how QA fixes went missing before).
+        const ok = p.controller.runAgent(a.prompt, { orchestrated: true });
+        if (!ok) {
+          fail(`the agent in "${p.name}" is still busy — stop it, then retry.`);
+          return;
+        }
         watchDispatched(p.id);
+      } else if (a.kind === "review") {
+        // Fire the independent built-in review agent on this project's diff.
+        void p.controller.requestReview();
       } else {
         p.controller.cancelAgent();
       }
       onSelect(p.id);
       setActionState((s) => ({ ...s, [key]: "done" }));
     },
-    [resolveProject, onSelect, onCreateWorktree, watchDispatched],
+    [resolveProject, findWorktreeTab, onSelect, onCreateWorktree, watchDispatched],
   );
 
   const dismissAction = useCallback((key: string) => {
@@ -628,14 +770,32 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
    *  project name). Worktree tabs are named after the sanitized branch. */
   const resolveByBranch = useCallback(
     (item: QaItem): ProjectRef | undefined => {
-      const cands = [item.branch, item.project].filter(Boolean).map((s) => s!.toLowerCase().trim());
-      for (const c of cands) {
-        const exact = tabs.find((p) => p.name.toLowerCase().trim() === c);
-        if (exact) return exact;
-        const partial = tabs.find(
-          (p) => p.name.toLowerCase().includes(c) || c.includes(p.name.toLowerCase()),
-        );
-        if (partial) return partial;
+      // Worktree tabs are named after the SANITIZED branch (slashes → dashes, see
+      // App.createWorktree), so compare on that canonical form — "fix/x" must match
+      // its "fix-x" tab. But the branch alone isn't unique across repos: a branch
+      // worktree may exist in a DIFFERENT repo (e.g. a backend-only fix has a BE
+      // worktree but no FE one). So scope the branch match to THIS item's project
+      // repo (via cwd), and only then fall back to the project's base checkout.
+      const proj = item.project?.toLowerCase().trim();
+      const branch = item.branch ? norm(item.branch) : "";
+      // 1. A worktree of THIS project, on the branch.
+      if (branch && proj) {
+        const wt = tabs.find((p) => {
+          const n = norm(p.name);
+          return (n === branch || n.includes(branch)) && p.controller.getCwd().toLowerCase().includes(proj);
+        });
+        if (wt) return wt;
+      }
+      // 2. The project's base checkout (its own tab).
+      if (proj) {
+        const base =
+          tabs.find((p) => p.name.toLowerCase().trim() === proj) ??
+          tabs.find((p) => p.name.toLowerCase().includes(proj));
+        if (base) return base;
+      }
+      // 3. Last resort: any tab on the branch (branch given but project absent).
+      if (branch) {
+        return tabs.find((p) => norm(p.name) === branch) ?? tabs.find((p) => norm(p.name).includes(branch));
       }
       return undefined;
     },
@@ -732,10 +892,15 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
     (item: QaItem): ProjectRef | undefined => {
       const be = item.backend?.project?.toLowerCase().trim();
       if (!be) return undefined;
-      const branch = item.branch?.toLowerCase().trim();
+      // Match on the SANITIZED branch (slashes → dashes) so the backend worktree is
+      // actually found; the raw "fix/x" never equalled its "fix-x" tab name, which
+      // silently ran the backend from its base (dev) branch instead. Prefer the
+      // backend's OWN branch when the ticket spans repos with different branch names
+      // (e.g. BE feat/rental-booking-… vs FE feat/rental-notes-…).
+      const branch = norm(item.backend?.branch || item.branch || "");
       if (branch) {
         const wt = tabs.find((p) => {
-          const n = p.name.toLowerCase().trim();
+          const n = norm(p.name);
           const cwd = p.controller.getCwd().toLowerCase();
           return (n === branch || n.includes(branch)) && cwd.includes(be);
         });
@@ -756,25 +921,48 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
       void openQaWindow(items, {
         onStartServer: async (item, role) => {
           if (role === "backend") {
-            if (!item.backend) return undefined;
+            if (!item.backend) throw new Error("This item has no backend configured.");
             const tab = resolveBackend(item);
-            if (!tab) return undefined;
-            const { url } = await serviceStore.start({
-              name: `${tab.name} (backend)`,
-              cwd: tab.controller.getCwd(),
-              command: item.backend.command,
-            });
-            return url;
+            const wantBranch = item.backend.branch || item.branch;
+            if (!tab) {
+              throw new Error(
+                `No open project/worktree for backend "${item.backend.project}"` +
+                  (wantBranch ? ` (branch "${wantBranch}")` : "") +
+                  ". Open it in OctoShell, then retry.",
+              );
+            }
+            const cwd = tab.controller.getCwd();
+            // A user-pinned dev command wins over the orchestrator's guess.
+            const command = projectConfigStore.get(cwd).dev || item.backend.command;
+            const { url } = await serviceStore.start({ name: `${tab.name} (backend)`, cwd, command });
+            // LOUD fallback: a branch was expected but we resolved to a base checkout.
+            const warning =
+              wantBranch && !isWorktreeCwd(cwd)
+                ? `⚠️ Backend started from the BASE checkout (${tab.name}), not a worktree for "${wantBranch}". If that branch isn't merged into base yet, its new API is MISSING and the QA will test stale code. Open the backend worktree (or set backend.branch), then restart this server.`
+                : undefined;
+            return { url, warning };
           }
-          if (!item.startCommand) return undefined;
           const tab = resolveByBranch(item);
-          if (!tab) return undefined;
-          const { url } = await serviceStore.start({
-            name: tab.name,
-            cwd: tab.controller.getCwd(),
-            command: item.startCommand,
-          });
-          return url;
+          if (!tab) {
+            throw new Error(
+              `No open project/worktree for "${item.project}"` +
+                (item.branch ? ` (branch "${item.branch}")` : "") +
+                ". Open it in OctoShell, then retry.",
+            );
+          }
+          const cwd = tab.controller.getCwd();
+          const command = projectConfigStore.get(cwd).dev || item.startCommand;
+          if (!command) {
+            throw new Error(
+              `No start command for "${item.title}". Set a dev script (right-click the project → Project scripts) or add startCommand to the QA block.`,
+            );
+          }
+          const { url } = await serviceStore.start({ name: tab.name, cwd, command });
+          const warning =
+            item.branch && !isWorktreeCwd(cwd)
+              ? `⚠️ Started from the BASE checkout (${tab.name}), not a worktree for "${item.branch}". You may be testing stale code — open the feature's worktree, then restart this server.`
+              : undefined;
+          return { url, warning };
         },
         onClosed: (results) => finishQa(results, items),
       });
@@ -891,6 +1079,13 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
   // Route every project's per-block "Ask AI" button to this one assistant.
   useEffect(() => {
     for (const p of tabs) {
+      // Stop pressed on this agent → drop it from live watch so the busy→idle edge
+      // the cancel produces doesn't fire a continuation that re-drives it.
+      p.controller.onUserStopped = () => {
+        watchedRef.current.delete(p.id);
+        prevBusyRef.current.set(p.id, false); // consume the pending edge
+        saveWatch();
+      };
       p.controller.onAskAi = (block: CommandBlock) => {
         onSelect(p.id);
         const q =
@@ -960,67 +1155,69 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
       className="flex shrink-0 flex-col gap-2 overflow-hidden rounded-xl border border-edge bg-panel p-2"
       style={{ width }}
     >
-      <div className="flex items-center justify-between px-1">
-        <span className="text-sm font-semibold text-accent">Orchestrator</span>
-        <div className="flex items-center gap-1">
+      {/* Title, then a compact single-row button strip beneath it. */}
+      <div className="px-1">
+        <div className="flex items-center gap-1.5">
+          <span className="text-grad text-sm font-semibold">Orchestrator</span>
+          {thinking && <WorkingNode />}
+        </div>
+        {/* One panel split by a single centre divider: Strategy (the primary
+            planning entry) on the left, the run-controls cluster on the right,
+            reading as two glued panels joined by that vertical line. */}
+        <div className="mt-1 flex items-stretch overflow-hidden rounded-lg border border-edge bg-card">
+          {onOpenStrategy && (
+            <div className="flex items-center px-1 py-1">
+              <button
+                onClick={onOpenStrategy}
+                title="Strategy Mode — plan complex work with a moderated multi-agent discussion before coding"
+                className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-semibold text-accent hover:bg-accent/15"
+              >
+                <img src={strategyIcon} alt="" className="h-6 w-6 object-contain" />
+                Strategy
+              </button>
+            </div>
+          )}
+          <div className="w-px self-stretch bg-edge" />
+          <div className="flex flex-1 items-center justify-end gap-1 px-1.5 py-1">
           <button
             onClick={stopAll}
             disabled={!canStop}
             title="Stop everything — orchestrator + all agents (like Escape)"
-            className={`rounded px-1.5 py-0.5 text-[11px] font-semibold ${
+            className={`inline-flex h-6 items-center gap-1 rounded border border-transparent px-1.5 text-[10px] font-semibold ${
               canStop
                 ? "bg-red-500/25 text-red-200 hover:bg-red-500/35"
                 : "border border-edge text-muted/50"
             }`}
           >
-            ⏹ Stop
+            <span className="text-sm leading-none">⏹</span> Stop
           </button>
           <button
-            onClick={newChat}
-            title="New chat (the current one stays saved)"
-            className="rounded px-1.5 py-0.5 text-[11px] text-muted hover:bg-edge hover:text-gray-200"
+            onClick={() => {
+              setChatSearch("");
+              setSessionMenu(true);
+            }}
+            title="Chats — new chat + switch/search existing"
+            className="inline-flex h-6 items-center gap-1 rounded border border-[#7c5cff]/50 px-1.5 text-[10px] text-muted hover:bg-[#7c5cff]/15 hover:text-gray-200"
           >
-            ✚ New
+            <svg viewBox="0 0 24 24" fill="none" stroke="url(#chat-grad)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 shrink-0" aria-hidden>
+              <defs>
+                <linearGradient id="chat-grad" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="0" y2="24">
+                  <stop offset="0%" stopColor="#e879f9" />
+                  <stop offset="100%" stopColor="#7c5cff" />
+                </linearGradient>
+              </defs>
+              <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
+            </svg>
+            {sessions.length}
           </button>
-          <div className="relative">
-            <button
-              onClick={() => setSessionMenu((o) => !o)}
-              title="Chats"
-              className="rounded px-1.5 py-0.5 text-[11px] text-muted hover:bg-edge hover:text-gray-200"
-            >
-              💬 {sessions.length}
-            </button>
-            {sessionMenu && (
-              <ul className="absolute right-0 top-full z-30 mt-1 max-h-72 w-60 overflow-y-auto rounded-lg border border-edge bg-panel shadow-lg">
-                {sessions.map((s) => (
-                  <li key={s.id} className="flex items-center hover:bg-edge">
-                    <button
-                      onClick={() => switchChat(s.id)}
-                      className={`flex-1 truncate px-2 py-1 text-left text-xs ${s.id === chatId ? "text-accent" : "text-gray-200"}`}
-                    >
-                      {s.id === chatId && "● "}
-                      {s.title || "New chat"}
-                    </button>
-                    <button
-                      onClick={() => deleteChat(s.id)}
-                      title="Delete chat"
-                      className="px-1.5 text-muted hover:text-red-300"
-                    >
-                      ✕
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
           <button
             onClick={() => setAutoRun((v) => !v)}
             title={autoRun ? "Auto-run: actions run without confirmation" : "Confirm: every action needs a click"}
-            className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${
+            className={`inline-flex h-6 items-center gap-1 rounded border border-transparent px-1.5 text-[10px] font-medium ${
               autoRun ? "bg-amber-500/20 text-amber-300" : "text-muted hover:bg-edge/50 hover:text-gray-200"
             }`}
           >
-            {autoRun ? "🔓 Auto" : "🔒 Confirm"}
+            <span className="text-sm leading-none">{autoRun ? "🔓" : "🔒"}</span> {autoRun ? "Auto" : "Confirm"}
           </button>
           <button
             onClick={() => setLiveWatch((v) => !v)}
@@ -1029,22 +1226,86 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
                 ? "Live watch: continues on its own when an agent finishes"
                 : "Live watch off"
             }
-            className={`flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium ${
+            className={`inline-flex h-6 items-center gap-1 rounded border border-transparent px-1.5 text-[10px] font-medium ${
               liveWatch ? "bg-emerald-500/20 text-emerald-300" : "text-muted hover:bg-edge/50 hover:text-gray-200"
             }`}
           >
-            {liveWatch && watchingNow > 0 && (
-              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />
-            )}
-            👁{" "}
+            {liveWatch && watchingNow > 0 && <WorkingNode />}
+            <span className="text-sm leading-none">👁</span>{" "}
             {liveWatch
               ? watchingNow > 0
                 ? `${watchingNow} working${watchStep > 0 ? ` · #${watchStep}` : ""}`
                 : "Watch"
               : "Watch"}
           </button>
+          </div>
         </div>
       </div>
+
+      {/* Chats modal — new chat at the top, searchable list below (replaces the
+          old clipped dropdown). */}
+      {sessionMenu && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          onClick={() => setSessionMenu(false)}
+        >
+          <div
+            className="flex max-h-[70vh] w-full max-w-md flex-col overflow-hidden rounded-xl border border-edge bg-panel shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-2 border-b border-edge px-3 py-2">
+              <span className="text-sm font-semibold text-gray-100">Chats</span>
+              <span className="text-[11px] text-muted">{sessions.length}</span>
+              <button
+                onClick={() => setSessionMenu(false)}
+                className="ml-auto rounded px-2 py-0.5 text-sm text-muted hover:bg-edge hover:text-gray-200"
+              >
+                ✕
+              </button>
+            </div>
+            <button
+              onClick={newChat}
+              className="flex items-center gap-2 border-b border-edge px-3 py-2.5 text-left text-sm font-medium text-accent hover:bg-edge/50"
+            >
+              <span className="text-base leading-none">✚</span> New chat
+            </button>
+            <div className="border-b border-edge p-2">
+              <input
+                value={chatSearch}
+                onChange={(e) => setChatSearch(e.target.value)}
+                autoFocus
+                placeholder="Search chats…"
+                className="w-full rounded-lg border border-edge bg-card px-3 py-1.5 text-sm text-gray-100 outline-none placeholder:text-muted/50 focus:border-accent"
+              />
+            </div>
+            <ul className="min-h-0 flex-1 overflow-y-auto py-1">
+              {sessions
+                .filter((s) => (s.title || "New chat").toLowerCase().includes(chatSearch.toLowerCase().trim()))
+                .map((s) => (
+                  <li key={s.id} className="flex items-center hover:bg-edge/50">
+                    <button
+                      onClick={() => switchChat(s.id)}
+                      className={`flex-1 truncate px-3 py-2 text-left text-sm ${s.id === chatId ? "text-accent" : "text-gray-200"}`}
+                    >
+                      {s.id === chatId && "● "}
+                      {s.title || "New chat"}
+                    </button>
+                    <button
+                      onClick={() => deleteChat(s.id)}
+                      title="Delete chat"
+                      className="px-3 py-2 text-muted hover:text-red-300"
+                    >
+                      ✕
+                    </button>
+                  </li>
+                ))}
+              {sessions.filter((s) => (s.title || "New chat").toLowerCase().includes(chatSearch.toLowerCase().trim())).length === 0 && (
+                <li className="px-3 py-6 text-center text-xs text-muted">No matching chats.</li>
+              )}
+            </ul>
+          </div>
+        </div>
+      )}
 
       {/* Agents pane — status tabs (filter + live counts) + jump + cancel. */}
       <div className="shrink-0 overflow-hidden rounded-lg border border-edge bg-card px-2 pt-2">
@@ -1181,6 +1442,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
                         key={key}
                         action={a}
                         state={actionState[key]}
+                        reason={actionErr[key]}
                         onConfirm={() => runAction(key, a)}
                         onDismiss={() => dismissAction(key)}
                       />
@@ -1204,7 +1466,11 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
             </div>
           );
         })}
-        {thinking && <div className="px-0.5 text-muted">…</div>}
+        {thinking && (
+          <div className="px-0.5">
+            <WorkingNode />
+          </div>
+        )}
       </div>
 
       <div className="border-t border-edge p-2">
@@ -1264,43 +1530,57 @@ function WatchTick({ content }: { content: string }) {
 function ActionCard({
   action,
   state,
+  reason,
   onConfirm,
   onDismiss,
 }: {
   action: OrchestratorAction;
   state?: ActionState;
+  /** Why it failed, when known — shown verbatim so a dead dispatch is diagnosable. */
+  reason?: string;
   onConfirm: () => void;
   onDismiss: () => void;
 }) {
   const isDispatch = action.kind === "dispatch";
+  const isReview = action.kind === "review";
+  // Show the branch alongside the project so the user can see exactly which
+  // worktree an action targets before confirming it.
+  const target = action.branch ? `${action.project} (${action.branch})` : action.project;
+  const doneLabel = isDispatch ? "Sent a task to" : isReview ? "Started review on" : "Stopped the agent in";
+  const dismissLabel = isDispatch ? "Dispatch →" : isReview ? "Review" : "Cancel";
+  const verbLabel = isDispatch ? "Send task to" : isReview ? "Start review on" : "Stop the agent in";
+  const verbIcon = isDispatch ? "🚀" : isReview ? "🔍" : "🛑";
 
   if (state === "done") {
     return (
       <div className="rounded border border-emerald-500/30 bg-emerald-500/10 px-2 py-1.5 text-xs text-emerald-300">
-        ✓ {isDispatch ? "Sent a task to" : "Stopped the agent in"} <b>{action.project}</b>
+        ✓ {doneLabel} <b>{target}</b>
       </div>
     );
   }
   if (state === "dismissed") {
     return (
       <div className="rounded border border-edge bg-edge/30 px-2 py-1.5 text-xs text-muted line-through">
-        {isDispatch ? "Dispatch →" : "Cancel"} {action.project}
+        {dismissLabel} {target}
       </div>
     );
   }
   if (state === "error") {
     return (
       <div className="rounded border border-red-500/30 bg-red-500/10 px-2 py-1.5 text-xs text-red-300">
-        ⚠️ No project found: "{action.project}"
+        <div>
+          ⚠️ Couldn't {isDispatch ? "dispatch to" : isReview ? "review" : "cancel"} "{target}".
+        </div>
+        {reason && <div className="mt-0.5 break-words text-[11px] text-red-300/80">{reason}</div>}
       </div>
     );
   }
   return (
     <div className="rounded-lg border border-accent/40 bg-card px-2.5 py-2">
-      <div className="flex items-center gap-1.5 text-xs font-semibold text-accent">
-        <span>{isDispatch ? "🚀" : "🛑"}</span>
-        <span>
-          {isDispatch ? "Send task to" : "Stop the agent in"} {action.project}
+      <div className="flex items-center gap-1.5 text-xs font-semibold">
+        <span>{verbIcon}</span>
+        <span className="text-grad">
+          {verbLabel} {target}
         </span>
       </div>
       {isDispatch && (

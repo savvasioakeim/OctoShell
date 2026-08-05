@@ -33,6 +33,21 @@ const STEP_PROTOCOL = [
   "<</OCTOSHELL TASK STEPS>>",
 ].join("\n");
 
+// The ACP equivalent: ACP agents don't have OctoShell's TaskCreate/TaskUpdate
+// tools — they expose their OWN planning/todo tool, which the adapter forwards to
+// us as ACP `plan` session updates (parseAcp → e.steps → the trace bar). So we ask
+// for a plan in tool-agnostic terms; the agent's native plan tool then lights the
+// same trace bar / nodes / percentage the native path drives.
+const ACP_STEP_PROTOCOL = [
+  "<<OCTOSHELL TASK STEPS — MANDATORY>>",
+  "This applies to EVERY task you are given (typed directly or dispatched by the orchestrator), including ones already phrased as \"do these steps\".",
+  "1. Before doing anything else, use your planning / todo tool to lay out the task as a short ordered list of concrete, user-meaningful steps (aim for 3–7). Do this even if the task looks simple or sequential — do NOT just describe the steps in prose.",
+  "2. Keep that plan updated as you work: exactly ONE step in-progress at a time, and mark each step completed the moment it's done, before starting the next.",
+  "3. Phrase each step's subject as a short outcome (e.g. \"Create todo.txt\", \"Write the tests\"), not internal chatter.",
+  "This plan is the ONLY thing that drives the user's live progress bar, so it must exist and stay accurate from the first action to the last.",
+  "<</OCTOSHELL TASK STEPS>>",
+].join("\n");
+
 export type BlockStatus = "running" | "success" | "error";
 
 /** Input routing: a typed line either runs in the shell or is sent to the agent. */
@@ -166,6 +181,11 @@ const MAX_ROWS = 24;
 export class ShellController {
   /** Set by the host to route "Ask AI about this" clicks. */
   onAskAi: (block: CommandBlock) => void = () => {};
+
+  /** Set by the host (AiSidebar): the user pressed Stop on this agent, so it must
+   *  be dropped from the orchestrator's live-watch set — otherwise the busy→idle
+   *  edge from the cancel would re-trigger a continuation and re-drive it. */
+  onUserStopped: () => void = () => {};
 
   /** Human-readable project name, set by the host (used in notifications). */
   displayName = "";
@@ -417,6 +437,11 @@ export class ShellController {
 
   /** Wire PTY events and spawn the shell. Call once before first render. */
   async init(cwd = ""): Promise<void> {
+    // Seed the cwd from the caller instead of waiting for the shell's first OSC 7
+    // report: a freshly created worktree can be dispatched to before the prompt
+    // renders, and an empty cwd reaches the ACP adapter as "." — which claude/codex
+    // reject ("cwd must be an absolute path"), killing the turn before it starts.
+    if (cwd) this.cwd = cwd;
     // One channel carries everything for this session, IN ORDER: raw output
     // bytes (ArrayBuffer) on the hot path — no base64 — and the control markers
     // (JSON objects) that delimit commands. Routing them together means a
@@ -802,6 +827,29 @@ export class ShellController {
     this.emit();
   }
 
+  /** Force-kill the command running in this shell (the Kill button).
+   *
+   *  Ctrl+C only reaches the foreground process, and npm/cmd shims swallow it —
+   *  an unmanaged dev server started from the prompt therefore can't be stopped
+   *  from the terminal at all. This kills the shell's child process tree instead,
+   *  keeping the tab itself alive. Failures surface in the terminal rather than
+   *  the console, so a Kill that does nothing says why. */
+  async killCommand(): Promise<void> {
+    if (!this.busy) return;
+    try {
+      await invoke("kill_foreground", { id: this.sessionId });
+    } catch (e) {
+      this.blocks.push({
+        id: crypto.randomUUID(),
+        kind: "agentText",
+        role: "assistant",
+        text: `⚠️ Couldn't kill the running command: ${e}`,
+        startedAt: Date.now(),
+      });
+      this.emit();
+    }
+  }
+
   /** Ctrl+C: interrupt the running command, or cancel the agent turn. */
   interrupt(): void {
     if (this.mode === "agent") {
@@ -866,10 +914,17 @@ export class ShellController {
     // on continuation turns they're already in the agent's context.
     const rulesBlock = resume === null && rules ? `<<GLOBAL RULES (always follow these)>>\n${rules}\n<</GLOBAL RULES>>` : "";
     // The step protocol drives the trace progress bar, so reliability matters more
-    // than token thrift: re-inject it on EVERY claude turn (gemini has no TodoWrite
-    // tool). Otherwise a continuation/orchestrated turn would skip it and the agent
-    // falls back to ad-hoc "STEP 1… STEP 2…" prose we can't parse.
-    const stepRule = this.agentProvider === "claude" ? STEP_PROTOCOL : "";
+    // than token thrift: re-inject it on EVERY turn that can drive it. The native
+    // claude path uses TaskCreate/TaskUpdate; ACP agents use their own plan/todo
+    // tool (forwarded as ACP `plan` updates). Gemini's native CLI has neither, so
+    // it gets nothing. Otherwise a continuation/orchestrated turn would skip it and
+    // the agent falls back to ad-hoc "STEP 1… STEP 2…" prose we can't parse.
+    const stepRule =
+      this.agentProvider === "claude"
+        ? STEP_PROTOCOL
+        : isAcp(this.agentProvider)
+          ? ACP_STEP_PROTOCOL
+          : "";
     const preamble = [rulesBlock, stepRule].filter(Boolean).join("\n\n");
     const full = preamble ? `${preamble}\n\n${prompt}` : prompt;
 
@@ -895,6 +950,8 @@ export class ShellController {
           }),
           sandboxImage: sandbox?.image ?? null,
           sandboxCommand: sandbox?.command ?? null,
+          // 🛡 Approve = prompt per tool; ⚡ Auto = approve without prompting.
+          autoApprove: !this.agentApproval,
         }).catch((err) => {
           this.onAgentDone(String(err));
         });
@@ -919,6 +976,16 @@ export class ShellController {
   cancelAgent(): void {
     const cmd = isAcp(this.agentProvider) ? "acp_cancel" : "agent_cancel";
     invoke(cmd, { id: this.sessionId }).catch(() => {});
+  }
+
+  /** User pressed Stop in the agent bar: abort the in-flight turn AND unlock the
+   *  orchestrator's live-watch hold on this agent, so stopping means stopped — no
+   *  auto-continuation kicks it off again. Also drops any queued take-over prompt. */
+  stop(): void {
+    if (!this.agentBusy) return;
+    this.pendingUserPrompt = null;
+    this.onUserStopped();
+    this.cancelAgent();
   }
 
   /** Parse one stream-json line (provider-specific) into normalized events and
@@ -1111,6 +1178,14 @@ export class ShellController {
     const overview = await fetchReviewOverview(this.cwd);
     const prompt = buildReviewPrompt(context, overview);
     await this.review.start({ contextPrompt: context, prompt, cwd: this.cwd });
+  }
+
+  /** Manually (re)start the independent review agent on this session's diff — used
+   *  by the orchestrator's `review` action and any "review this now" affordance.
+   *  Same pass as the automatic one; no-op without a cwd (nothing to inspect). */
+  async requestReview(): Promise<void> {
+    if (!this.cwd) return;
+    await this.startReviewPass();
   }
 
   getBlocks(): Block[] {

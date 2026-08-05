@@ -38,6 +38,12 @@ export interface ChatOpts {
   /** Working dir for the ACP one-shot orchestrator path (a valid dir for the
    *  adapter's session; the planner does no file ops, so "." is fine). */
   cwd?: string | null;
+  /** MCP server names the orchestrator may use (Settings → MCP access). Empty =
+   *  planner-only. Applies to the `claude`/`gemini` CLI transport (ai_chat). */
+  allowedMcp?: string[] | null;
+  /** Give the orchestrator read-only inspection tools (git/gh/ls + file reads),
+   *  never Edit/Write. Applies to the `claude` CLI transport (ai_chat). */
+  readonly?: boolean | null;
 }
 
 export class AiClient {
@@ -63,6 +69,8 @@ export class AiClient {
       baseUrl: opts?.baseUrl ?? null,
       numCtx: opts?.numCtx ?? null,
       temperature: opts?.temperature ?? null,
+      allowedMcp: opts?.allowedMcp ?? null,
+      readonly: opts?.readonly ?? null,
     });
   }
 

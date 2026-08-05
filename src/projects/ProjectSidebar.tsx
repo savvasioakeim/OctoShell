@@ -12,6 +12,10 @@ import type { GitStat, Group } from "../App";
 import type { ShellController, ShellSnapshot } from "../shell/ShellController";
 import { statusOf, STATUS_COLOR as COLOR, STATUS_LABEL as LABEL } from "../shell/agentStatus";
 import { KEY, loadJSON, saveJSON } from "../util/persist";
+import { ServicesView } from "../services/ServicesView";
+import { useServices, serviceStore } from "../services/serviceStore";
+import { PortsView } from "../ports/PortsView";
+import { projectConfigStore } from "./projectConfig";
 
 export interface ProjectTab {
   id: string;
@@ -30,6 +34,8 @@ interface Props {
   onNew: () => void;
   onNewWorktree: (branch: string) => void;
   onOpenSettings: () => void;
+  /** Open Settings on the Project Scripts tab, focused on this project's cwd. */
+  onOpenProjectScripts: (cwd: string) => void;
   width: number;
   stats: Map<string, GitStat>;
   groups: Group[];
@@ -159,6 +165,10 @@ export function ProjectSidebar(props: Props) {
   const [overGroup, setOverGroup] = useState<{ id: string; pos: "before" | "after" } | null>(null);
   const [ctx, setCtx] = useState<Ctx | null>(null);
   const [rename, setRename] = useState("");
+  // Which body the left panel shows: the project board, the managed services, or
+  // the open-ports manager.
+  const [leftTab, setLeftTab] = useState<"projects" | "services" | "ports">("projects");
+  const services = useServices();
   const [geo, setGeo] = useState<Geo>({ rows: {}, groups: {}, height: 0 });
   // Collapsed groups (hide their projects) and projects (hide their worktrees),
   // so a busy workspace can be tidied. Persisted.
@@ -290,7 +300,33 @@ export function ProjectSidebar(props: Props) {
           ref={(el) => { if (el) rowRefs.current.set(t.id, el); else rowRefs.current.delete(t.id); }}
           className="flex items-center gap-1.5 text-[13px]"
         >
-          {isWt && <span className="shrink-0 text-[11px]" title="git worktree">🌿</span>}
+          {isWt && (
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="url(#wt-grad)"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              className="h-3 w-3 shrink-0"
+              aria-label="git worktree"
+            >
+              {/* userSpaceOnUse (not the default objectBoundingBox) so the
+                  gradient spans the whole viewBox and still applies to the
+                  zero-width vertical line — otherwise that stroke vanishes.
+                  Inline defs so the url() ref resolves in WebView2. */}
+              <defs>
+                <linearGradient id="wt-grad" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="0" y2="24">
+                  <stop offset="0%" stopColor="#e879f9" />
+                  <stop offset="100%" stopColor="#7c5cff" />
+                </linearGradient>
+              </defs>
+              <line x1="6" y1="3" x2="6" y2="15" />
+              <circle cx="18" cy="6" r="3" />
+              <circle cx="6" cy="18" r="3" />
+              <path d="M18 9a9 9 0 0 1-9 9" />
+            </svg>
+          )}
           <span className="min-w-0 truncate">{t.name}</span>
           {toggle && (
             <button
@@ -390,11 +426,35 @@ export function ProjectSidebar(props: Props) {
       className="relative flex shrink-0 flex-col overflow-hidden rounded-xl border border-edge bg-panel"
       style={{ width }}
     >
-      <div className="flex items-center border-b border-edge px-3 py-2.5">
-        <span className="text-[11px] font-semibold uppercase tracking-wider text-muted">Projects</span>
+      <div className="flex items-center gap-1 border-b border-edge px-2 py-1.5">
+        {([
+          { id: "projects", label: "Projects" },
+          { id: "services", label: "Services", badge: services.length || undefined },
+          { id: "ports", label: "Ports" },
+        ] as const).map((t) => (
+          <button
+            key={t.id}
+            onClick={() => setLeftTab(t.id)}
+            className={`flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-semibold uppercase tracking-wider transition-colors ${
+              leftTab === t.id ? "bg-edge text-grad" : "text-muted hover:bg-edge/50 hover:text-gray-200"
+            }`}
+          >
+            {t.label}
+            {"badge" in t && t.badge ? (
+              <span className="rounded-full bg-accent/25 px-1 text-[9px] text-accent">{t.badge}</span>
+            ) : null}
+          </button>
+        ))}
       </div>
 
-      <div ref={scrollRef} className="flex-1 overflow-y-auto p-2" onContextMenu={(e) => openCtx(e, "blank")}>
+      {leftTab === "services" && <ServicesView />}
+      {leftTab === "ports" && <PortsView onOpenSettings={onOpenSettings} />}
+
+      <div
+        ref={scrollRef}
+        className={`flex-1 overflow-y-auto p-2 ${leftTab === "projects" ? "" : "hidden"}`}
+        onContextMenu={(e) => openCtx(e, "blank")}
+      >
         <div ref={contentRef} className="relative min-h-full">
           <Board
             tabs={tabs}
@@ -443,6 +503,7 @@ export function ProjectSidebar(props: Props) {
       </div>
 
       <div className="m-2 space-y-1.5">
+        {leftTab === "projects" && (<>
         {wtInput !== null ? (
           <input
             autoFocus
@@ -460,27 +521,77 @@ export function ProjectSidebar(props: Props) {
           <button
             onClick={() => setWtInput("")}
             title="Create an isolated git worktree (new branch) off the active project"
-            className="w-full rounded-md border border-edge px-3 py-1.5 text-xs text-muted transition-colors hover:border-accent/50 hover:text-gray-100"
+            className="inline-flex w-full items-center justify-center gap-1.5 rounded-md border border-edge px-3 py-1.5 text-xs text-muted transition-colors hover:border-accent/50 hover:text-gray-100"
           >
-            🌿 New worktree
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="url(#wt-grad-btn)"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              className="h-4 w-4 shrink-0"
+              aria-hidden
+            >
+              <defs>
+                <linearGradient id="wt-grad-btn" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="0" y2="24">
+                  <stop offset="0%" stopColor="#e879f9" />
+                  <stop offset="100%" stopColor="#7c5cff" />
+                </linearGradient>
+              </defs>
+              <line x1="6" y1="3" x2="6" y2="15" />
+              <circle cx="18" cy="6" r="3" />
+              <circle cx="6" cy="18" r="3" />
+              <path d="M18 9a9 9 0 0 1-9 9" />
+            </svg>
+            New worktree
           </button>
         )}
         <button
           onClick={onNew}
-          className="w-full rounded-md border border-accent/60 bg-accent/25 px-3 py-1.5 text-xs font-semibold text-gray-100 transition-colors hover:bg-accent/30"
+          className="inline-flex w-full items-center justify-center gap-1.5 rounded-md border border-accent/60 bg-accent/25 px-3 py-1.5 text-xs font-semibold text-gray-100 transition-colors hover:bg-accent/30"
         >
-          ＋ New project
+          <svg viewBox="0 0 24 24" fill="none" stroke="url(#nav-grad)" strokeWidth="2.5" strokeLinecap="round" className="h-4 w-4 shrink-0" aria-hidden>
+            <defs>
+              <linearGradient id="nav-grad" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="0" y2="24">
+                <stop offset="0%" stopColor="#e879f9" />
+                <stop offset="100%" stopColor="#7c5cff" />
+              </linearGradient>
+            </defs>
+            <line x1="12" y1="5" x2="12" y2="19" />
+            <line x1="5" y1="12" x2="19" y2="12" />
+          </svg>
+          New project
         </button>
+        </>)}
         <button
           onClick={onOpenSettings}
           title="Settings (agent & orchestrator defaults)"
-          className="w-full rounded-md border border-edge px-3 py-1.5 text-xs text-muted transition-colors hover:border-accent/50 hover:text-gray-100"
+          className="inline-flex w-full items-center justify-center gap-1.5 rounded-md border border-edge px-3 py-1.5 text-xs text-muted transition-colors hover:border-accent/50 hover:text-gray-100"
         >
-          ⚙️ Settings
+          <svg viewBox="0 0 24 24" fill="none" stroke="url(#nav-grad2)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 shrink-0" aria-hidden>
+            <defs>
+              <linearGradient id="nav-grad2" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="0" y2="24">
+                <stop offset="0%" stopColor="#e879f9" />
+                <stop offset="100%" stopColor="#7c5cff" />
+              </linearGradient>
+            </defs>
+            <circle cx="12" cy="12" r="3" />
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+          </svg>
+          Settings
         </button>
       </div>
 
-      {ctx && <ContextMenu ctx={ctx} close={() => setCtx(null)} {...props} rename={rename} setRename={setRename} />}
+      {ctx && (
+        <ContextMenu
+          ctx={ctx}
+          close={() => setCtx(null)}
+          {...props}
+          rename={rename}
+          setRename={setRename}
+        />
+      )}
     </nav>
   );
 }
@@ -659,7 +770,7 @@ function Board({
 /** Right-click menu — content depends on what was clicked. */
 function ContextMenu({
   ctx, close, groups, assign, onAssign, onCreateGroup, onSetGroupColor, onRenameGroup,
-  onDeleteGroup, onClose, onSelect, tabs, palette, rename, setRename,
+  onDeleteGroup, onClose, onSelect, tabs, palette, rename, setRename, onOpenProjectScripts,
 }: Props & {
   ctx: Ctx;
   close: () => void;
@@ -733,6 +844,32 @@ function ContextMenu({
               }}
             >
               📂 Open in file manager
+            </button>
+            <button
+              className="w-full px-3 py-1.5 text-left text-gray-200 hover:bg-edge"
+              onClick={() => {
+                const cwd = projTab?.controller.getCwd();
+                if (cwd) onOpenProjectScripts(cwd);
+                close();
+              }}
+            >
+              ⚙ Project scripts…
+            </button>
+            <button
+              className="w-full px-3 py-1.5 text-left text-gray-200 hover:bg-edge"
+              onClick={() => {
+                const cwd = projTab?.controller.getCwd();
+                if (cwd) {
+                  // Same managed-service path as QA: pinned dev command (or a guess
+                  // service.rs repairs), with the auto-install guard; shows in Services.
+                  const command = projectConfigStore.get(cwd).dev || "npm run dev";
+                  void serviceStore.start({ name: projTab?.name ?? "service", cwd, command });
+                  onSelect(ctx.id!);
+                }
+                close();
+              }}
+            >
+              ▶ Open dev server
             </button>
             <div className="my-1 border-t border-edge" />
             <div className="px-3 py-0.5 text-[10px] uppercase tracking-wider text-muted">Group</div>

@@ -11,6 +11,32 @@ html {
   font-size: 17px;
 }
 
+/* Gradient text — the pink→violet neon used on the worktree/nav icons, clipped
+   to the glyphs. A colour can't be a gradient, so this is a reusable class for
+   prominent accent text (titles, labels) rather than a blanket text-accent swap. */
+.text-grad {
+  background-image: linear-gradient(180deg, #e879f9 0%, #7c5cff 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+}
+
+/* Primary/accent action button (e.g. "+ Add profile"). Solid accent fill with
+   white text; brightens slightly on hover. */
+.btn-grad {
+  background-color: #663399; /* accent */
+  color: #fff;
+  border: none;
+}
+.btn-grad:hover {
+  filter: brightness(1.1);
+}
+.btn-grad:disabled {
+  filter: grayscale(0.4) brightness(0.8);
+  cursor: default;
+}
+
 /* Frozen (finished) block output: selectable, wrapping, monospaced. Font + line
    height MUST match the live xterm (see ShellController) so a command looks
    identical while running and once finished. */
@@ -18,7 +44,13 @@ html {
   margin: 0;
   white-space: pre-wrap;
   word-break: break-word;
-  font-family: var(--octo-mono, "JetBrains Mono", "Cascadia Code", Consolas, monospace);
+  font-family: var(
+    --octo-mono,
+    "JetBrains Mono",
+    "Cascadia Code",
+    Consolas,
+    monospace
+  );
   font-size: 15px;
   line-height: 20px;
 }
@@ -41,7 +73,13 @@ html {
   background: transparent !important;
   white-space: pre-wrap;
   word-break: break-word;
-  font-family: var(--octo-mono, "JetBrains Mono", "Cascadia Code", Consolas, monospace);
+  font-family: var(
+    --octo-mono,
+    "JetBrains Mono",
+    "Cascadia Code",
+    Consolas,
+    monospace
+  );
   font-size: 14px;
   line-height: 1.5;
 }
@@ -49,7 +87,9 @@ html {
 /* Small inline spinner for busy buttons (keeps the label visible). Defined here
    so it doesn't depend on Tailwind's animate-spin being scanned. */
 @keyframes octospin {
-  to { transform: rotate(360deg); }
+  to {
+    transform: rotate(360deg);
+  }
 }
 .octo-spinner {
   display: inline-block;
@@ -63,8 +103,13 @@ html {
 
 /* Cables rail: gentle pulse on an active agent node. */
 @keyframes octopulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.4; }
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
 }
 .octo-cable-pulse {
   animation: octopulse 1.3s ease-in-out infinite;
@@ -73,8 +118,13 @@ html {
 /* Orchestrator "tentacle reaching": a solid, softly gradient current along the
    route to the driven agent, breathing so it reads as live energy. */
 @keyframes octoroute {
-  0%, 100% { opacity: 0.5; }
-  50% { opacity: 1; }
+  0%,
+  100% {
+    opacity: 0.5;
+  }
+  50% {
+    opacity: 1;
+  }
 }
 .octo-route {
   animation: octoroute 1.5s ease-in-out infinite;
@@ -82,12 +132,22 @@ html {
 
 /* Trace animation speed (Settings → Appearance). The root gets a trace-* class;
    `normal` is the default above. `static` freezes the flow entirely. */
-:root.trace-fast .octo-route { animation-duration: 0.8s; }
-:root.trace-fast .octo-cable-pulse { animation-duration: 0.7s; }
-:root.trace-stealth .octo-route { animation-duration: 3.2s; }
-:root.trace-stealth .octo-cable-pulse { animation-duration: 2.8s; }
+:root.trace-fast .octo-route {
+  animation-duration: 0.8s;
+}
+:root.trace-fast .octo-cable-pulse {
+  animation-duration: 0.7s;
+}
+:root.trace-stealth .octo-route {
+  animation-duration: 3.2s;
+}
+:root.trace-stealth .octo-cable-pulse {
+  animation-duration: 2.8s;
+}
 :root.trace-static .octo-route,
-:root.trace-static .octo-cable-pulse { animation: none !important; }
+:root.trace-static .octo-cable-pulse {
+  animation: none !important;
+}
 
 /* Thin, quiet scrollbars — transparent track, subtle thumb that brightens on hover. */
 *::-webkit-scrollbar {

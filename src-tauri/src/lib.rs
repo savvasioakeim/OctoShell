@@ -32,6 +32,19 @@ fn db_migrations() -> Vec<Migration> {
     }]
 }
 
+/// Write a UTF-8 text file at `path`, creating parent dirs as needed. Used by
+/// Strategy Mode's "Save Plan → .md export" (the frontend picks the path via the
+/// save dialog). Returns the path back on success.
+#[tauri::command]
+fn write_text_file(path: String, contents: String) -> Result<String, String> {
+    use std::path::Path;
+    if let Some(parent) = Path::new(&path).parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(&path, contents).map_err(|e| e.to_string())?;
+    Ok(path)
+}
+
 /// Build and run the Tauri application.
 pub fn run() {
     tauri::Builder::default()
@@ -73,6 +86,7 @@ pub fn run() {
             pty::write_to_terminal,
             pty::resize_terminal,
             pty::close_tab,
+            pty::kill_foreground,
             pty::run_capture,
             pty::shell_complete,
             pty::open_editor,
@@ -80,11 +94,14 @@ pub fn run() {
             pty::health_check,
             ai::ai_chat,
             ai::ai_cancel,
+            ai::list_mcp_servers,
             agent::agent_send,
             agent::agent_cancel,
             approval::approval_respond,
             service::service_start,
             service::service_stop,
+            service::list_ports,
+            service::kill_port,
             docker::sandbox_exec,
             docker::sandbox_stop,
             docker::set_sandbox_enabled,
@@ -97,6 +114,7 @@ pub fn run() {
             ollama::ollama_delete,
             ollama::ollama_library,
             ollama::opencode_config,
+            write_text_file,
         ])
         .build(tauri::generate_context!())
         .expect("error while running OctoShell")

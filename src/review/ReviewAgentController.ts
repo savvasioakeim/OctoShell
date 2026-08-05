@@ -136,6 +136,7 @@ export class ReviewAgentController {
   private readonly reviewId: string;
   private provider: AgentProvider = "claude";
   private model: string | null = null;
+  private configDir: string | null = null;
   private cwd = "";
 
   private blocks: Block[] = [];
@@ -185,9 +186,12 @@ export class ReviewAgentController {
    *  agent's diff become the first prompt. Called by the lifecycle wiring (Phase 3). */
   async start(opts: { contextPrompt: string; prompt: string; cwd: string }): Promise<void> {
     await this.wire();
-    const ra = settingsStore.getSnapshot().reviewAgent;
+    const snap = settingsStore.getSnapshot();
+    const ra = snap.reviewAgent;
     this.provider = ra.provider;
     this.model = ra.model;
+    // Resolve the selected profile to its CLAUDE_CONFIG_DIR (null = home default).
+    this.configDir = snap.profiles.find((p) => p.id === ra.profileId)?.configDir ?? null;
     this.cwd = opts.cwd;
     this.contextPrompt = opts.contextPrompt;
 
@@ -238,9 +242,10 @@ export class ReviewAgentController {
           id: this.reviewId,
           prompt,
           cwd: this.cwd,
-          command: acpCommandFor(this.provider, this.model, { opencodeConfig: cfg }),
+          command: acpCommandFor(this.provider, this.model, { opencodeConfig: cfg, configDir: this.configDir }),
           sandboxImage: sandbox?.image ?? null,
           sandboxCommand: sandbox?.command ?? null,
+          autoApprove: true, // the reviewer reads/diffs — no per-tool approval gate
         }).catch((err) => this.onDone(String(err)));
       });
       return;
@@ -253,7 +258,7 @@ export class ReviewAgentController {
       model: this.model,
       provider: this.provider,
       approval: false, // the review agent reads/diffs — no per-tool approval gate
-      configDir: null,
+      configDir: this.configDir,
     }).catch((err) => this.onDone(String(err)));
   }
 

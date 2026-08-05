@@ -135,6 +135,7 @@
         <span class="font-mono text-sm font-bold tracking-widest gradient-text">OCTOSHELL</span>
       </a>
       <div class="hidden items-center gap-7 text-sm text-muted md:flex">
+        <a href="#strategy" class="transition-colors hover:text-white">Plan</a>
         <a href="#orchestrator" class="transition-colors hover:text-white">Tour</a>
         <a href="#progress" class="transition-colors hover:text-white">How it tracks</a>
         <a href="#principles" class="transition-colors hover:text-white">Principles</a>
@@ -159,7 +160,7 @@
           A native <span class="gradient-text">AI workspace</span><br />for Windows developers.
         </h1>
         <p class="mt-5 max-w-xl text-base leading-relaxed text-muted md:text-lg">
-          An open source workspace that helps you run and coordinate coding agents, built with
+          An open source workspace that helps you plan, run, and coordinate coding agents, built with
           Tauri and Rust. It works with Claude, Gemini, and other agents, or local models through
           Ollama. <span class="text-gray-200">Bring your own keys, own your context.</span>
         </p>
@@ -211,12 +212,41 @@
     </div>
   </section>
 
-  <!-- ═══════════ 01 — THE ORCHESTRATOR (split: text · shot) ═══════════ -->
+  <!-- ═══════════ 01 — STRATEGY MODE (split: text · shot) ═══════════ -->
+  <section id="strategy" class="mx-auto max-w-6xl px-5 py-24">
+    <div class="grid items-center gap-12 md:grid-cols-2">
+      <div class="reveal">
+        <span class="font-mono text-xs tracking-widest text-neoncyan">THE PLAN</span>
+        <h2 class="mt-3 text-3xl font-bold tracking-tight text-white md:text-4xl">01 · Think it through before any code</h2>
+        <p class="mt-4 leading-relaxed text-slate-400">
+          For complex work, let several agents talk it through first. Each one takes a role such as
+          Architect, QA, or Security, proposes an approach, then reads the others and refines its own.
+          You moderate the discussion and, when it feels ready, OctoShell turns it into a clear plan
+          you can save, reuse, or hand straight to the orchestrator to build.
+        </p>
+        <!-- micro-visual: the roles debating, then the plan -->
+        <pre class="mt-6 overflow-x-auto rounded-lg border border-edge bg-[#0D0F14] px-4 py-3 font-mono text-xs leading-relaxed text-slate-300 shadow-inner"><span class="text-neonpurple">Architect</span>      proposes the structure
+<span class="text-neoncyan">QA Engineer</span>    flags the edge cases
+<span class="text-white">Security</span>       checks the threat model
+        <span class="text-slate-500">↓</span>
+<span class="gradient-text font-bold">Execution Plan</span>   save · reuse · execute</pre>
+      </div>
+      <div class="mockup-container reveal aspect-[16/11] w-full">
+        <!-- TODO: <img src="assets/shot-strategy.png" class="h-full w-full object-cover" alt="Strategy Mode planning workspace" /> -->
+        <div class="flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
+          <span class="font-mono text-sm text-slate-400">📸 Strategy Mode</span>
+          <span class="font-mono text-xs text-slate-600">planning workspace · agents debating by role · drop <code class="text-neoncyan">assets/shot-strategy.png</code></span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════ 02 — THE ORCHESTRATOR (split: text · shot) ═══════════ -->
   <section id="orchestrator" class="mx-auto max-w-6xl px-5 py-24">
     <div class="grid items-center gap-12 md:grid-cols-2">
       <div class="reveal">
         <span class="font-mono text-xs tracking-widest text-neonpurple">THE SPARK</span>
-        <h2 class="mt-3 text-3xl font-bold tracking-tight text-white md:text-4xl">01 · One prompt, a whole pipeline</h2>
+        <h2 class="mt-3 text-3xl font-bold tracking-tight text-white md:text-4xl">02 · One prompt, a whole pipeline</h2>
         <p class="mt-4 leading-relaxed text-slate-400">
           Hand the orchestrator your tickets and a single goal. It fans them out into isolated,
           parallel agents and keeps the loop going while you stay in command, approving as it goes.
@@ -243,7 +273,7 @@
     <div class="grid items-center gap-12 md:grid-cols-2">
       <div class="reveal order-1 md:order-2">
         <span class="font-mono text-xs tracking-widest text-neoncyan">THE FOUNDATION</span>
-        <h2 class="mt-3 text-3xl font-bold tracking-tight text-white md:text-4xl">02 · Dedicated worktrees, no collisions</h2>
+        <h2 class="mt-3 text-3xl font-bold tracking-tight text-white md:text-4xl">03 · Dedicated worktrees, no collisions</h2>
         <p class="mt-4 leading-relaxed text-slate-400">
           Point the orchestrator at your tickets and each agent works in its own isolated Git
           worktree. No manual branch switching, no stash conflicts, no broken local environments.
@@ -268,7 +298,7 @@
   <section id="live" class="mx-auto max-w-6xl px-5 py-24">
     <div class="reveal mx-auto mb-10 max-w-3xl text-center">
       <span class="font-mono text-xs tracking-widest text-neonpurple">THE WORKSPACE</span>
-      <h2 class="mt-3 text-3xl font-bold tracking-tight text-white md:text-4xl">03 · Total visibility, no black boxes</h2>
+      <h2 class="mt-3 text-3xl font-bold tracking-tight text-white md:text-4xl">04 · Total visibility, no black boxes</h2>
       <p class="mt-4 leading-relaxed text-slate-400">
         Watch agents run shell commands, read compiler output, make tool calls, and write files
         as it happens. You stay the pilot in command.
@@ -288,7 +318,7 @@
     <div class="reveal rounded-2xl border border-edge bg-gradient-to-b from-card/60 to-chrome/40 p-8 md:p-14">
       <div class="mx-auto max-w-3xl text-center">
         <span class="font-mono text-xs tracking-widest text-neoncyan">THE PULSE</span>
-        <h2 class="mt-3 text-3xl font-bold tracking-tight text-white md:text-4xl">04 · Watch every phase light up</h2>
+        <h2 class="mt-3 text-3xl font-bold tracking-tight text-white md:text-4xl">05 · Watch every phase light up</h2>
         <p class="mt-4 leading-relaxed text-slate-400">
           OctoShell draws each agent's phase as a live PCB trace right in the interface. Nodes light
           up from neon purple to cyan as a task moves from planning to writing code.
@@ -317,7 +347,7 @@
     <div class="grid items-center gap-12 md:grid-cols-2">
       <div class="reveal">
         <span class="font-mono text-xs tracking-widest text-neonpurple">THE COMMAND CENTER</span>
-        <h2 class="mt-3 text-3xl font-bold tracking-tight text-white md:text-4xl">05 · Work across many repositories</h2>
+        <h2 class="mt-3 text-3xl font-bold tracking-tight text-white md:text-4xl">06 · Work across many repositories</h2>
         <p class="mt-4 leading-relaxed text-slate-400">
           Follow parallel agent progress across several repositories from one place. Handy when a
           change spans more than one service, or a feature touches a few projects at once.
@@ -338,7 +368,7 @@
     <div class="reveal rounded-2xl border border-edge bg-gradient-to-b from-card/50 to-chrome/30 p-6 md:p-10">
       <div class="mx-auto mb-8 max-w-3xl text-center">
         <span class="font-mono text-xs tracking-widest text-neoncyan">REVIEW AND QA</span>
-        <h2 class="mt-3 text-3xl font-bold tracking-tight text-white md:text-4xl">06 · A review pass before it reaches you</h2>
+        <h2 class="mt-3 text-3xl font-bold tracking-tight text-white md:text-4xl">07 · A review pass before it reaches you</h2>
         <p class="mt-4 leading-relaxed text-slate-400">
           When an agent hits a test failure it reads the error, rewrites the file, and runs the tests
           again on its own. You can also turn on a review agent that reads each change first and flags
@@ -437,6 +467,10 @@
       <details class="reveal group rounded-xl border border-edge bg-card/50 p-5 [&_summary]:cursor-pointer">
         <summary class="flex items-center justify-between font-semibold text-white">Which agents can it drive?<span class="text-muted transition-transform group-open:rotate-45">+</span></summary>
         <p class="mt-3 text-sm leading-relaxed text-muted">Claude and Gemini directly, plus Codex, Cursor, Copilot, and OpenCode through the Agent Client Protocol. You can also run local models with Ollama. Pick a different one per agent, orchestrator, or reviewer if you like.</p>
+      </details>
+      <details class="reveal group rounded-xl border border-edge bg-card/50 p-5 [&_summary]:cursor-pointer">
+        <summary class="flex items-center justify-between font-semibold text-white">What is Strategy Mode?<span class="text-muted transition-transform group-open:rotate-45">+</span></summary>
+        <p class="mt-3 text-sm leading-relaxed text-muted">A separate planning workspace for complex work. Several agents debate the approach, each in a role such as Architect, QA, or Security, and you moderate round by round. The result is a structured plan with goals, decisions, risks, and steps that you can save, reuse later, or hand to the orchestrator to build. Planning stays separate from building, so a plan is a real object you keep, not a lost chat message.</p>
       </details>
       <details class="reveal group rounded-xl border border-edge bg-card/50 p-5 [&_summary]:cursor-pointer">
         <summary class="flex items-center justify-between font-semibold text-white">What is QA mode?<span class="text-muted transition-transform group-open:rotate-45">+</span></summary>

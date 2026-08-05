@@ -16,9 +16,12 @@ import {
 } from "./qaTypes";
 
 export interface QaHandlers {
-  /** Start this feature's managed server of the given role (frontend or backend);
-   *  resolve with its URL (or nothing). */
-  onStartServer: (item: QaItem, role: ServerRole) => Promise<string | undefined>;
+  /** Start this feature's managed server of the given role (frontend or backend).
+   *  Resolve with the URL and an optional `warning` (started but degraded — e.g.
+   *  fell back to the base checkout because no worktree matched the branch). THROW
+   *  a descriptive Error to fail loudly (surfaced as the error reason), instead of
+   *  returning undefined silently. */
+  onStartServer: (item: QaItem, role: ServerRole) => Promise<{ url?: string; warning?: string } | undefined>;
   /** The reviewer finished/closed — final verdicts (incl. notes-only items). */
   onClosed: (results: QaResult[]) => void;
 }
@@ -46,9 +49,26 @@ export async function openQaWindow(items: QaItem[], handlers: QaHandlers): Promi
       if (!item) return;
       const starting: QaServerPayload = { id, role, status: "starting" };
       void emitTo("qa", QA.server, starting);
-      const url = await handlers.onStartServer(item, role).catch(() => undefined);
-      const done: QaServerPayload = { id, role, status: url ? "running" : "error", url };
-      void emitTo("qa", QA.server, done);
+      // Fail LOUD: a thrown error carries its reason; a returned `warning` means
+      // "started but degraded" (e.g. ran from base/dev because no worktree matched).
+      let res: { url?: string; warning?: string } | undefined;
+      let errMsg: string | undefined;
+      try {
+        res = await handlers.onStartServer(item, role);
+      } catch (err) {
+        errMsg = err instanceof Error ? err.message : String(err);
+      }
+      const url = res?.url;
+      const warning = res?.warning;
+      const status: QaServerPayload["status"] = errMsg
+        ? "error"
+        : url
+          ? warning
+            ? "warning"
+            : "running"
+          : "error";
+      const message = errMsg ?? warning ?? (url ? undefined : "could not start the server (no matching project/worktree open)");
+      void emitTo("qa", QA.server, { id, role, status, url, message });
     }),
   );
 

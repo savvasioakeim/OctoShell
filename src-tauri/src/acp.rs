@@ -35,7 +35,7 @@ use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
 use std::process::Stdio;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
@@ -50,7 +50,7 @@ use agent_client_protocol::{AcpAgent, Agent, ConnectionTo};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::io::AsyncReadExt;
-use tokio::sync::{mpsc, oneshot, Notify};
+use tokio::sync::{mpsc, oneshot, watch, Notify};
 
 use crate::approval::ApprovalBridge;
 use crate::docker::{SandboxConfig, SandboxManager, SandboxOptions};
@@ -168,6 +168,48 @@ struct Terminal {
 }
 
 type Terminals = Arc<Mutex<HashMap<String, Terminal>>>;
+
+/// Splice client-terminal output into a session update before it reaches the UI.
+///
+/// When the agent runs a command through `terminal/*`, the tool_call update it
+/// sends back carries only `{"type":"terminal","terminalId":…}` — a *reference*.
+/// WE own that terminal's output, so the frontend had nothing to render: every
+/// terminal tool showed up as an empty block, and a failing command was an empty
+/// RED block with no way to see what went wrong. Resolve the reference here, into
+/// `output` (and `exitCode`) alongside the id. Recursive: the reference can sit
+/// anywhere in the update's content array.
+fn inject_terminal_output(v: &mut serde_json::Value, terminals: &Terminals) {
+    match v {
+        serde_json::Value::Object(map) => {
+            if let Some(tid) = map.get("terminalId").and_then(|t| t.as_str()).map(str::to_string) {
+                let found = terminals.lock().unwrap().get(&tid).cloned();
+                if let Some(t) = found {
+                    let mut out = t.output.lock().unwrap().clone();
+                    if *t.truncated.lock().unwrap() {
+                        out.insert_str(0, "[earlier output truncated]\n");
+                    }
+                    map.insert("output".into(), serde_json::Value::String(out));
+                    // `exit` is None while running; Some(None) means "ended, no code".
+                    if let Some(code) = *t.exit.lock().unwrap() {
+                        map.insert(
+                            "exitCode".into(),
+                            code.map(|c| serde_json::Value::from(c)).unwrap_or(serde_json::Value::Null),
+                        );
+                    }
+                }
+            }
+            for (_, val) in map.iter_mut() {
+                inject_terminal_output(val, terminals);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for val in items {
+                inject_terminal_output(val, terminals);
+            }
+        }
+        _ => {}
+    }
+}
 
 /// Drain a child stream into the shared output buffer, honouring the byte limit.
 fn spawn_reader<R>(stream: Option<R>, buf: Arc<Mutex<String>>, truncated: Arc<Mutex<bool>>, limit: Option<u64>)
@@ -360,6 +402,16 @@ struct AcpDone {
 struct AcpSession {
     tx: mpsc::UnboundedSender<String>,
     sandboxed: bool,
+    /// Cancel switch for the turn IN FLIGHT. Dropping `tx` only unblocks the
+    /// prompt loop between turns — while a prompt is being awaited the loop is
+    /// parked on the agent's response, not on `rx`, so `cancel` couldn't interrupt
+    /// it. A `watch<bool>` flipped to true aborts the in-flight prompt immediately
+    /// (it retains its value, so there's no notify race).
+    cancel: watch::Sender<bool>,
+    /// When true, tool-permission requests are auto-approved (⚡ Auto) instead of
+    /// prompting the user (🛡 Approve). Shared with the session's permission handler
+    /// and updated on each `acp_send`, so the toggle applies mid-session.
+    auto_approve: Arc<AtomicBool>,
 }
 
 /// Thread-safe registry of live ACP sessions, keyed by the caller-chosen session
@@ -390,15 +442,18 @@ impl AcpManager {
         command: String,
         sandbox_image: Option<String>,
         sandbox_command: Option<String>,
+        auto_approve: bool,
     ) {
         let want_sandbox = app.state::<SandboxConfig>().enabled()
             && sandbox_image.is_some()
             && sandbox_command.is_some();
-        // Existing session in the right mode → just queue the prompt.
+        // Existing session in the right mode → just queue the prompt (and refresh
+        // the approval mode, so toggling ⚡Auto/🛡Approve takes effect next turn).
         {
             let mut sessions = self.sessions.lock().unwrap();
             if let Some(s) = sessions.get(&id) {
                 if s.sandboxed == want_sandbox {
+                    s.auto_approve.store(auto_approve, Ordering::Relaxed);
                     let _ = s.tx.send(prompt);
                     return;
                 }
@@ -408,17 +463,24 @@ impl AcpManager {
         }
 
         let (tx, rx) = mpsc::unbounded_channel::<String>();
+        let (cancel_tx, cancel_rx) = watch::channel(false);
+        let auto_approve_flag = Arc::new(AtomicBool::new(auto_approve));
         // Seed the first prompt before anyone else can observe the session.
         let _ = tx.send(prompt);
-        self.sessions
-            .lock()
-            .unwrap()
-            .insert(id.clone(), AcpSession { tx: tx.clone(), sandboxed: want_sandbox });
+        self.sessions.lock().unwrap().insert(
+            id.clone(),
+            AcpSession {
+                tx: tx.clone(),
+                sandboxed: want_sandbox,
+                cancel: cancel_tx,
+                auto_approve: auto_approve_flag.clone(),
+            },
+        );
 
         let sessions = self.sessions.clone();
         let my_tx = tx;
         tauri::async_runtime::spawn(async move {
-            let err = run_session(app.clone(), id.clone(), cwd, command, sandbox_image, sandbox_command, rx)
+            let err = run_session(app.clone(), id.clone(), cwd, command, sandbox_image, sandbox_command, rx, cancel_rx, auto_approve_flag)
                 .await
                 .err()
                 .map(|e| e.to_string());
@@ -448,7 +510,12 @@ impl AcpManager {
     /// close, return, and tear down the connection. Also aborts a one-shot
     /// orchestrator turn registered under the same id (firing its cancel trigger).
     pub fn cancel(&self, id: &str) {
-        self.sessions.lock().unwrap().remove(id);
+        // Flip the cancel switch FIRST (aborts the in-flight prompt), then drop the
+        // session. Removing it alone wouldn't interrupt a turn already awaiting the
+        // agent's response — the loop isn't on `rx` then.
+        if let Some(s) = self.sessions.lock().unwrap().remove(id) {
+            let _ = s.cancel.send(true);
+        }
         if let Some(tx) = self.oneshots.lock().unwrap().remove(id) {
             let _ = tx.send(());
         }
@@ -464,6 +531,29 @@ impl AcpManager {
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
+/// Normalise a session cwd to an absolute path. The ACP adapters (claude, codex)
+/// reject "." or any relative path with `cwd must be an absolute path`, and an
+/// empty cwd reaches us whenever a project is dispatched to before its shell has
+/// reported one (e.g. a just-created worktree). Resolve against the app's working
+/// directory rather than failing the turn.
+fn absolute_start_dir(cwd: &str) -> String {
+    let raw = cwd.trim();
+    let here = || {
+        std::env::current_dir()
+            .map(|d| d.to_string_lossy().to_string())
+            .unwrap_or_else(|_| ".".to_string())
+    };
+    if raw.is_empty() || raw == "." {
+        here()
+    } else if std::path::Path::new(raw).is_absolute() {
+        raw.to_string()
+    } else {
+        std::env::current_dir()
+            .map(|d| d.join(raw).to_string_lossy().to_string())
+            .unwrap_or_else(|_| raw.to_string())
+    }
+}
+
 /// Drive one ACP session end to end: spawn the agent, initialize, open a session,
 /// then loop feeding prompts from `rx` until the channel closes.
 async fn run_session(
@@ -474,8 +564,10 @@ async fn run_session(
     sandbox_image: Option<String>,
     sandbox_command: Option<String>,
     mut rx: mpsc::UnboundedReceiver<String>,
+    mut cancel_rx: watch::Receiver<bool>,
+    auto_approve: Arc<AtomicBool>,
 ) -> Result<(), BoxError> {
-    let start_dir = if cwd.is_empty() { ".".to_string() } else { cwd };
+    let start_dir = absolute_start_dir(&cwd);
 
     // Sandbox routing. When the global flag is on AND the provider supports it
     // (image+command supplied), run the WHOLE adapter inside Docker — every
@@ -504,6 +596,7 @@ async fn run_session(
     let app_perm = app.clone();
     let id_perm = id.clone();
     let bridge = app.state::<ApprovalBridge>().inner().clone();
+    let auto_perm = auto_approve.clone();
     // Client-terminal registry, shared across the terminal/* handlers.
     let terminals: Terminals = Arc::new(Mutex::new(HashMap::new()));
     let term_create = terminals.clone();
@@ -511,8 +604,17 @@ async fn run_session(
     let term_wait = terminals.clone();
     let term_kill = terminals.clone();
     let term_rel = terminals.clone();
+    let term_notif = terminals.clone();
     // The worktree used for sandboxed terminal commands (the session's cwd).
     let term_worktree = start_dir.clone();
+    // Per-TURN completion signal. An ACP session is long-lived across turns, so
+    // the prompt loop keeps running after each turn finishes — we must tell the UI
+    // "this turn ended" ourselves, or the agent stays stuck in `running` forever
+    // (and the review pass, which fires on turn-end, never runs). We emit
+    // `agent://done` after every completed prompt; the session stays alive for the
+    // next one. (Cancel/error/teardown still emit their own done in the spawn.)
+    let app_turn = app.clone();
+    let id_turn = id.clone();
 
     agent_client_protocol::Client
         .builder()
@@ -520,8 +622,13 @@ async fn run_session(
             async move |n: SessionNotification, _cx| {
                 // Forward every session update to the UI as serialized JSON; the
                 // frontend maps `sessionUpdate` variants to feed blocks.
-                if let Ok(data) = serde_json::to_string(&n.update) {
-                    let _ = app_notif.emit("agent://event", AcpEvent { id: id_notif.clone(), data });
+                if let Ok(mut v) = serde_json::to_value(&n.update) {
+                    // Terminal tool calls reference output we hold; inline it so the
+                    // feed can show the command's real output (and failures).
+                    inject_terminal_output(&mut v, &term_notif);
+                    if let Ok(data) = serde_json::to_string(&v) {
+                        let _ = app_notif.emit("agent://event", AcpEvent { id: id_notif.clone(), data });
+                    }
                 }
                 Ok(())
             },
@@ -539,8 +646,13 @@ async fn run_session(
                     .or_else(|| input.get("fields").and_then(|f| f.get("title")).and_then(|v| v.as_str()))
                     .unwrap_or("tool")
                     .to_string();
-                let (allow, _updated) =
-                    bridge.request(&app_perm, id_perm.clone(), tool_name, input).await;
+                // ⚡ Auto mode: approve without prompting. 🛡 Approve mode: ask the
+                // user via the ApprovalBridge (approval://request UI) as before.
+                let allow = if auto_perm.load(Ordering::Relaxed) {
+                    true
+                } else {
+                    bridge.request(&app_perm, id_perm.clone(), tool_name, input).await.0
+                };
                 let allow_opt = req
                     .options
                     .iter()
@@ -656,15 +768,37 @@ async fn run_session(
                 .await?;
             let session_id = session.session_id;
 
-            // Long-lived: process prompts as they arrive; the channel closing
-            // (cancel or app exit) ends the loop and closes the connection.
-            while let Some(prompt) = rx.recv().await {
-                conn.send_request(PromptRequest::new(
-                    session_id.clone(),
-                    vec![ContentBlock::Text(TextContent::new(prompt))],
-                ))
-                .block_task()
-                .await?;
+            // Long-lived: process prompts as they arrive. The loop ends when the
+            // channel closes (app exit / respawn) OR the cancel switch flips — the
+            // latter aborts even a prompt that's mid-flight, so Stop / take-over is
+            // immediate instead of waiting out the current turn.
+            loop {
+                let prompt = tokio::select! {
+                    _ = cancel_rx.wait_for(|c| *c) => break,
+                    maybe = rx.recv() => match maybe {
+                        Some(p) => p,
+                        None => break,
+                    },
+                };
+                let send = conn
+                    .send_request(PromptRequest::new(
+                        session_id.clone(),
+                        vec![ContentBlock::Text(TextContent::new(prompt))],
+                    ))
+                    .block_task();
+                tokio::select! {
+                    _ = cancel_rx.wait_for(|c| *c) => break,
+                    res = send => {
+                        res?;
+                        // Turn finished cleanly — flip the UI to idle and let the
+                        // review pass kick in. The session stays alive for the next
+                        // prompt (a fresh `acp_send` reuses it).
+                        let _ = app_turn.emit(
+                            "agent://done",
+                            AcpDone { id: id_turn.clone(), code: 0, error: None },
+                        );
+                    }
+                }
             }
             Ok(())
         })
@@ -685,7 +819,24 @@ pub async fn run_oneshot(
     prompt: String,
     cancel: oneshot::Receiver<()>,
 ) -> Result<String, BoxError> {
-    let start_dir = if cwd.is_empty() { ".".to_string() } else { cwd };
+    // The ACP session cwd MUST be absolute (the claude/codex adapters reject "."
+    // or any relative path). The one-shot planner does no file ops, so resolve a
+    // relative/empty cwd against the app's working directory to a real absolute
+    // path rather than failing the turn.
+    let start_dir = {
+        let raw = cwd.trim();
+        if raw.is_empty() || raw == "." {
+            std::env::current_dir()
+                .map(|d| d.to_string_lossy().to_string())
+                .unwrap_or_else(|_| ".".to_string())
+        } else if std::path::Path::new(raw).is_absolute() {
+            raw.to_string()
+        } else {
+            std::env::current_dir()
+                .map(|d| d.join(raw).to_string_lossy().to_string())
+                .unwrap_or_else(|_| raw.to_string())
+        }
+    };
     let agent = AcpAgent::from_str(&command)?;
 
     // Accumulate assistant text from `agent_message_chunk` notifications. We parse
@@ -771,8 +922,9 @@ pub fn acp_send(
     command: String,
     sandbox_image: Option<String>,
     sandbox_command: Option<String>,
+    auto_approve: bool,
 ) -> Result<(), String> {
-    manager.send(app, id, prompt, cwd, command, sandbox_image, sandbox_command);
+    manager.send(app, id, prompt, cwd, command, sandbox_image, sandbox_command, auto_approve);
     Ok(())
 }
 

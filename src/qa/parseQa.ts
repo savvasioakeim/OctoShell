@@ -50,7 +50,8 @@ function normalizeBackend(b: any): QaItem["backend"] {
   const project = str(b.project ?? b.repo ?? b.name);
   const command = str(b.command ?? b.startCommand ?? b.start);
   if (!project || !command) return undefined;
-  return { project, command };
+  const branch = str(b.branch ?? b.worktree);
+  return branch ? { project, command, branch } : { project, command };
 }
 
 function str(v: unknown): string {

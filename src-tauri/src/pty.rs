@@ -76,6 +76,43 @@ struct IdPayload {
     id: String,
 }
 
+/// Run a helper process without flashing a console window, returning its stdout.
+#[cfg(windows)]
+fn run_hidden(program: &str, args: &[&str]) -> Option<String> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let out = std::process::Command::new(program)
+        .args(args)
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .ok()?;
+    Some(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// PIDs of the direct children of `pid` — i.e. whatever the shell is currently
+/// running. Empty when the shell is idle at its prompt.
+#[cfg(windows)]
+fn child_pids(pid: u32) -> Vec<u32> {
+    let script = format!(
+        "Get-CimInstance Win32_Process -Filter 'ParentProcessId={pid}' | Select-Object -ExpandProperty ProcessId"
+    );
+    let out = run_hidden("powershell", &["-NoProfile", "-NonInteractive", "-Command", &script])
+        .unwrap_or_default();
+    out.lines().filter_map(|l| l.trim().parse::<u32>().ok()).collect()
+}
+
+#[cfg(not(windows))]
+fn child_pids(pid: u32) -> Vec<u32> {
+    let out = std::process::Command::new("pgrep")
+        .arg("-P")
+        .arg(pid.to_string())
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default();
+    out.lines().filter_map(|l| l.trim().parse::<u32>().ok()).collect()
+}
+
 /// Encode a script as PowerShell `-EncodedCommand` (UTF-16LE → base64).
 /// Avoids all command-line quoting issues.
 fn encode_ps(script: &str) -> String {
@@ -176,6 +213,36 @@ impl PtyManager {
         s.master
             .resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
             .map_err(|e| e.to_string())
+    }
+
+    /// Kill the command running IN a session, leaving the shell itself alive.
+    ///
+    /// Ctrl+C is not enough: a dev server started from the prompt (`npm run dev`)
+    /// runs as a grandchild behind npm/cmd shims that swallow the signal, so the
+    /// tab sits "running" forever with no way out. Instead we kill every direct
+    /// child of the shell — process tree and all — which is exactly the foreground
+    /// command and its helpers, never the pwsh session itself.
+    pub fn kill_foreground(&self, id: &str) -> Result<(), String> {
+        let shell_pid = {
+            let sessions = self.sessions.lock().unwrap();
+            let s = sessions.get(id).ok_or("no such session")?;
+            s.child.process_id().ok_or("session has no pid")?
+        };
+        let kids = child_pids(shell_pid);
+        if kids.is_empty() {
+            return Err("nothing is running in this shell".into());
+        }
+        for pid in kids {
+            #[cfg(windows)]
+            {
+                let _ = run_hidden("taskkill", &["/F", "/T", "/PID", &pid.to_string()]);
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = std::process::Command::new("kill").arg("-9").arg(pid.to_string()).status();
+            }
+        }
+        Ok(())
     }
 
     pub fn close(&self, id: &str) -> Result<(), String> {
@@ -538,36 +605,55 @@ pub fn resize_terminal(
     manager.resize(&id, rows, cols)
 }
 
+/// Stop whatever command is running in a shell tab (the Stop button), without
+/// killing the tab. Async so a slow WMI lookup can't stall the UI thread.
+#[tauri::command]
+pub async fn kill_foreground(manager: State<'_, PtyManager>, id: String) -> Result<(), String> {
+    let m = manager.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || m.kill_foreground(&id))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 pub fn close_tab(manager: State<'_, PtyManager>, id: String) -> Result<(), String> {
     manager.close(&id)
 }
 
 /// One-shot captured subprocess (e.g. `git status`) for macros — not a PTY.
+///
+/// `async` + `spawn_blocking` is deliberate: a synchronous `#[tauri::command]`
+/// runs on the main (UI) thread, so a slow/hanging child (e.g. `git worktree
+/// remove` blocking on a locked file) would freeze the whole app. Off-loading to
+/// a blocking worker keeps the UI responsive no matter how long the child takes.
 #[tauri::command]
-pub fn run_capture(cwd: String, command: String) -> Result<String, String> {
-    use std::process::Command;
+pub async fn run_capture(cwd: String, command: String) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        use std::process::Command;
 
-    let shell = if which("pwsh.exe") { "pwsh.exe" } else { "powershell.exe" };
-    let mut cmd = Command::new(shell);
-    cmd.args(["-NoProfile", "-NonInteractive", "-Command", &command]);
-    if !cwd.is_empty() {
-        cmd.current_dir(&cwd);
-    }
+        let shell = if which("pwsh.exe") { "pwsh.exe" } else { "powershell.exe" };
+        let mut cmd = Command::new(shell);
+        cmd.args(["-NoProfile", "-NonInteractive", "-Command", &command]);
+        if !cwd.is_empty() {
+            cmd.current_dir(&cwd);
+        }
 
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
 
-    let out = cmd.output().map_err(|e| e.to_string())?;
-    let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
-    if !out.stderr.is_empty() {
-        s.push_str(&String::from_utf8_lossy(&out.stderr));
-    }
-    Ok(s)
+        let out = cmd.output().map_err(|e| e.to_string())?;
+        let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
+        if !out.stderr.is_empty() {
+            s.push_str(&String::from_utf8_lossy(&out.stderr));
+        }
+        Ok(s)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// The empty completion result, used as a safe fallback everywhere.

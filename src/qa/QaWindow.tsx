@@ -93,7 +93,7 @@ export function QaWindow() {
         className="flex shrink-0 items-center justify-between border-b border-edge bg-gradient-to-r from-accent/15 via-transparent to-transparent px-3 py-1.5"
       >
         <span data-tauri-drag-region className="flex select-none items-center gap-2 text-[12px] font-semibold text-accent">
-          🔍 QA
+          <span>🔍 <span className="text-grad">QA</span></span>
           {items.length > 0 && (
             <span data-tauri-drag-region className="flex items-center gap-1">
               {items.map((it, i) => {
@@ -226,30 +226,43 @@ function ServerChip({
   canStart: boolean;
   onStart: () => void;
 }) {
+  const msg = server?.message;
+  const degraded = server?.status === "warning";
   if (server?.url) {
+    // Started — but if degraded (e.g. ran from base/dev), say so LOUDLY: amber chip
+    // + the reason inline, so the user doesn't unknowingly QA stale code.
     return (
-      <button
-        onClick={() => void navigator.clipboard?.writeText(server.url!)}
-        title={`${label} — copy URL`}
-        className="rounded bg-edge/60 px-1.5 py-0.5 text-emerald-300/90"
-      >
-        {server.url.replace(/^https?:\/\//, "")} ⧉
-      </button>
+      <span className="inline-flex max-w-[24rem] flex-col gap-0.5">
+        <button
+          onClick={() => void navigator.clipboard?.writeText(server.url!)}
+          title={msg ? `${label} — ${msg}` : `${label} — copy URL`}
+          className={`rounded px-1.5 py-0.5 ${degraded ? "bg-amber-500/20 text-amber-200" : "bg-edge/60 text-emerald-300/90"}`}
+        >
+          {degraded ? "⚠ " : ""}{server.url.replace(/^https?:\/\//, "")} ⧉
+        </button>
+        {degraded && msg && <span className="text-[10px] leading-snug text-amber-300/90">{msg}</span>}
+      </span>
     );
   }
   if (!canStart) return null;
   return (
-    <button
-      onClick={onStart}
-      disabled={server?.status === "starting"}
-      className="rounded bg-sky-500/25 px-1.5 py-0.5 text-sky-100 hover:bg-sky-500/35 disabled:opacity-60"
-    >
-      {server?.status === "starting"
-        ? `starting ${label}…`
-        : server?.status === "error"
-          ? `⚠ ${label} — retry`
-          : `▶ ${label}`}
-    </button>
+    <span className="inline-flex max-w-[24rem] flex-col gap-0.5">
+      <button
+        onClick={onStart}
+        disabled={server?.status === "starting"}
+        title={msg}
+        className="rounded bg-sky-500/25 px-1.5 py-0.5 text-sky-100 hover:bg-sky-500/35 disabled:opacity-60"
+      >
+        {server?.status === "starting"
+          ? `starting ${label}…`
+          : server?.status === "error"
+            ? `⚠ ${label} — retry`
+            : `▶ ${label}`}
+      </button>
+      {server?.status === "error" && msg && (
+        <span className="text-[10px] leading-snug text-red-300/90">{msg}</span>
+      )}
+    </span>
   );
 }
 

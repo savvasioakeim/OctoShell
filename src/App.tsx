@@ -12,9 +12,9 @@ import { MacroBar } from "./macros/MacroBar";
 import { TraceProgress } from "./blocks/TraceProgress";
 import { ProjectSidebar } from "./projects/ProjectSidebar";
 import { Titlebar } from "./chrome/Titlebar";
-import { ServiceBar } from "./services/ServiceBar";
 import { serviceStore } from "./services/serviceStore";
 import { SettingsPage } from "./settings/SettingsPage";
+import { StrategyPanel } from "./strategy/StrategyPanel";
 import { settingsStore, useSettings } from "./settings/settingsStore";
 import { KEY, loadJSON, saveJSON } from "./util/persist";
 import { OnboardingOverlay } from "./onboarding/OnboardingOverlay";
@@ -189,6 +189,10 @@ export function App({ initial }: { initial: ShellController }) {
   const [activeId, setActiveId] = useState(initial.sessionId);
   const [hydrated, setHydrated] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // When opening Settings from a deep link (e.g. right-click → Project scripts),
+  // which tab to land on and which project row to scroll to / highlight.
+  const [settingsInit, setSettingsInit] = useState<{ tab: string; focusCwd?: string } | null>(null);
+  const [strategyOpen, setStrategyOpen] = useState(false);
   // Startup preload: once projects are restored we eagerly mount every block of
   // every project (desktop app — it's all local), behind a loading overlay, so
   // switching/scrolling afterwards has zero lag. `preloading` drives both the
@@ -415,6 +419,33 @@ export function App({ initial }: { initial: ShellController }) {
       `$wt="$main/.octoshell/worktrees/${dirName}";` +
       "$excl=\"$main/.git/info/exclude\";" +
       "if((Test-Path $excl) -and -not (Select-String -Path $excl -Pattern 'octoshell' -Quiet)){Add-Content -Path $excl -Value '.octoshell/'};" +
+      // Pick up commits pushed elsewhere, so a worktree we (re)create starts from
+      // the real branch tip rather than a stale local ref. Read-only; never fails
+      // the create (offline is fine).
+      "git -C \"$main\" fetch --all --quiet 2>&1 | Out-Null;" +
+      // Clear registrations whose folder is gone, so `worktree add` isn't blocked
+      // by a ghost entry.
+      "git -C \"$main\" worktree prune 2>&1 | Out-Null;" +
+      // The folder can exist WITHOUT being a registered worktree: `git worktree
+      // remove` deregisters first, and on Windows the delete then fails whenever
+      // anything still holds the directory (a shell sitting in it, node_modules).
+      // That orphan folder made every later `worktree add` fail with "already
+      // exists" — the branch was fine, the directory was just in the way. So:
+      // registered → reuse it as-is; orphaned → delete it and recreate.
+      "$reg=(git -C \"$main\" worktree list --porcelain) -join \"`n\";" +
+      "if(Test-Path $wt){" +
+      "  $known=($reg -match [regex]::Escape($wt)) -or ($reg -match [regex]::Escape(($wt -replace '/','\\')));" +
+      "  if($known){Write-Output $wt;return};" +
+      // Orphaned folder. It may still hold UNCOMMITTED work (an agent stopped
+      // mid-merge, say), so try to re-adopt it before destroying anything:
+      // `worktree repair` re-registers a checkout whose admin link git lost.
+      "  git -C \"$main\" worktree repair \"$wt\" 2>&1 | Out-Null;" +
+      "  $reg2=(git -C \"$main\" worktree list --porcelain) -join \"`n\";" +
+      "  if(($reg2 -match [regex]::Escape($wt)) -or ($reg2 -match [regex]::Escape(($wt -replace '/','\\')))){Write-Output $wt;return};" +
+      // Unrepairable: a plain directory git knows nothing about. Only now delete.
+      "  Remove-Item -LiteralPath $wt -Recurse -Force -ErrorAction SilentlyContinue;" +
+      "  if(Test-Path $wt){Write-Output ('ERR:a leftover folder for this worktree could not be deleted (' + $wt + ') - close any shell or editor open in it, then retry');return}" +
+      "};" +
       `$r=git -C "$main" worktree add -b "${branchName}" "$wt"${baseArg} 2>&1;` +
       `if($LASTEXITCODE -ne 0){$r=git -C "$main" worktree add "$wt" "${branchName}" 2>&1};` +
       "if($LASTEXITCODE -ne 0){Write-Output ('ERR:'+($r -join ' '))}else{Write-Output $wt}";
@@ -445,6 +476,29 @@ export function App({ initial }: { initial: ShellController }) {
         });
       } catch {
         /* missing .env / copy failure is non-fatal */
+      }
+    }
+    // Copy the base repo's installed dependency dirs into the worktree — a git
+    // worktree never inherits them, so its dev server / tests would otherwise need
+    // a full reinstall (or crash on a missing package). Only relocatable dep dirs
+    // (node_modules, PHP/Go vendor, legacy bower) are copied; language dirs that
+    // bake absolute paths (e.g. Python venvs) are left for their own tooling. Uses
+    // robocopy (multithreaded) for speed with node_modules' many small files.
+    // Best-effort and non-blocking; if the base lacks them, the server's on-demand
+    // install guard (service.rs) covers it. Gated by Settings → Workspace.
+    if (settingsStore.getSnapshot().workspace.copyDeps) {
+      try {
+        await invoke<string>("run_capture", {
+          cwd: repoRoot,
+          command:
+            `$wt='${wtPath}';` +
+            "foreach($d in 'node_modules','vendor','bower_components'){" +
+            "$s=Join-Path '.' $d; $t=Join-Path $wt $d;" +
+            "if((Test-Path $s) -and -not (Test-Path $t)){" +
+            "robocopy $s $t /E /NFL /NDL /NJH /NJS /NP /MT:16 | Out-Null}}",
+        });
+      } catch {
+        /* missing deps / copy failure is non-fatal — the install guard covers it */
       }
     }
     const controller = new ShellController(crypto.randomUUID());
@@ -482,32 +536,47 @@ export function App({ initial }: { initial: ShellController }) {
   };
 
   /** Orchestrator worktree-dispatch: branch off `srcId`, focus it, and hand the
-   *  new session back so the assistant can run an agent in it. Null on failure. */
+   *  new session back so the assistant can run an agent in it. On failure returns
+   *  the git error VERBATIM — the caller renders it, so a dispatch that can't land
+   *  says why (e.g. "worktree already exists") instead of failing silently. */
   const createWorktreeForAgent = async (
     srcId: string,
     branch: string,
-  ): Promise<{ id: string; name: string; controller: ShellController } | null> => {
+  ): Promise<{ id: string; name: string; controller: ShellController } | { error: string }> => {
     const result = await createWorktree(srcId, branch);
-    if ("error" in result) return null;
+    if ("error" in result) return result;
     setActiveId(result.id);
     return { id: result.id, name: result.name, controller: result.controller };
   };
 
   const closeProject = (id: string) => {
+    if (tabs.length <= 1) return; // never close the last project
+    const tab = tabs.find((t) => t.id === id);
+    // Tear the shell down FIRST: on Windows a running pty holds the worktree dir
+    // as its cwd, so `git worktree remove` would block until the process exits.
+    tab?.controller.forget();
+    tab?.controller.dispose();
+    // Isolated worktree → remove it from git (best-effort, off the UI thread).
+    // `worktree remove` deregisters BEFORE deleting, so on Windows a lingering
+    // handle (a just-closed pty, an editor, an antivirus scan of node_modules)
+    // leaves the folder behind while git already considers it gone. That orphan
+    // then blocks every future `worktree add` on the same branch. So sweep the
+    // folder ourselves afterwards and prune, leaving no half-removed state.
+    if (tab?.worktree) {
+      invoke("run_capture", {
+        cwd: tab.worktree.repoRoot,
+        command:
+          `git worktree remove "${tab.cwd}" --force 2>&1 | Out-Null;` +
+          `if(Test-Path "${tab.cwd}"){Remove-Item -LiteralPath "${tab.cwd}" -Recurse -Force -ErrorAction SilentlyContinue};` +
+          "git worktree prune 2>&1",
+      }).catch(() => {});
+    }
     setTabs((prev) => {
       if (prev.length <= 1) return prev;
-      const tab = prev.find((t) => t.id === id);
-      // Isolated worktree → remove it from git (best-effort) on close.
-      if (tab?.worktree) {
-        invoke("run_capture", {
-          cwd: tab.worktree.repoRoot,
-          command: `git worktree remove "${tab.cwd}" --force 2>&1`,
-        }).catch(() => {});
-      }
-      tab?.controller.forget();
-      tab?.controller.dispose();
       const remaining = prev.filter((t) => t.id !== id);
-      if (id === activeId) setActiveId(remaining[remaining.length - 1].id);
+      if (id === activeId && !remaining.some((t) => t.id === activeId)) {
+        setActiveId(remaining[remaining.length - 1].id);
+      }
       return remaining;
     });
   };
@@ -574,7 +643,7 @@ export function App({ initial }: { initial: ShellController }) {
       {!onboarding && preloading && <StartupOverlay progress={preloadProgress} count={tabs.length} />}
       <Titlebar />
       <div className="relative flex flex-1 flex-col overflow-hidden bg-well">
-        <div className="flex flex-1 overflow-hidden p-2">
+        <div className="relative flex flex-1 overflow-hidden p-2">
         <ProjectSidebar
           tabs={tabs.map((t) => ({ id: t.id, name: t.name, parentId: t.worktree?.parentId, controller: t.controller }))}
           activeId={active.id}
@@ -582,7 +651,8 @@ export function App({ initial }: { initial: ShellController }) {
           onClose={closeProject}
           onNew={newProject}
           onNewWorktree={newWorktree}
-          onOpenSettings={() => setSettingsOpen(true)}
+          onOpenSettings={() => { setSettingsInit(null); setSettingsOpen(true); }}
+          onOpenProjectScripts={(cwd) => { setSettingsInit({ tab: "projects", focusCwd: cwd }); setSettingsOpen(true); }}
           stats={gitStats}
           groups={groupsState.groups}
           assign={groupsState.assign}
@@ -622,13 +692,25 @@ export function App({ initial }: { initial: ShellController }) {
           onSelect={setActiveId}
           onCreateWorktree={createWorktreeForAgent}
           onCloseProject={closeProject}
+          onOpenStrategy={() => setStrategyOpen(true)}
           width={effRight}
         />
+        {strategyOpen && (
+          <StrategyPanel
+            projects={tabs
+              .filter((t) => t.id !== initial.sessionId)
+              .map((t) => ({ id: t.id, name: t.name, controller: t.controller }))}
+            rightWidth={effRight}
+            onClose={() => setStrategyOpen(false)}
+          />
+        )}
         </div>
-        <ServiceBar />
         {settingsOpen && (
           <div className="absolute inset-0 z-40">
             <SettingsPage
+              initialTab={settingsInit?.tab}
+              focusProjectCwd={settingsInit?.focusCwd}
+              projects={tabs.map((t) => ({ id: t.id, name: t.name, cwd: t.controller.getCwd(), parentId: t.worktree?.parentId }))}
               onClose={() => setSettingsOpen(false)}
               onShowOnboarding={() => {
                 setSettingsOpen(false);
