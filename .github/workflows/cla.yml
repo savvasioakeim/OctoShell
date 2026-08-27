@@ -5,11 +5,24 @@ name: CLA Assistant
 # signatures/cla.json (on the main branch), and sets a PR status check.
 #
 # SETUP (one time):
-#   1. Create a Personal Access Token (classic) with `repo` scope, or a
-#      fine-grained token that can write contents to THIS repo.
+#   1. Create a FINE-GRAINED personal access token:
+#        Repository access → Only select repositories → OctoShell
+#        Permissions → Repository permissions → Contents: Read and write
+#      Nothing else. Do NOT use a classic token with `repo` scope: classic tokens
+#      are account-wide, so a leak reaches every repository you own, while this
+#      job only ever needs to append one JSON file in this one repo.
 #   2. Add it as a repo secret named CLA_SIGNATURES_TOKEN
 #      (Settings → Secrets and variables → Actions → New repository secret).
+#   3. Set an expiry and diarise the renewal — the CLA check fails closed when
+#      the token dies, which blocks merges until it is replaced.
 # The built-in GITHUB_TOKEN cannot push the signatures file, hence the PAT.
+#
+# SAFETY NOTE: this workflow runs on `pull_request_target`, which executes with
+# the BASE repo's secrets even for pull requests from forks. That is only safe
+# because it never checks out or runs the PR's code — the action just reads the
+# event payload and writes the signatures file. If you ever add
+# `actions/checkout` with the PR's ref to this job, a fork PR can run arbitrary
+# code with the token above. Don't.
 
 on:
   issue_comment:
