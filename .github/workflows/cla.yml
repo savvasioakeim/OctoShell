@@ -49,7 +49,12 @@ jobs:
         with:
           path-to-signatures: 'signatures/cla.json'
           path-to-document: 'https://github.com/savvasioakeim/OctoShell/blob/main/CLA.md'
-          branch: 'main'
+          # NOT main: main is protected (changes must go through a pull request)
+          # and this action commits the signatures file directly, which the
+          # protection rejects with "Changes must be made through a pull request".
+          # Signatures are bookkeeping, not source, so they live on their own
+          # orphan branch — which must stay UNPROTECTED for this to work.
+          branch: 'cla-signatures'
           allowlist: 'savvasioakeim,dependabot[bot]'
           custom-pr-sign-comment: 'I have read the CLA Document and I hereby sign the CLA'
           custom-notsigned-prcomment: 'Thanks for your pull request! Before we can merge it, please read our [Contributor License Agreement](CLA.md) and sign it by posting the exact comment below.'
