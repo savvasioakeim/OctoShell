@@ -263,6 +263,12 @@ fn create_terminal(req: &CreateTerminalRequest, terminals: &Terminals) -> String
     let pid = match cmd.spawn() {
         Ok(mut child) => {
             let pid = child.id();
+            // Into the kill-on-close job like every other spawn: a tool the ACP
+            // agent starts here is otherwise the one process tree that outlives
+            // OctoShell (Windows doesn't kill children with their parent).
+            if let Some(p) = pid {
+                crate::jobctl::add(p);
+            }
             spawn_reader(child.stdout.take(), output.clone(), truncated.clone(), limit);
             spawn_reader(child.stderr.take(), output.clone(), truncated.clone(), limit);
             let exit_w = exit.clone();

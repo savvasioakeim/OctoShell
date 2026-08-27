@@ -15,6 +15,7 @@ import { Titlebar } from "./chrome/Titlebar";
 import { serviceStore } from "./services/serviceStore";
 import { SettingsPage } from "./settings/SettingsPage";
 import { StrategyPanel } from "./strategy/StrategyPanel";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { settingsStore, useSettings } from "./settings/settingsStore";
 import { KEY, loadJSON, saveJSON } from "./util/persist";
 import { OnboardingOverlay } from "./onboarding/OnboardingOverlay";
@@ -27,6 +28,16 @@ interface Tab {
   /** Set when this project is an isolated git worktree: which repo to clean up
    *  on close, and which project it was branched from (for nested display). */
   worktree?: { repoRoot: string; parentId: string };
+}
+
+/** A worktree that exists in the repo but isn't open as a tab. */
+export interface WorktreeRef {
+  path: string;
+  name: string;
+  /** Branch it has checked out — the reason the base repo can't check it out. */
+  branch: string;
+  repoRoot: string;
+  parentId: string;
 }
 
 interface SavedProject {
@@ -60,6 +71,11 @@ interface GroupsState {
 export const GROUP_COLORS = ["#82AAFF", "#C792EA", "#4ade80", "#f78c6c", "#f07178", "#7fdbca", "#ffcb6b", "#ff5370"];
 
 // One-shot probe: "<branch>|<git diff --shortstat HEAD>". Empty branch ⇒ not a repo.
+/** How long exit-time compaction may take before the window closes anyway.
+ *  Generous enough for a dozen sessions writing to SQLite, short enough that a
+ *  stuck write reads as a brief pause rather than a frozen app. */
+const COMPACT_EXIT_MS = 4000;
+
 const GIT_PROBE =
   "\"$(git rev-parse --abbrev-ref HEAD 2>$null)|$(git diff --shortstat HEAD 2>$null)\"";
 
@@ -501,27 +517,91 @@ export function App({ initial }: { initial: ShellController }) {
         /* missing deps / copy failure is non-fatal — the install guard covers it */
       }
     }
+    return adoptWorktree(wtPath, dirName, repoRoot, src.id);
+  };
+
+  /** Open an existing worktree directory as its own nested project tab. Shared by
+   *  worktree creation and by re-opening a worktree that already exists in the
+   *  repo but has no tab (see `unopenedWorktrees`). */
+  const adoptWorktree = async (
+    wtPath: string,
+    name: string,
+    repoRoot: string,
+    parentId: string,
+  ): Promise<Tab> => {
     const controller = new ShellController(crypto.randomUUID());
     await controller.init(wtPath);
     const tab: Tab = {
       id: controller.sessionId,
-      name: dirName,
+      name,
       cwd: wtPath,
       controller,
-      worktree: { repoRoot, parentId: src.id },
+      worktree: { repoRoot, parentId },
     };
     // Insert right after the parent (and its existing worktrees) so it nests.
     setTabs((t) => {
       const arr = [...t];
-      let idx = arr.findIndex((x) => x.id === src.id);
+      let idx = arr.findIndex((x) => x.id === parentId);
       if (idx < 0) { arr.push(tab); return arr; }
       idx += 1;
-      while (idx < arr.length && arr[idx].worktree?.parentId === src.id) idx += 1;
+      while (idx < arr.length && arr[idx].worktree?.parentId === parentId) idx += 1;
       arr.splice(idx, 0, tab);
       return arr;
     });
     return tab;
   };
+
+  // Worktrees that exist in a repo but have NO tab — created in an earlier
+  // session, or left behind when a tab was closed without removing them. They
+  // were completely invisible here while still holding their branch checked out,
+  // so `git checkout <branch>` in the base repo failed with "already used by
+  // worktree at …" pointing at something the user couldn't see anywhere.
+  const [unopened, setUnopened] = useState<Record<string, WorktreeRef[]>>({});
+  useEffect(() => {
+    let cancelled = false;
+    const scan = async () => {
+      const roots = tabs.filter((t) => !t.worktree && t.cwd);
+      const found: Record<string, WorktreeRef[]> = {};
+      for (const root of roots) {
+        let out = "";
+        try {
+          out = await invoke<string>("run_capture", {
+            cwd: root.cwd,
+            command: "git worktree list --porcelain 2>&1",
+          });
+        } catch {
+          continue; // not a repo (or git unavailable) — nothing to surface
+        }
+        const list: WorktreeRef[] = [];
+        // Porcelain: blank-line separated records, "worktree <path>" + "branch <ref>".
+        for (const rec of out.split(/\r?\n\r?\n/)) {
+          const path = rec.match(/^worktree (.+)$/m)?.[1]?.trim().replace(/\\/g, "/");
+          if (!path) continue;
+          // Only nested worktrees; the first record is the main checkout itself.
+          if (!/\/\.octoshell\/worktrees\//i.test(path)) continue;
+          const open = tabs.some((t) => t.cwd.replace(/\\/g, "/").toLowerCase() === path.toLowerCase());
+          if (open) continue;
+          list.push({
+            path,
+            name: path.split("/").pop() || path,
+            branch: rec.match(/^branch (.+)$/m)?.[1]?.replace("refs/heads/", "").trim() ?? "",
+            repoRoot: root.cwd.replace(/\\/g, "/"),
+            parentId: root.id,
+          });
+        }
+        if (list.length) found[root.id] = list;
+      }
+      if (!cancelled) setUnopened(found);
+    };
+    void scan();
+    // Cheap enough to re-check periodically: worktrees also appear from agents
+    // running git directly, not just from OctoShell's own creation path.
+    const t = setInterval(() => void scan(), 20000);
+    return () => {
+      cancelled = true;
+      clearInterval(t);
+    };
+  }, [tabs]);
 
   /** Sidebar "New worktree" button: branch off the active project, focus the new
    *  tab, and on failure echo the git error into the source project's input. */
@@ -636,6 +716,48 @@ export function App({ initial }: { initial: ShellController }) {
     serviceStore.init();
   }, []);
 
+  // Compact each session's history on the way out (Settings → Workspace). The
+  // persist cap otherwise DROPS everything past the newest 80 blocks, so the next
+  // launch reads a history with a silent hole in it — which is how an agent
+  // resuming on a base branch ends up with confidently incomplete knowledge.
+  // Intercepting close means the writes are awaited; without that the webview is
+  // gone before SQLite hears about them. Any failure still lets the window close:
+  // never trap the user in the app over a bookkeeping step. That promise needs a
+  // TIMEOUT, not just a catch — a write that never settles isn't an error, and
+  // since we already called preventDefault() the window would simply refuse to
+  // close, forever. It's a live risk: the dev build and the installed app share
+  // one octoshell.db, so a concurrent write can sit on a SQLite lock.
+  useEffect(() => {
+    const win = getCurrentWindow();
+    let unlisten: (() => void) | undefined;
+    let closing = false;
+    void win.onCloseRequested(async (e) => {
+      if (closing) return; // our own win.close() below re-enters this handler
+      if (!settingsStore.getSnapshot().workspace.compactOnExit) return;
+      closing = true;
+      e.preventDefault();
+      const work = Promise.all(
+        tabsRef.current.map(async (t) => {
+          if (t.controller.compactHistory()) await t.controller.flush();
+        }),
+      );
+      try {
+        await Promise.race([
+          work,
+          new Promise((_, rej) => setTimeout(() => rej(new Error("timed out")), COMPACT_EXIT_MS)),
+        ]);
+      } catch (err) {
+        // Losing a compaction costs one session's older detail; refusing to close
+        // costs the user their app. Log and go.
+        console.warn("compact on exit skipped:", err);
+      }
+      void win.close();
+    }).then((fn) => {
+      unlisten = fn;
+    });
+    return () => unlisten?.();
+  }, []);
+
   return (
     <div className="flex h-full flex-col">
       <ThemeApplier />
@@ -653,6 +775,24 @@ export function App({ initial }: { initial: ShellController }) {
           onNewWorktree={newWorktree}
           onOpenSettings={() => { setSettingsInit(null); setSettingsOpen(true); }}
           onOpenProjectScripts={(cwd) => { setSettingsInit({ tab: "projects", focusCwd: cwd }); setSettingsOpen(true); }}
+          unopened={unopened}
+          onOpenWorktree={async (w) => {
+            const tab = await adoptWorktree(w.path, w.name, w.repoRoot, w.parentId);
+            setActiveId(tab.id);
+          }}
+          onRemoveWorktree={(w) => {
+            void invoke("run_capture", {
+              cwd: w.repoRoot,
+              command:
+                `git worktree remove "${w.path}" --force 2>&1 | Out-Null;` +
+                `if(Test-Path "${w.path}"){Remove-Item -LiteralPath "${w.path}" -Recurse -Force -ErrorAction SilentlyContinue};` +
+                "git worktree prune 2>&1",
+            }).catch(() => {});
+            setUnopened((u) => ({
+              ...u,
+              [w.parentId]: (u[w.parentId] ?? []).filter((x) => x.path !== w.path),
+            }));
+          }}
           stats={gitStats}
           groups={groupsState.groups}
           assign={groupsState.assign}
@@ -786,7 +926,7 @@ const CenterPanel = memo(function CenterPanel({
   controller: ShellController;
   active: boolean;
 }) {
-  const { blocks, cwd, busy, input, altScreen, interacting, mode, agentBusy, agentOrchestrated, agentModel, agentProvider, agentConfigDir, agentTokens, agentContext, agentProgress, agentApiKey, agentRateReset, agentApproval } = useShell(controller);
+  const { blocks, cwd, busy, input, altScreen, interacting, mode, agentBusy, agentOrchestrated, agentModel, agentProvider, agentConfigDir, agentTokens, agentContext, agentSessionId, agentProgress, agentApiKey, agentRateReset, agentApproval } = useShell(controller);
   const reviewSnap = useReview(controller);
   const [view, setView] = useState<CenterView>("coding");
   // The Review view only exists while a review agent is active; fall back to Coding
@@ -836,6 +976,7 @@ const CenterPanel = memo(function CenterPanel({
         agentConfigDir={agentConfigDir}
         agentTokens={agentTokens}
         agentContext={agentContext}
+        agentSessionId={agentSessionId}
         agentApiKey={agentApiKey}
         agentRateReset={agentRateReset}
         agentApproval={agentApproval}

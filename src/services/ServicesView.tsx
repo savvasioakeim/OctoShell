@@ -72,14 +72,32 @@ function ServiceRow({ s, open, onToggle }: { s: ServiceEntry; open: boolean; onT
           </button>
         )}
       </div>
-      {s.url && s.status === "running" && (
-        <button
-          onClick={() => void navigator.clipboard?.writeText(s.url!)}
-          title="Copy URL"
-          className="w-full truncate px-2 pb-1 text-left text-[10px] text-sky-300/80 hover:text-sky-200"
-        >
-          {s.url} ⧉
-        </button>
+      {/* Footer line: address on the left, process on the right. The pid shows
+          only while the service is alive — once it exits the number names a slot
+          the OS has already reused, so keeping it would be actively misleading. */}
+      {((s.url && s.status === "running") || (s.pid && s.status !== "exited")) && (
+        <div className="flex items-center gap-2 px-2 pb-1 text-[10px]">
+          {s.url && s.status === "running" ? (
+            <button
+              onClick={() => void navigator.clipboard?.writeText(s.url!)}
+              title="Copy URL"
+              className="min-w-0 flex-1 truncate text-left text-sky-300/80 hover:text-sky-200"
+            >
+              {s.url} ⧉
+            </button>
+          ) : (
+            <span className="flex-1" />
+          )}
+          {/* The outer guard already excludes "exited"; TS narrows it here. */}
+          {s.pid && (
+            <span
+              className="shrink-0 font-mono text-muted"
+              title={`The process OctoShell started and Stop kills. The dev server it spawns may run under a child pid; the Ports pane shows whichever process is holding the socket.`}
+            >
+              PID: {s.pid}
+            </span>
+          )}
+        </div>
       )}
       {open && <LogPanel service={s} />}
     </div>

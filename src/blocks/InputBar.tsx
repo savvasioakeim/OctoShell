@@ -7,7 +7,7 @@ import { isServerCommand } from "../services/serviceDetect";
 import { serviceStore } from "../services/serviceStore";
 import { settingsStore, useSettings } from "../settings/settingsStore";
 import { open } from "@tauri-apps/plugin-dialog";
-import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { dragHasFiles, filesFromDrop, saveDroppedFile } from "../util/drop";
 import shellIcon from "../assets/shell.png";
 import agentIcon from "../assets/agent.png";
 import attachIcon from "../assets/attach.png";
@@ -39,6 +39,7 @@ interface Props {
   agentTokens: { input: number; output: number; costUsd: number } | null;
   /** Latest context-window occupancy (used / window). */
   agentContext: { used: number; window: number } | null;
+  agentSessionId: string | null;
   /** True when billing per-token (API key) — then cost ($) is shown. */
   agentApiKey: boolean;
   /** Epoch seconds of the next subscription rate-limit reset, or null. */
@@ -135,7 +136,7 @@ const INPUT_MAX_PX = 308;
  * candidate menu opens. Shift+Enter inserts a newline, Ctrl+C interrupts, ↑/↓
  * navigate history (or the completion menu when open).
  */
-export function InputBar({ controller, cwd, busy, value, altScreen, interacting, mode, agentBusy, agentModel, agentProvider, agentConfigDir, agentTokens, agentContext, agentApiKey, agentRateReset, agentApproval }: Props) {
+export function InputBar({ controller, cwd, busy, value, altScreen, interacting, mode, agentBusy, agentModel, agentProvider, agentConfigDir, agentTokens, agentContext, agentSessionId, agentApiKey, agentRateReset, agentApproval }: Props) {
   const ref = useRef<HTMLTextAreaElement>(null);
   const selectedRef = useRef<HTMLLIElement>(null);
   const pendingCursor = useRef<number | null>(null);
@@ -210,29 +211,28 @@ export function InputBar({ controller, cwd, busy, value, altScreen, interacting,
     startStt();
   };
 
-  // Drag & drop a file/image anywhere in the window → attach its real filesystem
-  // path to the ACTIVE project's input (Tauri exposes the path; the browser File
-  // API would not). Requiring a pixel-perfect drop ON the bar made drops feel
-  // dead (they were silently ignored an inch above it), so the visible bar now
-  // claims every drop; inactive panels (display:none → zero-size rect) ignore it.
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    void getCurrentWebviewWindow()
-      .onDragDropEvent((e) => {
-        if (e.payload.type !== "drop") return;
-        const el = barRef.current;
-        if (!el) return;
-        const r = el.getBoundingClientRect();
-        if (r.width === 0 && r.height === 0) return; // this project's pane is hidden
-        const paths = e.payload.paths ?? [];
-        if (paths.length) {
-          addAttachments(paths);
-          ref.current?.focus();
-        }
-      })
-      .then((u) => { unlisten = u; });
-    return () => unlisten?.();
-  }, [controller]);
+  // Drag & drop a file/image onto the bar → attach it. The window runs with
+  // `dragDropEnabled: false` (the sidebar needs HTML5 drag & drop for
+  // reordering), so Tauri's onDragDropEvent never fires and a drop reaches us as
+  // browser File objects with no path. The backend writes the bytes to a scratch
+  // file and hands back a real path, which is what agents can actually open.
+  const [dropping, setDropping] = useState(false);
+  const [dropErr, setDropErr] = useState<string | null>(null);
+  const onDrop = async (e: React.DragEvent) => {
+    if (!dragHasFiles(e.dataTransfer)) return; // a sidebar item drag — not ours
+    e.preventDefault();
+    setDropping(false);
+    const files = filesFromDrop(e.dataTransfer);
+    if (!files.length) return;
+    setDropErr(null);
+    try {
+      const paths = await Promise.all(files.map(saveDroppedFile));
+      addAttachments(paths);
+      ref.current?.focus();
+    } catch (err) {
+      setDropErr(`Couldn't attach the dropped file: ${err}`);
+    }
+  };
 
   const addAgentProfile = async () => {
     const dir = await open({ directory: true, title: "Pick a profile folder (CLAUDE_CONFIG_DIR)" });
@@ -442,7 +442,24 @@ export function InputBar({ controller, cwd, busy, value, altScreen, interacting,
   };
 
   return (
-    <div ref={barRef} className="border-t border-edge bg-transparent px-3 py-2">
+    <div
+      ref={barRef}
+      onDragOver={(e) => {
+        if (!dragHasFiles(e.dataTransfer)) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "copy";
+        setDropping(true);
+      }}
+      onDragLeave={(e) => {
+        // Ignore the leave events fired while crossing child elements.
+        if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+        setDropping(false);
+      }}
+      onDrop={(e) => void onDrop(e)}
+      className={`border-t bg-transparent px-3 py-2 transition-colors ${
+        dropping ? "border-accent bg-accent/5" : "border-edge"
+      }`}
+    >
       {/* Controls: Shell/Agent switch · attach · TTS · agent options · path · status. */}
       <div className="mb-1 flex flex-wrap items-center gap-2 text-[11px] text-muted">
         {/* Shell ⇄ Agent switch — tinted to the active mode (blue / purple). */}
@@ -666,6 +683,18 @@ export function InputBar({ controller, cwd, busy, value, altScreen, interacting,
             </span>
           );
         })()}
+        {/* Sits next to the occupancy meter on purpose: this button is what the
+            meter makes you want when it climbs. Hidden until there IS a session
+            to reset, so it can't imply an action that would do nothing. */}
+        {agent && agentSessionId && !agentBusy && (
+          <button
+            onClick={() => controller.newAgentSession()}
+            title="New agent session — the next task starts with an empty context window. Your visible history is kept."
+            className="shrink-0 rounded border border-edge px-1.5 py-0.5 text-[10px] text-muted hover:bg-edge hover:text-gray-200"
+          >
+            ⟲ New session
+          </button>
+        )}
         {agent && !agentApiKey && fmtReset(agentRateReset) && (
           <span
             className="flex shrink-0 items-center gap-1 rounded border border-edge px-1.5 py-0.5 text-[10px] text-muted"
@@ -737,6 +766,15 @@ export function InputBar({ controller, cwd, busy, value, altScreen, interacting,
             title="Cancel"
             className="ml-auto text-muted hover:text-gray-200"
           >
+            ✕
+          </button>
+        </div>
+      )}
+
+      {dropErr && (
+        <div className="mb-1.5 flex items-center gap-2 rounded border border-red-500/40 bg-red-500/10 px-2 py-1 text-[11px] text-red-300">
+          <span className="flex-1">{dropErr}</span>
+          <button onClick={() => setDropErr(null)} title="Dismiss" className="text-red-300/70 hover:text-red-200">
             ✕
           </button>
         </div>

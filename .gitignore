@@ -6,6 +6,9 @@ dist/
 # Rust / Tauri
 src-tauri/target/
 src-tauri/gen/
+# ONNX embedding model weights (~90 MB). At runtime these live in the app's data
+# dir; this only catches the default cwd-relative cache used by `cargo test`.
+.fastembed_cache/
 
 # Env / secrets
 .env

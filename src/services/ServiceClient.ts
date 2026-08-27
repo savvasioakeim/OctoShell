@@ -10,6 +10,8 @@ export interface ServiceReady {
   id: string;
   port: number;
   url: string;
+  /** Only on the first announcement; a later port refinement omits it. */
+  pid?: number | null;
 }
 export interface ServiceLog {
   id: string;

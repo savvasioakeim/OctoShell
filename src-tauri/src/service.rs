@@ -47,6 +47,10 @@ struct ServiceReady {
     id: String,
     port: u16,
     url: String,
+    /// The process we spawned and manage — the one `stop` kills. Only the first
+    /// announcement carries it; a later port refinement from the log reader has no
+    /// handle to the child, so it sends `None` and the UI keeps what it has.
+    pid: Option<u32>,
 }
 
 #[derive(Clone, Serialize)]
@@ -100,6 +104,42 @@ fn free_port(port: u16) -> Vec<String> {
         ));
     }
     notes
+}
+
+/// The port a package.json script hard-codes, e.g. `"dev": "next dev -p 3001"`.
+///
+/// Plenty of projects pin their port in the script rather than in .env, and a CLI
+/// flag BEATS the `PORT` env var we inject — so without reading this we'd assume
+/// the wrong port: report the wrong URL, and (worse) "free" a port this project
+/// never wanted, killing whatever legitimately owned it. Recognises `-p N`,
+/// `--port N`, `--port=N` and a leading `PORT=N`.
+fn script_port_hint(cwd: &str, command: &str) -> Option<u16> {
+    let c = command.trim();
+    let name = if c == "npm start" {
+        "start"
+    } else {
+        c.strip_prefix("npm run ")?.split_whitespace().next()?
+    };
+    let text = std::fs::read_to_string(Path::new(cwd).join("package.json")).ok()?;
+    let json = serde_json::from_str::<serde_json::Value>(&text).ok()?;
+    let script = json.get("scripts")?.get(name)?.as_str()?;
+
+    let tokens: Vec<&str> = script.split_whitespace().collect();
+    for (i, tok) in tokens.iter().enumerate() {
+        let val = if *tok == "-p" || *tok == "--port" {
+            tokens.get(i + 1).copied()
+        } else if let Some(v) = tok.strip_prefix("--port=") {
+            Some(v)
+        } else if let Some(v) = tok.strip_prefix("PORT=") {
+            Some(v)
+        } else {
+            None
+        };
+        if let Some(p) = val.and_then(|v| v.trim().parse::<u16>().ok()).filter(|p| *p != 0) {
+            return Some(p);
+        }
+    }
+    None
 }
 
 /// The project's own `PORT=` from its .env files. We inject `PORT` into the
@@ -265,7 +305,14 @@ impl ServiceManager {
 
         // The project's own port, always — then clear it, so starting a server
         // replaces whatever was on that port instead of drifting to another one.
-        let port = service_port(port_hint.or_else(|| env_port_hint(&cwd)));
+        // Port precedence: an explicit request, then the port the start script
+        // pins (a CLI flag overrides our injected PORT, so it wins), then .env,
+        // then the 3000 default.
+        let port = service_port(
+            port_hint
+                .or_else(|| script_port_hint(&cwd, &fixed))
+                .or_else(|| env_port_hint(&cwd)),
+        );
         // Retire any MANAGED service already on this port through `stop`, so its
         // bookkeeping (map entry, reservation) is cleaned up rather than leaving a
         // zombie entry pointing at a process free_port would just kill.
@@ -326,8 +373,9 @@ impl ServiceManager {
         let mut child = cmd
             .spawn()
             .map_err(|e| format!("could not start service `{command}`: {e}"))?;
+        let pid = child.id();
         // Tie it (and whatever it spawns) to OctoShell's lifetime.
-        crate::jobctl::add(child.id());
+        crate::jobctl::add(pid);
         let stdout = child.stdout.take().ok_or("no stdout pipe")?;
         let stderr = child.stderr.take().ok_or("no stderr pipe")?;
         self.services
@@ -349,6 +397,7 @@ impl ServiceManager {
                 id: id.clone(),
                 port,
                 url: format!("http://localhost:{port}"),
+                pid: Some(pid),
             },
         );
 
@@ -426,7 +475,7 @@ fn maybe_emit_port(
         reserved.lock().unwrap().insert(p);
         let _ = app.emit(
             "service://ready",
-            ServiceReady { id: id.to_string(), port: p, url: format!("http://localhost:{p}") },
+            ServiceReady { id: id.to_string(), port: p, url: format!("http://localhost:{p}"), pid: None },
         );
     }
 }

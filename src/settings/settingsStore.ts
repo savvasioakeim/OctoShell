@@ -54,6 +54,9 @@ export interface WorkspaceSettings {
   trackedPorts: number[];
   /** Which native shell the terminal launches. */
   defaultShell: DefaultShell;
+  /** On exit, fold each session's older history into a summary block instead of
+   *  letting the persist cap silently drop it. */
+  compactOnExit: boolean;
 }
 export interface AppearanceSettings {
   /** Monospace font family for the terminal/feed ("" = theme default). */
@@ -123,6 +126,19 @@ export interface SettingsState {
    *  read-only Bash allowlist) so it can verify state instead of guessing. Never
    *  Edit/Write or unrestricted Bash — code is written only by dispatched agents. */
   orchestratorReadonly: boolean;
+  /** Workspace memory: semantic recall over past reports/reviews/dispatches. */
+  memory: MemorySettings;
+}
+
+export interface MemorySettings {
+  /** Off by default: the first use downloads ~90 MB of model weights, and the
+   *  index costs resident RAM. Both should be the user's choice, not a surprise. */
+  enabled: boolean;
+  /** Memories older than this are deleted. The primary bound on RAM — and a
+   *  quality control, since stale history misleads more than it helps. */
+  retentionMonths: number;
+  /** How many memories are injected into the orchestrator's context. */
+  topK: number;
 }
 
 const DEFAULT_WORKSPACE: WorkspaceSettings = {
@@ -133,6 +149,7 @@ const DEFAULT_WORKSPACE: WorkspaceSettings = {
   copyDeps: true,
   trackedPorts: [3000, 5173, 1420, 8080, 4000],
   defaultShell: "powershell",
+  compactOnExit: true,
 };
 const DEFAULT_APPEARANCE: AppearanceSettings = {
   fontFamily: "",
@@ -140,6 +157,7 @@ const DEFAULT_APPEARANCE: AppearanceSettings = {
   sfx: false,
 };
 const DEFAULT_SYSTEM: SystemSettings = { scrollback: 1000, sandboxAgentCommands: false };
+const DEFAULT_MEMORY: MemorySettings = { enabled: false, retentionMonths: 6, topK: 6 };
 const DEFAULT_REVIEW_AGENT: ReviewAgentSettings = { enabled: false, provider: "claude", model: null, profileId: null };
 const DEFAULT_OLLAMA: OllamaSettings = {
   baseUrl: "http://localhost:11434",
@@ -177,6 +195,7 @@ class SettingsStore {
       ollama: { ...DEFAULT_OLLAMA, ...loadJSON<Partial<OllamaSettings>>(KEY.ollamaSettings, {}) },
       orchestratorMcp: loadJSON<string[]>(KEY.orchestratorMcp, []),
       orchestratorReadonly: loadJSON<boolean>(KEY.orchestratorReadonly, true),
+      memory: { ...DEFAULT_MEMORY, ...loadJSON<Partial<MemorySettings>>(KEY.memorySettings, {}) },
     };
     // Push the persisted sandbox flag to the backend once at startup so the ACP
     // terminal routing matches the UI from the first turn (fire-and-forget).
@@ -210,11 +229,16 @@ class SettingsStore {
     saveJSON(KEY.ollamaSettings, next.ollama);
     saveJSON(KEY.orchestratorMcp, next.orchestratorMcp);
     saveJSON(KEY.orchestratorReadonly, next.orchestratorReadonly);
+    saveJSON(KEY.memorySettings, next.memory);
     this.listeners.forEach((l) => l());
   }
 
   setOrchestratorReadonly(on: boolean): void {
     this.commit({ ...this.state, orchestratorReadonly: on });
+  }
+
+  setMemory(patch: Partial<MemorySettings>): void {
+    this.commit({ ...this.state, memory: { ...this.state.memory, ...patch } });
   }
 
   addProfile(name: string, configDir: string): Profile {

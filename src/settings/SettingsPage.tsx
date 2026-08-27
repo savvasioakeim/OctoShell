@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { exportWorkspace, importWorkspace, peekWorkspace, type Snapshot } from "../util/workspaceTransfer";
 import {
   modelsFor,
   settingsStore,
@@ -18,6 +19,7 @@ import { useOllamaModels, ollamaModelOptions, refreshOllamaModels } from "../age
 import { strategyStore, useStrategy } from "../strategy/strategyStore";
 import type { StrategyRole } from "../strategy/roles";
 import { vacuumDb, type VacuumResult } from "../util/db";
+import { memoryStore, useMemoryStats } from "../memory/memoryStore";
 import { projectConfigStore, useProjectScripts } from "../projects/projectConfig";
 
 type TabId = "ai" | "local" | "roles" | "projects" | "workspace" | "appearance" | "system";
@@ -245,6 +247,8 @@ function AiTab() {
       </Section>
 
       <OrchestratorMcpSection />
+
+      <MemorySection />
 
       <Section
         title="Review agent"
@@ -1041,6 +1045,12 @@ function WorkspaceTab() {
             checked={workspace.copyDeps}
             onChange={(v) => set({ copyDeps: v })}
           />
+          <ToggleRow
+            label="Compact history on exit"
+            desc="On close, folds each project's older history into one summary (tasks asked for, what the agent said, commands run) instead of letting it be dropped. Without it, everything past the newest 80 entries is silently lost on restart — so an agent resuming on a base branch can't see what happened there last time."
+            checked={workspace.compactOnExit}
+            onChange={(v) => set({ compactOnExit: v })}
+          />
           <TrackedPortsField ports={workspace.trackedPorts} onChange={(v) => set({ trackedPorts: v })} />
           <Field label="Auto-clean — when a worktree is deleted">
             <Select
@@ -1208,6 +1218,8 @@ function SystemTab({ onSandboxLogin, onShowOnboarding }: { onSandboxLogin: () =>
           </span>
         </div>
       </Section>
+
+      <WorkspaceTransferSection />
 
       <Section
         title="First-launch health check"
@@ -1394,6 +1406,177 @@ function TrackedPortsField({ ports, onChange }: { ports: number[]; onChange: (v:
         />
       </div>
     </div>
+  );
+}
+
+/** Workspace memory: what it costs and what it currently holds.
+ *
+ *  The numbers are shown rather than hidden because the whole reason this is a
+ *  setting is that resident RAM matters to some users — a toggle without a
+ *  figure asks them to trust an unknown cost. */
+/** Move the project list + session ids between the dev build and the installed
+ *  app. They already share one SQLite file (same app identifier), but NOT
+ *  localStorage — WebView2 scopes that per origin, and the two builds serve from
+ *  different ones. Since the session ids live there, a fresh install shows an
+ *  empty workspace while every chat sits unreachable in the shared database. */
+function WorkspaceTransferSection() {
+  const [snap, setSnap] = useState<Snapshot | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    void peekWorkspace().then(setSnap);
+  }, []);
+
+  const doExport = async () => {
+    setBusy(true);
+    setErr(null);
+    setMsg(null);
+    try {
+      const s = await exportWorkspace();
+      setSnap(s);
+      setMsg(`Saved ${s.keys} settings to the shared database. Now open the other build and press Import.`);
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const doImport = async () => {
+    if (!confirm("Replace this build's projects and settings with the saved snapshot? Your current ones are overwritten.")) return;
+    setBusy(true);
+    setErr(null);
+    setMsg(null);
+    try {
+      const n = await importWorkspace();
+      setMsg(`Imported ${n} settings — reloading…`);
+      // Every store reads localStorage at module load, so a reload is the only
+      // way the new state actually takes effect.
+      setTimeout(() => location.reload(), 800);
+    } catch (e) {
+      setErr(String(e));
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Section
+      title="Transfer workspace between builds"
+      desc="Your chat history and memory already live in one shared database, but the project list and its session ids do not — so a fresh install starts empty. Export here, then Import in the other build to bring everything across."
+    >
+      <div className="flex flex-wrap items-center gap-3">
+        <button onClick={() => void doExport()} disabled={busy} className="btn-grad rounded px-3 py-1.5 text-sm font-medium disabled:opacity-60">
+          Export from this build
+        </button>
+        <button onClick={() => void doImport()} disabled={busy || !snap} className="rounded border border-edge px-3 py-1.5 text-sm text-gray-200 hover:bg-edge disabled:opacity-40">
+          Import into this build
+        </button>
+        <span className="text-xs text-muted">
+          {snap
+            ? `Snapshot: ${snap.keys} settings from ${snap.origin}, ${new Date(snap.at).toLocaleString()}`
+            : "No snapshot saved yet."}
+        </span>
+      </div>
+      {msg && <p className="mt-2 text-xs text-emerald-300">{msg}</p>}
+      {err && <p className="mt-2 text-xs text-red-300">{err}</p>}
+    </Section>
+  );
+}
+
+function MemorySection() {
+  const { memory } = useSettings();
+  const stats = useMemoryStats();
+  const [busy, setBusy] = useState(false);
+
+  const mb = (stats.bytes / (1024 * 1024)).toFixed(1);
+  const forgetAll = async () => {
+    setBusy(true);
+    try {
+      await memoryStore.forgetAll();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Section
+      title="Workspace memory"
+      desc="Remembers what happened across sessions — agent reports, review verdicts, dispatched tasks — and recalls the relevant ones by MEANING, not exact words. Everything runs locally; nothing is sent anywhere."
+    >
+      <ToggleRow
+        label="Remember past work"
+        desc="First use downloads a ~90 MB embedding model (once). While on, memories are indexed in RAM for instant recall; turning it off frees that memory immediately."
+        checked={memory.enabled}
+        onChange={(v) => settingsStore.setMemory({ enabled: v })}
+      />
+
+      {memory.enabled && (
+        <>
+          <div className="mt-3 grid grid-cols-2 gap-3">
+            <Field label="Keep history for">
+              <Select
+                value={String(memory.retentionMonths)}
+                onChange={(v) => settingsStore.setMemory({ retentionMonths: Number(v) })}
+                options={[
+                  { label: "1 month", value: "1" },
+                  { label: "3 months", value: "3" },
+                  { label: "6 months", value: "6" },
+                  { label: "12 months", value: "12" },
+                  { label: "24 months", value: "24" },
+                ]}
+              />
+            </Field>
+            <Field label="Memories per answer">
+              <Select
+                value={String(memory.topK)}
+                onChange={(v) => settingsStore.setMemory({ topK: Number(v) })}
+                options={[3, 6, 10].map((n) => ({ label: String(n), value: String(n) }))}
+              />
+            </Field>
+          </div>
+          <p className="mt-1.5 text-xs leading-relaxed text-muted">
+            Shorter retention uses less memory — and usually gives better answers, since a
+            two-year-old note about since-rewritten code misleads more than it helps.
+          </p>
+
+          <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border border-edge px-3 py-2 text-xs text-muted">
+            <span>
+              <span className="text-gray-200">{stats.memories}</span> memories
+            </span>
+            <span>
+              <span className="text-gray-200">{stats.indexed}</span> indexed
+            </span>
+            <span>
+              RAM <span className="text-gray-200">{mb} MB</span>
+            </span>
+            {stats.pending > 0 && (
+              <span className="text-amber-300/80">{stats.pending} awaiting indexing…</span>
+            )}
+            {stats.model && <span className="ml-auto opacity-70">{stats.model}</span>}
+          </div>
+
+          {stats.error && (
+            <div className="mt-2 rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs leading-relaxed text-red-300">
+              {stats.error}
+              <div className="mt-1 text-red-300/70">
+                Recall falls back to keyword matching, so answers may miss anything phrased
+                differently from the original note.
+              </div>
+            </div>
+          )}
+
+          <button
+            onClick={() => void forgetAll()}
+            disabled={busy || stats.memories === 0}
+            className="mt-3 rounded-lg border border-edge px-3 py-1.5 text-xs text-muted transition-colors hover:border-red-500/40 hover:text-red-300 disabled:opacity-40"
+          >
+            {busy ? "Forgetting…" : "Forget everything"}
+          </button>
+        </>
+      )}
+    </Section>
   );
 }
 

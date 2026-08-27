@@ -23,6 +23,10 @@ export interface ServiceEntry {
   status: ServiceStatus;
   port?: number;
   url?: string;
+  /** The process OctoShell spawned and manages — the one Stop kills. Its children
+   *  (the actual node server) may have their own pids; the Ports pane shows those,
+   *  since it reports whoever is holding the socket. */
+  pid?: number;
   exitCode?: number;
   logs: string[];
 }
@@ -45,6 +49,8 @@ class ServiceStore {
         s.status = "running";
         s.port = e.port;
         s.url = e.url;
+        // Keep the pid we already have: only the first announcement carries one.
+        if (e.pid) s.pid = e.pid;
       }),
     );
     void onServiceLog((e) =>

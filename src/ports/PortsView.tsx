@@ -84,7 +84,9 @@ function Group({ label, children }: { label: string; children: React.ReactNode }
 
 function PortRow({ row, killing, onKill }: { row: Row; killing: boolean; onKill: () => void }) {
   const inUse = row.procs.length > 0;
-  const proc = row.procs.map((p) => `${p.process} (${p.pid})`).join(", ");
+  // Labelled explicitly: a bare number next to a process name reads as a version
+  // or a count as easily as a process id.
+  const proc = row.procs.map((p) => `${p.process} (PID: ${p.pid})`).join(", ");
   return (
     <div
       className={`flex items-center gap-2 rounded-md border px-2 py-1.5 text-xs ${

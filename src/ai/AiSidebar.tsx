@@ -15,6 +15,8 @@ import { projectConfigStore } from "../projects/projectConfig";
 import { supportsProfile } from "../agents/providers";
 import { registerOrchestrator } from "../strategy/orchestratorBridge";
 import { useSettings } from "../settings/settingsStore";
+import { dragHasFiles, filesFromDrop, saveDroppedFile } from "../util/drop";
+import { memoryStore, type Recalled } from "../memory/memoryStore";
 import {
   statusOf,
   STATUS_COLOR,
@@ -60,11 +62,21 @@ const client = new AiClient();
 const MAX_AUTO_STEPS = 15;
 
 /** Per-project digest cap (chars) so one busy project can't eat the whole budget. */
-const PROJECT_DIGEST_CAP = 4000;
-/** Hard ceiling on the assembled `system` string. Windows caps a process command
- *  line at ~32 KB; the context used to ride on argv, and even folded into the
- *  stdin prompt we keep it well under that to stay safe and cheap. */
-const SYSTEM_CHAR_CAP = 28000;
+const PROJECT_DIGEST_CAP = 12000;
+/** Hard ceiling on the assembled `system` string (~22K tokens).
+ *
+ *  These caps were originally sized against Windows' ~32 KB command-line limit,
+ *  back when the context rode on argv and overflowing it killed claude.exe with
+ *  os error 206. That constraint is GONE: ai.rs sends the whole context over
+ *  stdin, which has no length limit. What's left is a cost/attention budget, so
+ *  it's set from what the model can actually use well rather than from an OS
+ *  limit that no longer applies. Still far below the smallest window (200K). */
+const SYSTEM_CHAR_CAP = 90000;
+/** Budget for recalled memories. Taken OUT of SYSTEM_CHAR_CAP, never added on
+ *  top of it, so enabling memory can never grow the total context. */
+const MEMORY_CHAR_CAP = 12000;
+/** Per-memory slice, so six memories fit the budget with room for their stamps. */
+const MEMORY_ITEM_CAP = 1500;
 
 export interface ProjectRef {
   id: string;
@@ -208,6 +220,34 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
   const [messages, setMessages] = useState<ChatMessage[]>(() => sessions[0].messages);
   const [input, setInput] = useState("");
   const [thinking, setThinking] = useState(false);
+  // Files dropped onto the composer. Every orchestrator transport is text-only
+  // (the claude/gemini CLIs and the ACP one-shot all take a single prompt
+  // string), so an attachment rides along as its scratch-file PATH — which those
+  // CLIs can actually open — rather than as inline image data.
+  const [drops, setDrops] = useState<string[]>([]);
+  const [dropping, setDropping] = useState(false);
+  const [dropErr, setDropErr] = useState<string | null>(null);
+  const onDropFiles = async (e: React.DragEvent) => {
+    if (!dragHasFiles(e.dataTransfer)) return;
+    e.preventDefault();
+    setDropping(false);
+    const files = filesFromDrop(e.dataTransfer);
+    if (!files.length) return;
+    setDropErr(null);
+    try {
+      const paths = await Promise.all(files.map(saveDroppedFile));
+      setDrops((d) => [...d, ...paths.filter((p) => p && !d.includes(p))]);
+      inputRef.current?.focus();
+    } catch (err) {
+      setDropErr(`Couldn't attach the dropped file: ${err}`);
+    }
+  };
+  /** Append the dropped paths to the outgoing text (quoted if they have spaces). */
+  const withDrops = (text: string): string => {
+    if (!drops.length) return text;
+    const atts = drops.map((p) => (/\s/.test(p) ? `"${p}"` : p)).join(" ");
+    return text ? `${text}\n\n${atts}` : atts;
+  };
   // A plan handed over from Strategy Mode, queued to be asked once (see effects
   // below). Kept in state so the newChat-clear lands before ask() runs.
   const [pendingPlan, setPendingPlan] = useState<string | null>(null);
@@ -357,6 +397,15 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
     });
   }, [messages, actionState, chatId]);
 
+  // Keep the memory store in step with settings. It owns the resident index, so
+  // switching the toggle off frees the RAM rather than merely stopping writes.
+  useEffect(() => {
+    memoryStore.configure({
+      enabled: settings.memory.enabled,
+      retentionMonths: settings.memory.retentionMonths,
+    });
+  }, [settings.memory.enabled, settings.memory.retentionMonths]);
+
   /** Start a fresh conversation (the current one stays saved in the list). */
   const newChat = useCallback(() => {
     const s: ChatSession = { id: crypto.randomUUID(), title: "New chat", updatedAt: Date.now(), messages: [], actionState: {} };
@@ -413,11 +462,44 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
     [chatId],
   );
 
-  const buildSystem = useCallback((): string => {
+  /** Render recalled memories as a prompt section.
+   *
+   *  Every entry is stamped with its age and origin. That is not decoration: the
+   *  orchestrator already has to distinguish current state from stale reports
+   *  (see the STALE handling below), and an unstamped memory reads as present
+   *  tense — which is how a two-week-old fix becomes a claim that something is
+   *  already done. */
+  const memorySection = useCallback((items: Recalled[]): string => {
+    if (!items.length) return "";
+    const degraded = items.some((m) => m.keywordOnly);
+    const head = [
+      "# Recalled from earlier work (PAST, not current state)",
+      "These are records of what happened before — possibly weeks ago. Treat them as",
+      "history: useful for context and precedent, NEVER as evidence that something is",
+      "currently true or already done. Verify against the live project digests below.",
+      degraded ? "⚠️ Semantic recall unavailable — keyword matches only, so this may be incomplete." : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+    let used = head.length;
+    const lines: string[] = [];
+    for (const m of items) {
+      const where = m.branch ? `${m.project} · ${m.branch}` : m.project;
+      const body = truncate(m.text.trim(), MEMORY_ITEM_CAP);
+      const entry = `\n\n[${where} · ${m.kind} · ${fmtAge(m.createdAt)}]\n${body}`;
+      if (used + entry.length > MEMORY_CHAR_CAP) break;
+      used += entry.length;
+      lines.push(entry);
+    }
+    return lines.length ? head + lines.join("") : "";
+  }, []);
+
+  const buildSystem = useCallback((recalled: Recalled[] = []): string => {
     // Only digest projects worth the bytes: the ones the user actually touched this
-    // session (ran a command/agent in) plus the active tab. Digesting all 15 open
-    // projects bloated the context past Windows' ~32 KB command-line cap and pushed
-    // claude.exe over the edge (os error 206); it was also mostly noise.
+    // session (ran a command/agent in) plus the active tab. This began as a fix for
+    // Windows' ~32 KB argv limit (since removed — the context goes over stdin now),
+    // but it stands on its own merit: digesting all 15 open projects is mostly
+    // noise, and noise costs attention as well as tokens.
     const relevant = tabs.filter((p) => {
       const snap = snaps.get(p.id);
       return p.id === activeId || !!snap?.touched;
@@ -527,6 +609,10 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
       ...(settings.globalRules.trim()
         ? [`# Global rules (from the user — always honour these)\n${settings.globalRules.trim()}`]
         : []),
+      // Memory goes ABOVE the project digests: the cap below trims from the end,
+      // and digests are the cheaper thing to lose (they describe live state the
+      // orchestrator can re-inspect; recalled history it cannot).
+      ...(recalled.length ? [memorySection(recalled)] : []),
       `# Open projects\n${sections}`,
     ].join("\n\n");
     // Final safeguard: never let the context blow past the cap, no matter how many
@@ -535,7 +621,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
     return system.length > SYSTEM_CHAR_CAP
       ? system.slice(0, SYSTEM_CHAR_CAP) + "\n\n…(context truncated to fit limit)…"
       : system;
-  }, [tabs, snaps, activeId, autoRun, liveWatch, settings.globalRules, settings.workspace.orchestratorWorktrees, settings.reviewAgent.enabled, settings.orchestratorReadonly]);
+  }, [tabs, snaps, activeId, autoRun, liveWatch, memorySection, settings.globalRules, settings.workspace.orchestratorWorktrees, settings.reviewAgent.enabled, settings.orchestratorReadonly]);
 
   const ask = useCallback(
     async (userText: string) => {
@@ -544,8 +630,19 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
       setThinking(true);
       const reqId = crypto.randomUUID();
       currentReqRef.current = reqId;
+      // Recall BEFORE the turn: every orchestrator transport takes one flattened
+      // prompt string (see AiClient), so there is no tool the model could call
+      // mid-turn to look something up. Pre-retrieval is what makes memory work
+      // on all four transports instead of only the Claude CLI.
+      // Internal live-watch continuations are skipped — they're machine pings,
+      // not questions, and recalling against them would be noise.
+      let recalled: Recalled[] = [];
+      if (settings.memory.enabled && !userText.startsWith("👁")) {
+        const active = tabs.find((p) => p.id === activeId)?.name;
+        recalled = await memoryStore.recall(userText, active, settings.memory.topK);
+      }
       try {
-        const reply = await client.chat(next, buildSystem(), {
+        const reply = await client.chat(next, buildSystem(recalled), {
           provider: aiProvider,
           model: aiModel,
           // A profile (config/account dir) applies to any provider that has one
@@ -574,7 +671,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
         }
       }
     },
-    [messages, buildSystem, aiProvider, aiModel, profileId, profiles],
+    [messages, buildSystem, aiProvider, aiModel, profileId, profiles, tabs, activeId, settings.memory.enabled, settings.memory.topK],
   );
 
   // Strategy Mode → orchestrator handoff. Register a receiver; when a plan
@@ -679,6 +776,19 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
         setActionErr((e) => ({ ...e, [key]: reason }));
         setActionState((s) => ({ ...s, [key]: "error" }));
       };
+      /** Record what was asked for. The agent's own report (stored separately when
+       *  its turn ends) says what happened; this says what the intent was — which
+       *  is what "why did we do this?" questions are actually asking about. */
+      const rememberDispatch = (target: string, cwd: string) => {
+        if (a.kind !== "dispatch") return;
+        memoryStore.remember({
+          kind: "dispatch",
+          project: a.project,
+          branch: a.branch ?? null,
+          cwd,
+          text: `Task dispatched to ${target}:\n${a.prompt}`,
+        });
+      };
       if (a.kind === "dispatch" && overSpendRef.current) {
         fail("session cost limit reached — raise it in Settings, then retry.");
         return;
@@ -700,6 +810,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
           }
           watchDispatched(open.id);
           onSelect(open.id);
+          rememberDispatch(open.name, open.controller.getCwd());
           setActionState((s) => ({ ...s, [key]: "done" }));
           return;
         }
@@ -721,6 +832,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
         wt.controller.runAgent(a.prompt, { orchestrated: true });
         watchDispatched(wt.id);
         onSelect(wt.id);
+        rememberDispatch(wt.name, wt.controller.getCwd());
         setActionState((s) => ({ ...s, [key]: "done" }));
         return;
       }
@@ -750,6 +862,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
           return;
         }
         watchDispatched(p.id);
+        rememberDispatch(p.name, p.controller.getCwd());
       } else if (a.kind === "review") {
         // Fire the independent built-in review agent on this project's diff.
         void p.controller.requestReview();
@@ -1042,7 +1155,15 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
   useEffect(() => {
     for (const p of tabs) {
       if (!watchedRef.current.has(p.id)) continue;
-      const busy = !!snaps.get(p.id)?.agentBusy;
+      // Read the controller LIVE, not the render-time `snaps` map. A dispatch is
+      // fired from the auto-run effect in THIS SAME commit, and runAgent flips
+      // agentBusy synchronously — but `snaps` was captured before that and still
+      // says idle. Combined with watchDispatched's optimistic prev=true, the stale
+      // map manufactured a busy→idle edge the instant a task was sent, so every
+      // dispatch was immediately followed by a continuation about the PREVIOUS
+      // turn ("the dispatch didn't execute, re-sending" → "couldn't dispatch:
+      // agent busy"). The orchestrator was permanently one step behind.
+      const busy = !!p.controller.getSnapshot().agentBusy;
       const prev = prevBusyRef.current.get(p.id) ?? false;
       // Preserve a busy→idle edge we can't act on yet: while the orchestrator is
       // mid-turn (thinking) we can't fire a continuation, so DON'T overwrite prev
@@ -1054,6 +1175,65 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
         continueAfterAgent(p.name);
         break; // one continuation per settle
       }
+    }
+  });
+
+  // Record every finished agent turn into workspace memory. Separate from live
+  // watch on purpose: that only tracks agents the orchestrator dispatched, while
+  // memory should capture ALL work — including tasks the user ran by hand, which
+  // are exactly the ones nothing else in the app remembers.
+  const memBusyRef = useRef(new Map<string, boolean>());
+  const memSeenRef = useRef(new Set<string>());
+  useEffect(() => {
+    if (!settings.memory.enabled) return;
+    for (const p of tabs) {
+      const snap = snaps.get(p.id);
+      const busy = !!snap?.agentBusy;
+      const prev = memBusyRef.current.get(p.id) ?? false;
+      memBusyRef.current.set(p.id, busy);
+      if (!(prev && !busy) || !snap) continue;
+      const report = lastAgentReport(snap.blocks, 4000);
+      if (!report) continue;
+      // A turn that ends without producing a new report (cancelled, or a no-op)
+      // must not re-store the previous one on every settle.
+      const key = `${p.id}:${report.at}`;
+      if (memSeenRef.current.has(key)) continue;
+      memSeenRef.current.add(key);
+      const cwd = snap.cwd || "";
+      memoryStore.remember({
+        kind: "report",
+        project: p.name,
+        branch: isWorktreeCwd(cwd) ? p.name : null,
+        cwd,
+        text: report.text,
+        createdAt: report.at,
+      });
+    }
+  });
+
+  // Record review verdicts. Kept separate from reports because a verdict is a
+  // judgement about the work ("this was blocked because X"), which is what a
+  // later "did we ever hit this problem?" question needs — and it's ranked higher.
+  const memVerdictRef = useRef(new Set<string>());
+  useEffect(() => {
+    if (!settings.memory.enabled) return;
+    for (const p of tabs) {
+      const rev = p.controller.review.getSnapshot();
+      if (!rev.active || rev.busy || !rev.verdict) continue;
+      const summary = rev.verdict.summary?.trim();
+      if (!summary) continue;
+      const key = `${p.id}:${rev.verdict.blocking ? "block" : "pass"}:${summary.slice(0, 80)}`;
+      if (memVerdictRef.current.has(key)) continue;
+      memVerdictRef.current.add(key);
+      const cwd = p.controller.getCwd();
+      memoryStore.remember({
+        kind: "review",
+        project: p.name,
+        branch: isWorktreeCwd(cwd) ? p.name : null,
+        cwd,
+        text: `Review ${rev.verdict.blocking ? "BLOCKED" : "PASSED"}: ${summary}`,
+        meta: { blocking: rev.verdict.blocking },
+      });
     }
   });
 
@@ -1473,8 +1653,53 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
         )}
       </div>
 
-      <div className="border-t border-edge p-2">
-        <div className="flex items-end gap-2 rounded-lg border border-accent/40 bg-panel px-3 py-2.5 focus-within:border-accent">
+      <div
+        className="border-t border-edge p-2"
+        onDragOver={(e) => {
+          if (!dragHasFiles(e.dataTransfer)) return;
+          e.preventDefault();
+          e.dataTransfer.dropEffect = "copy";
+          setDropping(true);
+        }}
+        onDragLeave={(e) => {
+          if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+          setDropping(false);
+        }}
+        onDrop={(e) => void onDropFiles(e)}
+      >
+        {dropErr && (
+          <div className="mb-1.5 flex items-center gap-2 rounded border border-red-500/40 bg-red-500/10 px-2 py-1 text-[11px] text-red-300">
+            <span className="flex-1">{dropErr}</span>
+            <button onClick={() => setDropErr(null)} title="Dismiss" className="text-red-300/70 hover:text-red-200">
+              ✕
+            </button>
+          </div>
+        )}
+        {drops.length > 0 && (
+          <div className="mb-1.5 flex flex-wrap gap-1.5">
+            {drops.map((p, i) => (
+              <span
+                key={`${p}-${i}`}
+                className="flex items-center gap-1 rounded border border-edge bg-card px-1.5 py-0.5 text-[11px] text-gray-200"
+              >
+                <span className="shrink-0">📎</span>
+                <span className="max-w-[160px] truncate" title={p}>{p.split(/[\\/]/).pop() || p}</span>
+                <button
+                  onClick={() => setDrops((d) => d.filter((_, j) => j !== i))}
+                  title="Remove"
+                  className="text-muted hover:text-red-300"
+                >
+                  ✕
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+        <div
+          className={`flex items-end gap-2 rounded-lg border bg-panel px-3 py-2.5 focus-within:border-accent ${
+            dropping ? "border-accent bg-accent/5" : "border-accent/40"
+          }`}
+        >
           <span
             className="select-none font-semibold leading-relaxed text-accent"
             style={{ transform: "translateY(4px)" }}
@@ -1489,8 +1714,8 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
-                const v = input.trim();
-                if (v) { autoStepsRef.current = 0; saveWatch(); void ask(v); setInput(""); }
+                const v = withDrops(input.trim());
+                if (v) { autoStepsRef.current = 0; saveWatch(); void ask(v); setInput(""); setDrops([]); }
               }
             }}
             placeholder="Ask about all your projects…"

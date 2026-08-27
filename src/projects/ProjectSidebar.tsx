@@ -8,7 +8,7 @@ import {
   useState,
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { GitStat, Group } from "../App";
+import type { GitStat, Group, WorktreeRef } from "../App";
 import type { ShellController, ShellSnapshot } from "../shell/ShellController";
 import { statusOf, STATUS_COLOR as COLOR, STATUS_LABEL as LABEL } from "../shell/agentStatus";
 import { KEY, loadJSON, saveJSON } from "../util/persist";
@@ -36,6 +36,11 @@ interface Props {
   onOpenSettings: () => void;
   /** Open Settings on the Project Scripts tab, focused on this project's cwd. */
   onOpenProjectScripts: (cwd: string) => void;
+  /** Worktrees present in each project's repo that have no tab, keyed by parent
+   *  project id. Surfaced so a checked-out branch can never be invisible. */
+  unopened?: Record<string, WorktreeRef[]>;
+  onOpenWorktree?: (w: WorktreeRef) => void | Promise<void>;
+  onRemoveWorktree?: (w: WorktreeRef) => void;
   width: number;
   stats: Map<string, GitStat>;
   groups: Group[];
@@ -153,7 +158,7 @@ function Chevron({ open }: { open: boolean }) {
 export function ProjectSidebar(props: Props) {
   const {
     tabs, activeId, onSelect, onClose, onNew, onNewWorktree, onOpenSettings, width, stats,
-    groups, assign, onAssign, onReorder, onReorderGroup,
+    groups, assign, onAssign, onReorder, onReorderGroup, unopened, onOpenWorktree, onRemoveWorktree,
   } = props;
 
   const snaps = useAllSnapshots(tabs);
@@ -412,11 +417,57 @@ export function ProjectSidebar(props: Props) {
   // A project at `depth` followed by its nested worktree children (collapsible).
   const renderProject = (t: ProjectTab, depth: number) => {
     const kids = childrenOf(t.id);
+    const hidden = unopened?.[t.id] ?? [];
     const isCollapsed = pCollapsed.has(t.id);
+    const hasChildren = kids.length > 0 || hidden.length > 0;
     return (
       <Fragment key={t.id}>
-        {renderRow(t, depth, kids.length ? { collapsed: isCollapsed, onToggle: () => toggleProject(t.id) } : undefined)}
+        {renderRow(t, depth, hasChildren ? { collapsed: isCollapsed, onToggle: () => toggleProject(t.id) } : undefined)}
         {!isCollapsed && kids.map((c) => renderRow(c, depth + 1))}
+        {/* Worktrees that exist in the repo but aren't open. Shown dimmed so they
+            can't hide: they still hold their branch checked out, which is what
+            makes `git checkout <branch>` fail in the base repo. */}
+        {!isCollapsed &&
+          hidden.map((w) => (
+            <div
+              key={w.path}
+              style={{ paddingLeft: (depth + 1) * 14 + 8 }}
+              className="group flex items-center gap-1.5 rounded py-0.5 pr-1 text-[12px] text-muted/70 hover:bg-edge/40"
+              title={`${w.path}\nNot open — click to open it as a project`}
+            >
+              <button
+                onClick={() => void onOpenWorktree?.(w)}
+                className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+              >
+                {/* Same worktree glyph as an open worktree row, but a flat grey
+                    instead of the accent gradient — same thing, not active. */}
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  className="h-3 w-3 shrink-0 text-muted/60"
+                  aria-label="git worktree (not open)"
+                >
+                  <line x1="6" y1="3" x2="6" y2="15" />
+                  <circle cx="18" cy="6" r="3" />
+                  <circle cx="6" cy="18" r="3" />
+                  <path d="M18 9a9 9 0 0 1-9 9" />
+                </svg>
+                <span className="truncate italic">{w.name}</span>
+                {w.branch && <span className="shrink-0 text-[10px] text-muted/50">{w.branch}</span>}
+              </button>
+              <button
+                onClick={() => onRemoveWorktree?.(w)}
+                title="Remove this worktree (frees its branch)"
+                className="shrink-0 rounded px-1 text-muted/50 opacity-0 transition-opacity hover:text-red-300 group-hover:opacity-100"
+              >
+                ✕
+              </button>
+            </div>
+          ))}
       </Fragment>
     );
   };

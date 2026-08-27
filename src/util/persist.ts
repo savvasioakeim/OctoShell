@@ -53,6 +53,7 @@ export const KEY = {
   ollamaSettings: "octoshell.settings.ollama",
   orchestratorMcp: "octoshell.settings.orchestratorMcp",
   orchestratorReadonly: "octoshell.settings.orchestratorReadonly",
+  memorySettings: "octoshell.settings.memory",
   projectScripts: "octoshell.settings.projectScripts",
   strategyRoster: "octoshell.strategy.roster",
   strategyPlans: "octoshell.strategy.plans",

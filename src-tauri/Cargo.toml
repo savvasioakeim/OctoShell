@@ -38,6 +38,7 @@ futures-util = "0.3"
 # and prompt/decision channels.
 agent-client-protocol = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "io-util", "process", "time"] }
+fastembed = "5"
 
 # Win32 Job Object: tie every spawned shell/agent to OctoShell's lifetime so a
 # crash or hot-reload can't orphan pwsh/claude/gemini processes (see jobctl.rs).

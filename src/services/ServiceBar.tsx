@@ -43,7 +43,7 @@ export function ServiceBar() {
               <StatusDot status={s.status} />
               <button
                 onClick={() => setOpenId(active ? null : s.id)}
-                title={`${s.command}\n${s.cwd}`}
+                title={`${s.command}\n${s.cwd}${s.pid && s.status !== "exited" ? `\npid ${s.pid}` : ""}`}
                 className="max-w-[14rem] truncate text-left text-gray-200 hover:text-accent"
               >
                 {s.name}
