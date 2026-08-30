@@ -128,10 +128,39 @@ plain web app: no store, no signing, nothing to update separately — the UI is
 embedded in the OctoShell binary, so it can never be out of step with the API it
 talks to.
 
+## Notifications
+
+Tap **🔔 Alerts** in the app once. Your phone then buzzes when an agent finishes
+or stops — with the app closed, off your network, anywhere.
+
+This uses Web Push, and it's worth being precise about what that means, because
+"the browser's push service" sounds worse than it is:
+
+**The payload is encrypted end to end** (RFC 8291). Your browser publishes a key
+when it subscribes, OctoShell encrypts with it, and the push service in between
+(FCM on Android) has no key. It can see that something was delivered, how big it
+was and when — never what it said.
+
+That makes it the only option that needs **no second app** and still keeps the
+content private. A notification service like ntfy would need its own app
+installed, and on its public instance posts to a topic anyone who learns the name
+can read.
+
+Two things follow from how it works:
+
+- **It needs HTTPS.** Over the LAN option (plain HTTP) the button is hidden,
+  because no browser will do it there — that is a rule of the web, not a
+  limitation here.
+- **Subscriptions belong to an address.** A quick tunnel's address changes every
+  session, so the subscription dies with it. Fine for trying it; use a named
+  tunnel to make it stick.
+
+The message deliberately says only *what* happened and *where* — "the agent
+finished in ridebly-client" — never the report. It is encrypted, but it still
+lands on a lock screen, and the detail is one tap away.
+
 ## Known limits
 
-- **No push notifications yet.** You have to open the app to see that an agent is
-  waiting. This is the next thing worth building.
 - **The live terminal isn't streamed.** Finished command output is there; the
   command running right now is not.
 - **Read and approve only.** You cannot dispatch new tasks from the phone. That

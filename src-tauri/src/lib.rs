@@ -9,6 +9,7 @@ mod memory;
 mod mobile;
 mod mods;
 mod ollama;
+mod push;
 mod pty;
 mod service;
 mod tunnel;
@@ -133,6 +134,7 @@ pub fn run() {
         )
         // Shared, thread-safe registries of all open PTY + agent sessions.
         .manage(mobile::MobileServer::default())
+        .manage(push::PushState::default())
         .manage(tunnel::TunnelManager::default())
         .manage(PtyManager::default())
         .manage(AgentManager::default())
@@ -207,6 +209,11 @@ pub fn run() {
             tunnel::tunnel_start,
             tunnel::tunnel_stop,
             tunnel::tunnel_status,
+            push::push_public_key,
+            push::push_subscribe,
+            push::push_unsubscribe,
+            push::push_count,
+            push::push_notify,
             mods::mods_list,
             mods::mods_dir_path,
             write_text_file,

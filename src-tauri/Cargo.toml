@@ -4,7 +4,10 @@ version = "0.1.0"
 description = "OctoShell — a power-user terminal workspace"
 authors = ["OctoShell"]
 edition = "2021"
-rust-version = "1.77"
+# The real floor, not an aspiration: agent-client-protocol is edition 2024 and
+# needs 1.85, so 1.77 was already a lie that only cargo believed — and it silently
+# held dependencies back to older versions to honour it.
+rust-version = "1.85"
 
 # The library is what Tauri's mobile/desktop entrypoints link against.
 [lib]
@@ -31,6 +34,12 @@ axum = { version = "0.8", default-features = false, features = ["http1", "json",
 # token, but this code is reachable through a public tunnel and must be
 # unguessable, not merely unpredictable.
 getrandom = "0.3"
+# Web Push (push.rs). No client feature: the crate builds and ENCRYPTS the message
+# (RFC 8291) and signs the VAPID header, and reqwest — already here — does the
+# sending. Pulling its bundled HTTP stack would mean a second one in the binary.
+web-push-native = "0.5"
+# For http::Uri, which web-push-native takes. Already in the tree via axum/hyper.
+http = "1"
 # Server-side AI calls; rustls avoids a system OpenSSL dependency on Windows.
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream", "blocking"] }
 

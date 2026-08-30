@@ -69,6 +69,7 @@
   <h1>OctoShell</h1>
   <span class="sp"></span>
   <button id="back" style="display:none;padding:6px 12px;min-height:36px">← Back</button>
+  <button id="notify" style="display:none;padding:6px 12px;min-height:36px">🔔 Alerts</button>
   <button id="install" style="display:none;padding:6px 12px;min-height:36px">Install</button>
   <button id="signout" style="display:none;padding:6px 12px;min-height:36px">Sign out</button>
 </header>
@@ -81,6 +82,7 @@
   const backBtn = document.getElementById("back");
   const outBtn = document.getElementById("signout");
   const installBtn = document.getElementById("install");
+  const notifyBtn = document.getElementById("notify");
   const KEY = "octoshell.mobile.token";
 
   let token = null;
@@ -252,6 +254,7 @@
     const authed = !!token;
     backBtn.style.display = authed && view.name === "feed" ? "" : "none";
     if (!authed) installBtn.style.display = "none";
+    void refreshAlertButton();
     outBtn.style.display = authed ? "" : "none";
     if (!authed) return loginScreen(loginError);
     if (view.name === "feed") return feedScreen(view.id, view.name2, null);
@@ -266,6 +269,72 @@
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible" && token && view.name === "projects") projectsScreen();
   });
+
+  // ---------- notifications ----------
+  //
+  // Web Push is the only way to reach a phone while the app is closed without
+  // installing a second app. The message is encrypted end to end: the browser
+  // publishes a key when it subscribes, OctoShell encrypts with it, and the push
+  // service in between can see that something arrived but never what.
+  const b64ToBytes = (s) => {
+    const pad = s.replace(/-/g, "+").replace(/_/g, "/");
+    const bin = atob(pad + "=".repeat((4 - (pad.length % 4)) % 4));
+    return Uint8Array.from(bin, (c) => c.charCodeAt(0));
+  };
+  const bytesToB64 = (buf) =>
+    btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+
+  async function enableAlerts() {
+    notifyBtn.disabled = true;
+    try {
+      if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
+        throw new Error("This browser can't do notifications here. Over plain HTTP on a local address, no browser can — that needs HTTPS.");
+      }
+      const permission = await Notification.requestPermission();
+      if (permission !== "granted") throw new Error("Notifications were not allowed.");
+      const reg = await navigator.serviceWorker.ready;
+      const { key } = await api("/api/push/key");
+      const sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: b64ToBytes(key),
+      });
+      const raw = sub.toJSON ? sub.toJSON() : null;
+      await api("/api/push/subscribe", {
+        method: "POST",
+        body: JSON.stringify({
+          endpoint: sub.endpoint,
+          p256dh: raw?.keys?.p256dh ?? bytesToB64(sub.getKey("p256dh")),
+          auth: raw?.keys?.auth ?? bytesToB64(sub.getKey("auth")),
+        }),
+      });
+      notifyBtn.textContent = "🔔 On";
+      notifyBtn.disabled = true;
+    } catch (e) {
+      notifyBtn.disabled = false;
+      alert(String(e.message || e));
+    }
+  }
+  notifyBtn.onclick = enableAlerts;
+
+  async function refreshAlertButton() {
+    if (!token) { notifyBtn.style.display = "none"; return; }
+    // Hidden where it cannot work — over plain HTTP there is no service worker,
+    // and a button that always errors is worse than no button.
+    const possible = "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+    notifyBtn.style.display = possible ? "" : "none";
+    if (!possible) return;
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      const existing = await reg.pushManager.getSubscription();
+      if (existing && Notification.permission === "granted") {
+        notifyBtn.textContent = "🔔 On";
+        notifyBtn.disabled = true;
+      } else {
+        notifyBtn.textContent = "🔔 Alerts";
+        notifyBtn.disabled = false;
+      }
+    } catch { /* leave it offering */ }
+  }
 
   // ---------- install to the home screen ----------
   //

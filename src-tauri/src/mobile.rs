@@ -379,6 +379,37 @@ async fn icon() -> axum::response::Response {
 const SERVICE_WORKER: &str = r#"self.addEventListener("install", () => self.skipWaiting());
 self.addEventListener("activate", (e) => e.waitUntil(self.clients.claim()));
 self.addEventListener("fetch", () => {});
+
+// The whole reason a phone can be told anything while the app is closed. The
+// payload arrived encrypted and was decrypted by the browser before we see it —
+// the push service never had the key.
+self.addEventListener("push", (event) => {
+  let data = { title: "OctoShell", body: "Something happened." };
+  try { if (event.data) data = event.data.json(); } catch { /* keep the fallback */ }
+  event.waitUntil(
+    self.registration.showNotification(data.title || "OctoShell", {
+      body: data.body || "",
+      icon: "/icon.svg",
+      badge: "/icon.svg",
+      // Collapse repeats: five agents finishing shouldn't be five rows on the
+      // lock screen, and the newest is the one worth reading.
+      tag: "octoshell",
+      renotify: true,
+    }),
+  );
+});
+
+// Tapping the notification should land in the app, reusing the open window if
+// there is one rather than stacking another.
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  event.waitUntil(
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((list) => {
+      for (const c of list) if ("focus" in c) return c.focus();
+      return self.clients.openWindow("/");
+    }),
+  );
+});
 "#;
 
 async fn service_worker() -> axum::response::Response {
@@ -410,6 +441,34 @@ async fn manifest() -> axum::response::Response {
         body.to_string(),
     )
         .into_response()
+}
+
+/// The VAPID public key, so the page can subscribe. Authenticated: it isn't a
+/// secret, but there's no reason to hand it to an unauthenticated caller either.
+async fn push_key(State(server): State<MobileServer>, headers: HeaderMap) -> (StatusCode, Json<Value>) {
+    if !authed(&server, &headers) {
+        return (StatusCode::UNAUTHORIZED, Json(json!({ "error": "unauthorized" })));
+    }
+    match server.ask("pushKey", json!({})).await {
+        Ok(v) => (StatusCode::OK, Json(v)),
+        Err(e) => (StatusCode::BAD_GATEWAY, Json(json!({ "error": e }))),
+    }
+}
+
+/// Register a phone for notifications. Goes through the webview like everything
+/// else, so the subscription lands in the same store the desktop writes.
+async fn push_subscribe(
+    State(server): State<MobileServer>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> (StatusCode, Json<Value>) {
+    if !authed(&server, &headers) {
+        return (StatusCode::UNAUTHORIZED, Json(json!({ "error": "unauthorized" })));
+    }
+    match server.ask("pushSubscribe", body).await {
+        Ok(v) => (StatusCode::OK, Json(v)),
+        Err(e) => (StatusCode::BAD_GATEWAY, Json(json!({ "error": e }))),
+    }
 }
 
 /// Every agent currently blocked on a human decision.
@@ -569,6 +628,8 @@ async fn start_sharing(
         .route("/api/session", get(session_feed))
         .route("/api/approvals", get(approvals))
         .route("/api/approve", post(approve))
+        .route("/api/push/key", get(push_key))
+        .route("/api/push/subscribe", post(push_subscribe))
         .route("/", get(ui))
         .route("/manifest.webmanifest", get(manifest))
         .route("/icon.svg", get(icon))

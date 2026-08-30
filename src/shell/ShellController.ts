@@ -1207,10 +1207,19 @@ export class ShellController {
 
     // Ping the user if they've tabbed away — "fan out & walk away".
     const where = this.displayName || "OctoShell";
-    notify(
-      failed ? `🐙 ${where}: the agent stopped` : `🐙 ${where}: the agent finished`,
-      failed && error ? error : "The turn completed.",
-    );
+    const title = failed ? `🐙 ${where}: the agent stopped` : `🐙 ${where}: the agent finished`;
+    notify(title, failed && error ? error : "The turn completed.");
+    // ...and their phone, if one is subscribed. The desktop notification only
+    // reaches someone at the desk, which is the one place this event is already
+    // visible. Says WHAT happened and WHERE, never the report: the payload is
+    // encrypted, but it still lands on a lock screen, and the detail is one tap
+    // away in the app.
+    void invoke("push_notify", {
+      title,
+      body: failed ? "It stopped early — open OctoShell to see why." : "Open OctoShell to read the report.",
+    }).catch(() => {
+      /* nothing subscribed, or no network — never worth interrupting the turn */
+    });
     playSfx(failed ? "error" : "done");
   }
 

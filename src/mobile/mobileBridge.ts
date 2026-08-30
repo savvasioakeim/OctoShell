@@ -195,6 +195,29 @@ export function startMobileBridge(getProjects: () => BridgeProject[]): () => voi
         return;
       }
 
+      if (e.kind === "pushKey") {
+        void invoke<string>("push_public_key")
+          .then((key) => answer(e.id, { key }))
+          .catch((err) => answer(e.id, { error: String(err) }));
+        return;
+      }
+
+      if (e.kind === "pushSubscribe") {
+        const sub = {
+          endpoint: String(e.params.endpoint ?? ""),
+          p256dh: String(e.params.p256dh ?? ""),
+          auth: String(e.params.auth ?? ""),
+        };
+        if (!sub.endpoint || !sub.p256dh || !sub.auth) {
+          answer(e.id, { error: "incomplete subscription" });
+          return;
+        }
+        void invoke<number>("push_subscribe", { sub })
+          .then((count) => answer(e.id, { ok: true, devices: count }))
+          .catch((err) => answer(e.id, { error: String(err) }));
+        return;
+      }
+
       answer(e.id, { error: `unknown request "${e.kind}"` });
     } catch (err) {
       // Always answer. An unanswered question ties up a phone request until the
