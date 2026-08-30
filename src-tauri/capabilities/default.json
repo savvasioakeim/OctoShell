@@ -1,8 +1,10 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Core permissions for the main OctoShell window.",
-  "windows": ["main"],
+  "description": "Core permissions for the main OctoShell window. Keep allow-destroy: Tauri's onCloseRequested wrapper closes a window by calling destroy(), so the moment anything registers that listener here, a missing allow-destroy makes the window silently refuse to close. It cost hours to find once already.",
+  "windows": [
+    "main"
+  ],
   "permissions": [
     "core:default",
     "dialog:default",
@@ -15,6 +17,7 @@
     "core:window:allow-unmaximize",
     "core:window:allow-toggle-maximize",
     "core:window:allow-close",
+    "core:window:allow-destroy",
     "core:window:allow-start-dragging",
     "core:window:allow-is-maximized",
     "core:window:allow-set-focus",

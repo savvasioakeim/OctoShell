@@ -15,12 +15,6 @@ import { ReviewAgentController, buildReviewPrompt, fetchReviewOverview } from ".
 
 /** Keep at most this many historical blocks per session in storage. */
 const MAX_PERSISTED_BLOCKS = 80;
-/** Prefix marking a block as a compaction summary, so a later compaction can
- *  recognise its own output and carry it forward instead of re-summarising it. */
-const COMPACT_MARK = "🗜 Compacted history · ";
-/** Don't bother compacting unless this many blocks would actually be folded —
- *  a summary of three blocks is longer than the three blocks. */
-const COMPACT_MIN_FOLD = 10;
 
 /** The CLI's native task-tracker tools (this build's replacement for TodoWrite).
  *  Their calls drive the trace progress bar and are hidden from the feed. */
@@ -549,14 +543,6 @@ export class ShellController {
     this.saveTimer = setTimeout(() => this.persist(), 400);
   }
 
-  /** Persist and WAIT for the write. `persist()` fires the SQL write and forgets
-   *  it, which is right for the 400 ms autosave but wrong at exit: the webview is
-   *  torn down the moment the close handler returns, and an unawaited write dies
-   *  with it — losing exactly the compaction we just made. */
-  async flush(): Promise<void> {
-    await saveBlocksDb(this.sessionId, JSON.stringify(this.settledBlocks()), Date.now());
-  }
-
   /** History safe to store: nothing still in flight, capped to the newest N. */
   private settledBlocks(): Block[] {
     return this.blocks
@@ -675,68 +661,6 @@ export class ShellController {
     removeKey(KEY.provider(this.sessionId));
     removeKey(KEY.agentCfgDir(this.sessionId));
     removeKey(KEY.approval(this.sessionId));
-  }
-
-  /** Fold this session's older history into ONE summary block, keeping the most
-   *  recent blocks verbatim. Called on exit when workspace.compactOnExit is on.
-   *
-   *  Without it the persist cap (MAX_PERSISTED_BLOCKS) simply DROPS everything
-   *  past the newest 80 blocks — so after a restart the orchestrator's digest is
-   *  built from a history with a silent hole in it, and an agent picking up work
-   *  on a base branch has no idea what happened there last time. Compaction is
-   *  deliberately deterministic and local (no model call): exit must be instant,
-   *  and a summary that costs money and latency to close the app is a summary
-   *  nobody keeps switched on.
-   *
-   *  Returns true if anything was folded. */
-  compactHistory(keep = 30): boolean {
-    if (this.busy || this.agentBusy) return false; // mid-turn history isn't settled
-    if (this.blocks.length <= keep + COMPACT_MIN_FOLD) return false;
-    const fold = this.blocks.slice(0, this.blocks.length - keep);
-    // Don't fold a previous summary's content again — carry it forward whole, so
-    // repeated sessions build a chain of summaries instead of a summary of
-    // summaries that erodes a little more each time.
-    const carried = fold
-      .filter((b) => b.kind === "agentText" && b.role === "assistant" && b.text.startsWith(COMPACT_MARK))
-      .map((b) => (b as AgentTextBlock).text.slice(COMPACT_MARK.length).trim());
-
-    const cmds: string[] = [];
-    const reports: string[] = [];
-    const prompts: string[] = [];
-    for (const b of fold) {
-      if (b.kind === "command" && b.command.trim()) {
-        cmds.push(`${b.status === "error" ? "✗" : "$"} ${b.command.trim()}`);
-      } else if (b.kind === "agentText" && !b.text.startsWith(COMPACT_MARK)) {
-        const t = b.text.trim().replace(/\s+/g, " ").slice(0, 400);
-        if (!t) continue;
-        (b.role === "user" ? prompts : reports).push(t);
-      }
-    }
-    const span = `${new Date(fold[0].startedAt).toISOString().slice(0, 16).replace("T", " ")} → ${new Date(fold[fold.length - 1].startedAt).toISOString().slice(0, 16).replace("T", " ")}`;
-    // Newest first within each list: if the whole summary later gets truncated by
-    // a context cap, the part that survives should be the part that matters most.
-    const section = (title: string, xs: string[], n: number) =>
-      xs.length ? `\n\n${title} (${xs.length}):\n${xs.slice(-n).reverse().join("\n")}` : "";
-    const text =
-      `${COMPACT_MARK}${fold.length} earlier blocks · ${span}` +
-      (carried.length ? `\n\n— carried from previous compactions —\n${carried.join("\n\n")}` : "") +
-      section("tasks asked for", prompts, 8) +
-      section("agent said", reports, 8) +
-      section("commands run", cmds, 20);
-
-    this.blocks = [
-      {
-        id: crypto.randomUUID(),
-        kind: "agentText",
-        role: "assistant",
-        text,
-        startedAt: fold[fold.length - 1].startedAt,
-      },
-      ...this.blocks.slice(this.blocks.length - keep),
-    ];
-    this.persist();
-    this.emit();
-    return true;
   }
 
   /** Start the agent's next turn from an EMPTY context window.

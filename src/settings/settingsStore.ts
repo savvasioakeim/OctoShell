@@ -54,9 +54,6 @@ export interface WorkspaceSettings {
   trackedPorts: number[];
   /** Which native shell the terminal launches. */
   defaultShell: DefaultShell;
-  /** On exit, fold each session's older history into a summary block instead of
-   *  letting the persist cap silently drop it. */
-  compactOnExit: boolean;
 }
 export interface AppearanceSettings {
   /** Monospace font family for the terminal/feed ("" = theme default). */
@@ -149,7 +146,6 @@ const DEFAULT_WORKSPACE: WorkspaceSettings = {
   copyDeps: true,
   trackedPorts: [3000, 5173, 1420, 8080, 4000],
   defaultShell: "powershell",
-  compactOnExit: true,
 };
 const DEFAULT_APPEARANCE: AppearanceSettings = {
   fontFamily: "",

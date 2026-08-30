@@ -1045,12 +1045,6 @@ function WorkspaceTab() {
             checked={workspace.copyDeps}
             onChange={(v) => set({ copyDeps: v })}
           />
-          <ToggleRow
-            label="Compact history on exit"
-            desc="On close, folds each project's older history into one summary (tasks asked for, what the agent said, commands run) instead of letting it be dropped. Without it, everything past the newest 80 entries is silently lost on restart — so an agent resuming on a base branch can't see what happened there last time."
-            checked={workspace.compactOnExit}
-            onChange={(v) => set({ compactOnExit: v })}
-          />
           <TrackedPortsField ports={workspace.trackedPorts} onChange={(v) => set({ trackedPorts: v })} />
           <Field label="Auto-clean — when a worktree is deleted">
             <Select

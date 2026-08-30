@@ -15,7 +15,6 @@ import { Titlebar } from "./chrome/Titlebar";
 import { serviceStore } from "./services/serviceStore";
 import { SettingsPage } from "./settings/SettingsPage";
 import { StrategyPanel } from "./strategy/StrategyPanel";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { settingsStore, useSettings } from "./settings/settingsStore";
 import { KEY, loadJSON, saveJSON } from "./util/persist";
 import { OnboardingOverlay } from "./onboarding/OnboardingOverlay";
@@ -71,11 +70,6 @@ interface GroupsState {
 export const GROUP_COLORS = ["#82AAFF", "#C792EA", "#4ade80", "#f78c6c", "#f07178", "#7fdbca", "#ffcb6b", "#ff5370"];
 
 // One-shot probe: "<branch>|<git diff --shortstat HEAD>". Empty branch ⇒ not a repo.
-/** How long exit-time compaction may take before the window closes anyway.
- *  Generous enough for a dozen sessions writing to SQLite, short enough that a
- *  stuck write reads as a brief pause rather than a frozen app. */
-const COMPACT_EXIT_MS = 4000;
-
 const GIT_PROBE =
   "\"$(git rev-parse --abbrev-ref HEAD 2>$null)|$(git diff --shortstat HEAD 2>$null)\"";
 
@@ -716,47 +710,6 @@ export function App({ initial }: { initial: ShellController }) {
     serviceStore.init();
   }, []);
 
-  // Compact each session's history on the way out (Settings → Workspace). The
-  // persist cap otherwise DROPS everything past the newest 80 blocks, so the next
-  // launch reads a history with a silent hole in it — which is how an agent
-  // resuming on a base branch ends up with confidently incomplete knowledge.
-  // Intercepting close means the writes are awaited; without that the webview is
-  // gone before SQLite hears about them. Any failure still lets the window close:
-  // never trap the user in the app over a bookkeeping step. That promise needs a
-  // TIMEOUT, not just a catch — a write that never settles isn't an error, and
-  // since we already called preventDefault() the window would simply refuse to
-  // close, forever. It's a live risk: the dev build and the installed app share
-  // one octoshell.db, so a concurrent write can sit on a SQLite lock.
-  useEffect(() => {
-    const win = getCurrentWindow();
-    let unlisten: (() => void) | undefined;
-    let closing = false;
-    void win.onCloseRequested(async (e) => {
-      if (closing) return; // our own win.close() below re-enters this handler
-      if (!settingsStore.getSnapshot().workspace.compactOnExit) return;
-      closing = true;
-      e.preventDefault();
-      const work = Promise.all(
-        tabsRef.current.map(async (t) => {
-          if (t.controller.compactHistory()) await t.controller.flush();
-        }),
-      );
-      try {
-        await Promise.race([
-          work,
-          new Promise((_, rej) => setTimeout(() => rej(new Error("timed out")), COMPACT_EXIT_MS)),
-        ]);
-      } catch (err) {
-        // Losing a compaction costs one session's older detail; refusing to close
-        // costs the user their app. Log and go.
-        console.warn("compact on exit skipped:", err);
-      }
-      void win.close();
-    }).then((fn) => {
-      unlisten = fn;
-    });
-    return () => unlisten?.();
-  }, []);
 
   return (
     <div className="flex h-full flex-col">
