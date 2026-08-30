@@ -6,6 +6,7 @@ mod docker;
 mod embed;
 mod jobctl;
 mod memory;
+mod mobile;
 mod mods;
 mod ollama;
 mod pty;
@@ -130,6 +131,7 @@ pub fn run() {
                 .build(),
         )
         // Shared, thread-safe registries of all open PTY + agent sessions.
+        .manage(mobile::MobileServer::default())
         .manage(PtyManager::default())
         .manage(AgentManager::default())
         .manage(AiManager::default())
@@ -196,6 +198,9 @@ pub fn run() {
             memory::memory_index_clear,
             memory::memory_stats,
             memory::memory_search,
+            mobile::mobile_start,
+            mobile::mobile_stop,
+            mobile::mobile_status,
             mods::mods_list,
             mods::mods_dir_path,
             write_text_file,
