@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { Mode, ShellController } from "../shell/ShellController";
 import { kindLabel, longestCommonPrefix, requestCompletion, type CMatch } from "../shell/completion";
-import { PROVIDERS, supportsProfile, isAcp, type AgentProvider } from "../agents/providers";
+import { PROVIDERS, modelsFor, supportsProfile, isAcp, type AgentProvider } from "../agents/providers";
 import { useOllamaModels, ollamaModelOptions } from "../agents/ollamaModels";
 import { isServerCommand } from "../projects/stacks";
 import { serviceStore } from "../services/serviceStore";
@@ -66,54 +66,6 @@ function fmtTokens(n: number): string {
   return String(n);
 }
 
-// Models offered per provider (`value` → the CLI's `--model`/`-m`). Curated:
-// neither CLI exposes a headless "list models" command, so an unavailable name
-// just errors visibly on that turn. Gemini names are the ones this build reports.
-const MODELS_BY_PROVIDER: Record<AgentProvider, { label: string; value: string | null }[]> = {
-  claude: [
-    { label: "Default", value: null },
-    { label: "Fable", value: "fable" },
-    { label: "Opus", value: "opus" },
-    { label: "Sonnet", value: "sonnet" },
-    { label: "Haiku", value: "haiku" },
-  ],
-  gemini: [
-    { label: "Default (auto)", value: null },
-    { label: "3 Pro", value: "gemini-3.1-pro-preview" },
-    { label: "3 Flash", value: "gemini-3-flash-preview" },
-    { label: "3 Flash Lite", value: "gemini-3.1-flash-lite" },
-  ],
-  // ACP (Claude adapter): model set via ANTHROPIC_MODEL — same aliases as the
-  // native Claude provider.
-  "acp-claude": [
-    { label: "Agent default", value: null },
-    { label: "Fable", value: "fable" },
-    { label: "Opus", value: "opus" },
-    { label: "Sonnet", value: "sonnet" },
-    { label: "Haiku", value: "haiku" },
-  ],
-  // ACP (Gemini native): model set via the CLI's -m flag.
-  "acp-gemini": [
-    { label: "Agent default", value: null },
-    { label: "3 Pro", value: "gemini-3.1-pro-preview" },
-    { label: "3 Flash", value: "gemini-3-flash-preview" },
-  ],
-  // ACP agents whose per-agent model selection isn't wired yet → agent default.
-  "acp-codex": [{ label: "Agent default", value: null }],
-  "acp-opencode": [{ label: "Agent default", value: null }],
-  "acp-cursor": [{ label: "Agent default", value: null }],
-  "acp-copilot": [{ label: "Agent default", value: null }],
-  "acp-kiro": [{ label: "Agent default", value: null }],
-  // Local models via Ollama (OpenCode ACP): values carry the `ollama/` prefix
-  // OpenCode expects. Qwen2.5-Coder is best at agentic tool-use; Gemma is lighter.
-  "acp-ollama": [
-    { label: "Agent default", value: null },
-    { label: "Qwen2.5 Coder 14B", value: "ollama/qwen2.5-coder:14b" },
-    { label: "Qwen2.5 Coder 7B", value: "ollama/qwen2.5-coder:7b" },
-    { label: "Qwen2.5 Coder 3B", value: "ollama/qwen2.5-coder:3b" },
-    { label: "Gemma 3 4B", value: "ollama/gemma3:4b" },
-  ],
-};
 
 interface MenuState {
   items: CMatch[];
@@ -257,7 +209,7 @@ export function InputBar({ controller, cwd, busy, value, altScreen, interacting,
   const models =
     agentProvider === "acp-ollama"
       ? ollamaModelOptions(ollama.models)
-      : MODELS_BY_PROVIDER[agentProvider] ?? MODELS_BY_PROVIDER.claude;
+      : modelsFor(agentProvider);
   const modelLabel = models.find((m) => m.value === agentModel)?.label ?? "Default";
 
   // Keep focus in the input as state changes — except while the keyboard belongs

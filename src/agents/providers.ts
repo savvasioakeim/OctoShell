@@ -237,9 +237,18 @@ export function supportsProfile(provider: AgentProvider): boolean {
   return configDirEnvFor(provider) !== null;
 }
 
-/** The model list for a provider. */
+/** The model list for a provider.
+ *
+ *  ACP entries get their "no explicit model" option relabelled to "Agent
+ *  default", because that is the truth: the adapter picks, not us. The rule lives
+ *  here rather than in duplicated per-provider lists — which is how the InputBar's
+ *  copy of these lists drifted from this one (different labels, and one model
+ *  missing for acp-gemini) before they were merged. */
 export function modelsFor(provider: AgentProvider): ModelOption[] {
-  return PROVIDER_DEFS[provider]?.models ?? DEFAULT_ONLY;
+  const def = PROVIDER_DEFS[provider];
+  const models = def?.models ?? DEFAULT_ONLY;
+  if (def?.transport !== "acp") return models;
+  return models.map((m) => (m.value === null ? { ...m, label: "Agent default" } : m));
 }
 
 export function acpCommandFor(
