@@ -1,0 +1,26 @@
+{
+  "id": "example-elixir-stack",
+  "name": "Elixir / Phoenix",
+  "version": "1.0.0",
+  "author": "OctoShell",
+  "description": "Example mod: teaches OctoShell about mix projects and the Phoenix dev server.",
+  "octoshell": "^0.1",
+  "permissions": [
+    "stacks"
+  ],
+  "contributes": {
+    "stacks": [
+      {
+        "id": "elixir",
+        "label": "Elixir",
+        "markers": [
+          "mix.exs"
+        ],
+        "test": "mix test",
+        "serverPatterns": [
+          "\\bmix\\s+phx\\.server\\b"
+        ]
+      }
+    ]
+  }
+}

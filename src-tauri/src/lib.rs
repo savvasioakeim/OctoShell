@@ -6,6 +6,7 @@ mod docker;
 mod embed;
 mod jobctl;
 mod memory;
+mod mods;
 mod ollama;
 mod pty;
 mod service;
@@ -195,6 +196,8 @@ pub fn run() {
             memory::memory_index_clear,
             memory::memory_stats,
             memory::memory_search,
+            mods::mods_list,
+            mods::mods_dir_path,
             write_text_file,
             save_dropped_file,
         ])

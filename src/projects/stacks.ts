@@ -91,22 +91,36 @@ export const STACKS: StackDef[] = [
  *  of a stack. */
 const GENERIC_SERVER_PATTERNS: RegExp[] = [/\b(http-server|serve)\b/i];
 
-const ALL_SERVER_PATTERNS: RegExp[] = [
-  ...STACKS.flatMap((s) => s.serverPatterns ?? []),
-  ...GENERIC_SERVER_PATTERNS,
-];
+/** Built-ins plus whatever enabled mods contribute. Mods come AFTER, so a mod can
+ *  add a stack but never shadow a built-in one for the same marker — the built-in
+ *  match still wins. Resolved on each call rather than cached: mods can be toggled
+ *  at runtime, and these lists are tiny. */
+export function allStacks(): StackDef[] {
+  return [...STACKS, ...modStacks()];
+}
+
+/** Injected by the mods layer at startup. A function, not an import, so this
+ *  module stays dependency-free and testable — and so mods are strictly additive
+ *  to a table that works with none installed. */
+let modStacks: () => StackDef[] = () => [];
+
+/** Called once by the mods store; see modStore.start(). */
+export function setModStackSource(fn: () => StackDef[]): void {
+  modStacks = fn;
+}
 
 /** True if `command` looks like a long-running server worth managing.
  *  Powers only the automatic suggestion — the user can always force either way. */
 export function isServerCommand(command: string): boolean {
   const c = command.trim();
   if (!c) return false;
-  return ALL_SERVER_PATTERNS.some((re) => re.test(c));
+  const patterns = [...allStacks().flatMap((s) => s.serverPatterns ?? []), ...GENERIC_SERVER_PATTERNS];
+  return patterns.some((re) => re.test(c));
 }
 
 /** Every marker file any stack cares about, de-duplicated. */
 export function allMarkers(): string[] {
-  return [...new Set(STACKS.flatMap((s) => s.markers))];
+  return [...new Set(allStacks().flatMap((s) => s.markers))];
 }
 
 /** A PowerShell one-liner that reports which marker files exist in the cwd and,
@@ -149,7 +163,7 @@ export function parseProbe(out: string): ProbeResult {
  *  be several at once — a Tauri app is Node at the root and Rust underneath. */
 export function matchingStacks(probe: ProbeResult): StackDef[] {
   const present = new Set(probe.markers);
-  return STACKS.filter((s) => s.markers.some((m) => present.has(m)));
+  return allStacks().filter((s) => s.markers.some((m) => present.has(m)));
 }
 
 /** The first stack whose markers are present, or undefined. */
@@ -176,7 +190,8 @@ export function testCommandFor(probe: ProbeResult): { command: string; stack: St
 /** Human-readable list of the stacks we can find a test command for — used in
  *  the "nothing found" message so it names what was actually looked for. */
 export function testableStackLabels(): string {
-  return STACKS.filter((s) => s.test)
+  return allStacks()
+    .filter((s) => s.test)
     .map((s) => s.label)
     .join(" / ");
 }

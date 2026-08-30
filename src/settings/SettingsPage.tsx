@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { modStore, useMods } from "../mods/modStore";
+import { PERMISSION_LABELS } from "../mods/modTypes";
 import { exportWorkspace, importWorkspace, peekWorkspace, type Snapshot } from "../util/workspaceTransfer";
 import {
   modelsFor,
@@ -1213,6 +1215,8 @@ function SystemTab({ onSandboxLogin, onShowOnboarding }: { onSandboxLogin: () =>
         </div>
       </Section>
 
+      <ModsSection />
+
       <WorkspaceTransferSection />
 
       <Section
@@ -1475,6 +1479,120 @@ function WorkspaceTransferSection() {
       </div>
       {msg && <p className="mt-2 text-xs text-emerald-300">{msg}</p>}
       {err && <p className="mt-2 text-xs text-red-300">{err}</p>}
+    </Section>
+  );
+}
+
+/** Installed mods: what's on disk, what it contributes, and what's wrong with it.
+ *  Broken mods are listed WITH their errors rather than hidden — a mod that
+ *  silently fails to appear is the worst outcome for someone who just installed
+ *  one and is looking for it. */
+function ModsSection() {
+  const { mods, dir, loading, error } = useMods();
+  const [, force] = useState(0);
+
+  const ok = mods.filter((m) => m.manifest && !m.errors.length);
+  const broken = mods.filter((m) => m.errors.length);
+
+  return (
+    <Section
+      title="Mods"
+      desc="Add agents, project types and MCP servers by dropping a folder into the mods directory. A mod is data only — nothing in it is ever executed, and it can only contribute what its manifest declares."
+    >
+      <div className="flex flex-wrap items-center gap-3">
+        <button
+          onClick={() => void modStore.refresh()}
+          disabled={loading}
+          className="btn-grad rounded px-3 py-1.5 text-sm font-medium disabled:opacity-60"
+        >
+          {loading ? "Scanning…" : "Reload mods"}
+        </button>
+        <button
+          onClick={() => void navigator.clipboard?.writeText(dir)}
+          disabled={!dir}
+          title={dir}
+          className="rounded border border-edge px-3 py-1.5 text-sm text-gray-200 hover:bg-edge disabled:opacity-40"
+        >
+          Copy folder path
+        </button>
+        <span className="text-xs text-muted">
+          {mods.length === 0
+            ? "No mods installed."
+            : `${ok.length} loaded${broken.length ? ` · ${broken.length} with errors` : ""}`}
+        </span>
+      </div>
+
+      {error && <p className="mt-2 text-xs text-red-300">{error}</p>}
+
+      {mods.length > 0 && (
+        <div className="mt-3 space-y-2">
+          {mods.map((m) => {
+            const enabled = m.manifest ? modStore.isEnabled(m.manifest.id) : false;
+            const bad = m.errors.length > 0;
+            return (
+              <div
+                key={m.dir}
+                className={`rounded-md border px-3 py-2 ${bad ? "border-red-500/40 bg-red-500/[0.06]" : "border-edge bg-card"}`}
+              >
+                <div className="flex items-center gap-2">
+                  <span className="min-w-0 flex-1 truncate text-sm text-gray-200">
+                    {m.manifest?.name ?? m.dir}
+                    {m.manifest && (
+                      <span className="text-muted"> · v{m.manifest.version}</span>
+                    )}
+                    {m.manifest?.author && <span className="text-muted"> · {m.manifest.author}</span>}
+                  </span>
+                  {!bad && m.manifest && (
+                    <button
+                      onClick={() => {
+                        modStore.setEnabled(m.manifest!.id, !enabled);
+                        force((n) => n + 1);
+                      }}
+                      className={`shrink-0 rounded border px-2 py-0.5 text-[11px] ${
+                        enabled
+                          ? "border-emerald-400/50 bg-emerald-500/15 text-emerald-300"
+                          : "border-edge text-muted hover:bg-edge"
+                      }`}
+                    >
+                      {enabled ? "Enabled" : "Disabled"}
+                    </button>
+                  )}
+                </div>
+
+                {m.manifest?.description && (
+                  <p className="mt-1 text-xs text-muted">{m.manifest.description}</p>
+                )}
+
+                {/* The permission list is the whole truth: validation rejects any
+                    contribution whose permission isn't declared here. */}
+                {m.manifest && m.manifest.permissions.length > 0 && (
+                  <ul className="mt-1.5 space-y-0.5">
+                    {m.manifest.permissions.map((p) => (
+                      <li key={p} className="text-[11px] text-amber-300/90">
+                        • {PERMISSION_LABELS[p]}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+
+                {bad && (
+                  <ul className="mt-1 space-y-0.5">
+                    {m.errors.map((e, i) => (
+                      <li key={i} className="text-[11px] text-red-300">
+                        ✕ {e}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+
+                <p className="mt-1 truncate font-mono text-[10px] text-muted/70" title={m.path}>
+                  {m.dir}
+                </p>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </Section>
   );
 }

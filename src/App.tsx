@@ -15,6 +15,7 @@ import { Titlebar } from "./chrome/Titlebar";
 import { serviceStore } from "./services/serviceStore";
 import { SettingsPage } from "./settings/SettingsPage";
 import { StrategyPanel } from "./strategy/StrategyPanel";
+import { modStore } from "./mods/modStore";
 import { settingsStore, useSettings } from "./settings/settingsStore";
 import { KEY, loadJSON, saveJSON } from "./util/persist";
 import { OnboardingOverlay } from "./onboarding/OnboardingOverlay";
@@ -708,6 +709,7 @@ export function App({ initial }: { initial: ShellController }) {
   // any server OctoShell starts (from the shell offer or, later, QA mode).
   useEffect(() => {
     serviceStore.init();
+    modStore.start();
   }, []);
 
 
