@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { EXPIRY_CHOICES, fmtCountdown, mobileStore, useMobile } from "../mobile/mobileStore";
 import { modStore, useMods } from "../mods/modStore";
 import { PERMISSION_LABELS } from "../mods/modTypes";
 import { exportWorkspace, importWorkspace, peekWorkspace, type Snapshot } from "../util/workspaceTransfer";
@@ -1251,6 +1252,8 @@ function SystemTab({ onSandboxLogin, onShowOnboarding }: { onSandboxLogin: () =>
         </div>
       </Section>
 
+      <MobileSharingSection />
+
       <ModsSection />
 
       <WorkspaceTransferSection />
@@ -1629,6 +1632,94 @@ function ModsSection() {
           })}
         </div>
       )}
+    </Section>
+  );
+}
+
+/** Start and stop the phone companion, and show the access code.
+ *
+ *  The code is rendered large and monospaced because its whole job is to be read
+ *  off this screen and typed on another; the countdown is there because a share
+ *  you forgot about is the failure mode this feature has. */
+function MobileSharingSection() {
+  const m = useMobile();
+  const [minutes, setMinutes] = useState(EXPIRY_CHOICES[0].minutes);
+
+  useEffect(() => {
+    // Recovers a share that survived a window reload.
+    void mobileStore.refresh();
+  }, []);
+
+  return (
+    <Section
+      title="Phone companion"
+      desc="Share this workspace with your phone: see what the agents are doing from anywhere. The server only exists while sharing is on — stopping it removes the socket, not just the permission."
+    >
+      {!m.sharing ? (
+        <div className="flex flex-wrap items-center gap-3">
+          <Select
+            value={String(minutes)}
+            onChange={(v) => setMinutes(Number(v))}
+            options={EXPIRY_CHOICES.map((c) => ({ label: c.label, value: String(c.minutes) }))}
+          />
+          <button
+            onClick={() => void mobileStore.start(minutes)}
+            disabled={m.busy}
+            className="btn-grad rounded px-3 py-1.5 text-sm font-medium disabled:opacity-60"
+          >
+            {m.busy ? "Starting…" : "Start sharing"}
+          </button>
+          <span className="text-xs text-muted">
+            Nothing is reachable until you start, and it stops by itself when the time is up.
+          </span>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-center gap-4 rounded-md border border-accent/40 bg-accent/[0.06] px-3 py-3">
+            <div>
+              <p className="text-[10px] uppercase tracking-widest text-muted">Access code</p>
+              <p className="select-all font-mono text-3xl font-semibold tracking-[0.2em] text-gray-100">
+                {m.code}
+              </p>
+            </div>
+            <div className="ml-auto text-right">
+              <p className="text-[10px] uppercase tracking-widest text-muted">Stops in</p>
+              <p className="font-mono text-xl text-gray-200">
+                {m.secondsLeft === null ? "—" : fmtCountdown(m.secondsLeft)}
+              </p>
+            </div>
+          </div>
+
+          {m.locked && (
+            <p className="text-xs text-amber-300">
+              Too many wrong codes — the door is shut for a while. Stop and start again to reset it
+              with a fresh code.
+            </p>
+          )}
+
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              onClick={() => void mobileStore.stop()}
+              disabled={m.busy}
+              className="rounded border border-red-500/50 px-3 py-1.5 text-sm text-red-300 hover:bg-red-500/10 disabled:opacity-60"
+            >
+              Stop sharing
+            </button>
+            <span className="font-mono text-xs text-muted">
+              http://127.0.0.1:{m.port}
+            </span>
+          </div>
+
+          {/* Honest about the current limit rather than implying it works from
+              outside the machine already. */}
+          <p className="text-xs text-muted">
+            The server is listening on this machine only. Reaching it from your phone needs the
+            tunnel, which isn't wired up yet — until then this is testable from a browser here.
+          </p>
+        </div>
+      )}
+
+      {m.error && <p className="mt-2 text-xs text-red-300">{m.error}</p>}
     </Section>
   );
 }
