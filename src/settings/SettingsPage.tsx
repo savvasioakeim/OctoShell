@@ -1741,6 +1741,15 @@ function MobileSharingSection() {
         )}
       </div>
 
+      <div className="mb-3">
+        <ToggleRow
+          label="Also allow phones on this WiFi"
+          desc="Listens on the local network as well, so a phone on the same WiFi can connect with no tunnel and nothing in between — which also means Cloudflare never sees your agents' output. It does widen access from this machine to everyone on the network, and it is plain HTTP, so the app can't be installed to a home screen over it."
+          checked={mobileCfg.lan}
+          onChange={(v) => settingsStore.setMobile({ lan: v })}
+        />
+      </div>
+
       {!m.sharing ? (
         <div className="flex flex-wrap items-center gap-3">
           <Select
@@ -1791,10 +1800,33 @@ function MobileSharingSection() {
             >
               Stop sharing
             </button>
-            <span className="font-mono text-xs text-muted">
-              http://127.0.0.1:{m.port}
-            </span>
+            <span className="font-mono text-xs text-muted">http://127.0.0.1:{m.port}</span>
           </div>
+
+          {m.lan && (
+            <div className="rounded-md border border-edge bg-card px-3 py-2">
+              <p className="text-[10px] uppercase tracking-widest text-muted">On this WiFi</p>
+              {m.lanAddress ? (
+                <>
+                  <button
+                    onClick={() => void navigator.clipboard?.writeText(`http://${m.lanAddress}:${m.port}`)}
+                    className="block w-full truncate text-left font-mono text-sm text-sky-300 hover:text-sky-200"
+                    title="Copy"
+                  >
+                    http://{m.lanAddress}:{m.port} ⧉
+                  </button>
+                  <TunnelQr url={`http://${m.lanAddress}:${m.port}`} />
+                  <p className="mt-1 text-xs text-muted">
+                    Nothing in between, so no one outside your network sees this. Windows may ask
+                    to allow OctoShell on private networks the first time — say yes, or the phone
+                    just times out.
+                  </p>
+                </>
+              ) : (
+                <p className="text-xs text-muted">No local network address found.</p>
+              )}
+            </div>
+          )}
 
           <div className="rounded-md border border-edge bg-card px-3 py-2">
             {m.tunnelUrl ? (

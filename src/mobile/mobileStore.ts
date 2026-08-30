@@ -18,6 +18,10 @@ export interface MobileState {
   secondsLeft: number | null;
   /** True while the backend is refusing codes after too many wrong attempts. */
   locked: boolean;
+  /** Reachable from the local network, not just this machine. */
+  lan: boolean;
+  /** This machine's LAN address, for a URL a phone on the same WiFi can open. */
+  lanAddress: string | null;
   busy: boolean;
   error: string | null;
   /** Public URL from cloudflared, or null when only local. */
@@ -40,6 +44,8 @@ interface WireStatus {
   expires_at: number | null;
   seconds_left: number | null;
   locked: boolean;
+  lan: boolean;
+  lan_address: string | null;
 }
 
 const EMPTY: MobileState = {
@@ -49,6 +55,8 @@ const EMPTY: MobileState = {
   expiresAt: null,
   secondsLeft: null,
   locked: false,
+  lan: false,
+  lanAddress: null,
   busy: false,
   error: null,
   tunnelUrl: null,
@@ -93,6 +101,8 @@ class MobileStore {
       expiresAt: w.expires_at,
       secondsLeft: w.seconds_left,
       locked: w.locked,
+      lan: w.lan,
+      lanAddress: w.lan_address,
       busy: false,
       error: null,
     });
@@ -180,7 +190,7 @@ class MobileStore {
       // A named tunnel's ingress points at a fixed port, so the companion has to
       // bind there rather than wherever the OS felt like.
       const port = cfg.mode === "named" ? cfg.port : null;
-      this.apply(await invoke<WireStatus>("mobile_start", { minutes, port }));
+      this.apply(await invoke<WireStatus>("mobile_start", { minutes, port, lan: cfg.lan }));
     } catch (e) {
       this.set({ busy: false, error: String(e) });
     }

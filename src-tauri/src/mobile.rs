@@ -53,6 +53,20 @@ const CODE_LEN: usize = 8;
 /// and a code you can misread is a support question waiting to happen.
 const ALPHABET: &[u8] = b"23456789ABCDEFGHJKMNPQRSTUVWXYZ";
 
+/// This machine's address on the local network, or None when it has no useful
+/// one. Found by asking the OS which interface it would use to reach the outside
+/// world — a UDP socket that never sends a packet, so there is no traffic and no
+/// dependency on that address being reachable.
+fn lan_address() -> Option<String> {
+    let sock = std::net::UdpSocket::bind(("0.0.0.0", 0)).ok()?;
+    sock.connect(("8.8.8.8", 80)).ok()?;
+    let addr = sock.local_addr().ok()?.ip();
+    if addr.is_loopback() || addr.is_unspecified() {
+        return None;
+    }
+    Some(addr.to_string())
+}
+
 fn now_secs() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
@@ -108,6 +122,8 @@ struct Session {
     /// Unix seconds after which nothing is served and the listener is dropped.
     expires_at: u64,
     port: u16,
+    /// True when bound to 0.0.0.0 rather than loopback.
+    lan: bool,
     failures: u32,
     /// Unix seconds until which authentication is refused outright.
     locked_until: u64,
@@ -216,6 +232,10 @@ pub struct MobileStatus {
     /// Seconds remaining, so the UI needn't do clock arithmetic.
     pub seconds_left: Option<u64>,
     pub locked: bool,
+    /// Reachable from the local network, not just this machine.
+    pub lan: bool,
+    /// This machine's LAN address, so the UI can show a URL a phone can open.
+    pub lan_address: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -457,6 +477,8 @@ impl MobileServer {
                 expires_at: Some(s.expires_at),
                 seconds_left: Some(s.expires_at.saturating_sub(now_secs())),
                 locked: now_secs() < s.locked_until,
+                lan: s.lan,
+                lan_address: if s.lan { lan_address() } else { None },
             },
             _ => MobileStatus {
                 sharing: false,
@@ -465,6 +487,8 @@ impl MobileServer {
                 expires_at: None,
                 seconds_left: None,
                 locked: false,
+                lan: false,
+                lan_address: None,
             },
         }
     }
@@ -483,22 +507,34 @@ pub async fn mobile_start(
     app: AppHandle,
     minutes: u64,
     port: Option<u16>,
+    lan: Option<bool>,
 ) -> Result<MobileStatus, String> {
     let s = server.inner().clone();
     *s.emit.lock().unwrap() = Some(Arc::new(move |e: AskEvent| {
         app.emit("mobile://request", e).is_ok()
     }));
-    start_sharing(&s, minutes, port).await
+    start_sharing(&s, minutes, port, lan.unwrap_or(false)).await
 }
 
 /// The whole of starting, minus Tauri — so the door can be tested by knocking on
 /// it, rather than by reading the code and hoping.
-async fn start_sharing(server: &MobileServer, minutes: u64, port: Option<u16>) -> Result<MobileStatus, String> {
+async fn start_sharing(
+    server: &MobileServer,
+    minutes: u64,
+    port: Option<u16>,
+    lan: bool,
+) -> Result<MobileStatus, String> {
     let minutes = minutes.clamp(1, 24 * 60);
     // Bind before publishing any state, so a failure leaves sharing off rather
     // than advertising a code nobody can reach.
     let want = port.unwrap_or(0);
-    let listener = TcpListener::bind(("127.0.0.1", want)).await.map_err(|e| {
+    // Loopback by default: the server is then unreachable from the network even
+    // if the firewall is wide open, and the tunnel is the only way in. Binding
+    // 0.0.0.0 is an explicit choice, because it widens exposure from "this
+    // machine" to "everyone on this network" — which is a very different set of
+    // people in a café than at home.
+    let host = if lan { "0.0.0.0" } else { "127.0.0.1" };
+    let listener = TcpListener::bind((host, want)).await.map_err(|e| {
         if want == 0 {
             format!("could not open the mobile port: {e}")
         } else {
@@ -514,6 +550,7 @@ async fn start_sharing(server: &MobileServer, minutes: u64, port: Option<u16>) -
     {
         let mut guard = inner.session.lock().unwrap();
         *guard = Some(Session {
+            lan,
             code: make_code(),
             token: make_token(),
             expires_at: now_secs() + minutes * 60,
@@ -607,7 +644,7 @@ mod tests {
     #[tokio::test]
     async fn the_front_door_holds() {
         let server = MobileServer::default();
-        let st = start_sharing(&server, 30, None).await.expect("start");
+        let st = start_sharing(&server, 30, None, false).await.expect("start");
         let port = st.port.expect("port");
         let code = st.code.clone().expect("code");
         let base = format!("http://127.0.0.1:{port}");
@@ -692,13 +729,55 @@ mod tests {
         assert!(gone.is_err(), "the listener must be gone after stopping");
     }
 
+    /// Loopback binding really is loopback: unreachable from this machine's own
+    /// network address. That is the default, and the reason the tunnel is the
+    /// only way in unless you deliberately open it up.
+    #[tokio::test]
+    async fn loopback_is_not_reachable_from_the_network() {
+        let Some(lan) = lan_address() else { return }; // no network here; nothing to prove
+        let server = MobileServer::default();
+        let st = start_sharing(&server, 30, None, false).await.expect("start");
+        let port = st.port.unwrap();
+        let http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(3))
+            .build()
+            .unwrap();
+        assert!(
+            http.get(format!("http://{lan}:{port}/")).send().await.is_err(),
+            "a loopback-bound server must refuse the LAN address"
+        );
+        // ...while still answering on loopback.
+        assert_eq!(
+            http.get(format!("http://127.0.0.1:{port}/")).send().await.unwrap().status(),
+            200
+        );
+    }
+
+    /// With LAN mode on, the SAME address now answers — which is the whole point,
+    /// and the thing a user would otherwise blame their WiFi for.
+    #[tokio::test]
+    async fn lan_mode_is_reachable_from_the_network() {
+        let Some(lan) = lan_address() else { return };
+        let server = MobileServer::default();
+        let st = start_sharing(&server, 30, None, true).await.expect("start");
+        let port = st.port.unwrap();
+        assert!(st.lan, "status must report that it is open to the network");
+        let http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(3))
+            .build()
+            .unwrap();
+        let r = http.get(format!("http://{lan}:{port}/")).send().await;
+        assert!(r.is_ok(), "LAN mode must accept the machine's own network address");
+        assert_eq!(r.unwrap().status(), 200);
+    }
+
     /// The phone UI is served without a token (it holds no data) while every
     /// data route still refuses one. Getting this backwards would either lock
     /// people out of the login page or hand out state to anyone with the URL.
     #[tokio::test]
     async fn the_page_is_public_but_the_data_is_not() {
         let server = MobileServer::default();
-        let st = start_sharing(&server, 30, None).await.expect("start");
+        let st = start_sharing(&server, 30, None, false).await.expect("start");
         let base = format!("http://127.0.0.1:{}", st.port.unwrap());
         let http = reqwest::Client::new();
 
@@ -787,7 +866,7 @@ mod tests {
     #[tokio::test]
     async fn a_state_request_without_a_window_fails_fast() {
         let server = MobileServer::default();
-        let st = start_sharing(&server, 30, None).await.expect("start");
+        let st = start_sharing(&server, 30, None, false).await.expect("start");
         let base = format!("http://127.0.0.1:{}", st.port.unwrap());
         let http = reqwest::Client::new();
         let token = http
@@ -836,7 +915,7 @@ mod tests {
     #[tokio::test]
     async fn expiry_closes_the_door() {
         let server = MobileServer::default();
-        let st = start_sharing(&server, 30, None).await.expect("start");
+        let st = start_sharing(&server, 30, None, false).await.expect("start");
         let port = st.port.unwrap();
         let base = format!("http://127.0.0.1:{port}");
         let http = reqwest::Client::new();

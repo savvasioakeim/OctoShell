@@ -51,6 +51,10 @@ export interface MobileSettings {
   /** Port the companion binds to in "named" mode — must match the dashboard's
    *  ingress, because dashboard ingress ignores --url. */
   port: number;
+  /** Also listen on the local network, so a phone on the same WiFi can reach it
+   *  without any tunnel. Off by default: it widens exposure from this machine to
+   *  everyone on the network. */
+  lan: boolean;
 }
 
 export interface WorkspaceSettings {
@@ -164,6 +168,7 @@ const DEFAULT_MOBILE: MobileSettings = {
   token: "",
   hostname: "",
   port: 8787,
+  lan: false,
 };
 
 const DEFAULT_WORKSPACE: WorkspaceSettings = {

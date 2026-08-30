@@ -47,6 +47,34 @@ Two more, worth knowing:
 - The page itself is served without a token (it holds no data, only the code
   prompt). Every data route refuses without one.
 
+## On the same WiFi, with no tunnel at all
+
+**Settings → Phone companion → "Also allow phones on this WiFi".**
+
+By default the server binds to `127.0.0.1` — loopback only. That is why a LAN
+address like `http://192.168.1.x:PORT` is refused no matter what your router
+does: the socket never accepts anything but this machine, so there is nothing to
+configure in the network.
+
+With the toggle on it binds `0.0.0.0` too, and the panel shows a `http://<your
+ip>:<port>` address with a QR code.
+
+Worth having, because **nothing sits in the middle**: a tunnel provider
+terminates TLS and can see your agents' output in plaintext, and this path avoids
+that entirely. It also works with no internet.
+
+Two costs, both real:
+
+- **It widens access from this machine to everyone on the network.** At home that
+  is your own devices; on café WiFi it is strangers. The access code and lockout
+  still apply, but the door is now visible to more people.
+- **It is plain HTTP, so it is not a secure context.** No service worker, which
+  means **the app cannot be installed to a home screen** over LAN, and no push
+  notifications. Use a named tunnel for that.
+
+Windows will ask to allow OctoShell on private networks the first time. Say yes
+for **Private** and not Public, or the phone simply times out with no clue why.
+
 ## A permanent address (and why you'd want one)
 
 A quick tunnel's address is **random and different every session**. That's good
