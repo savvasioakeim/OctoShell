@@ -19,9 +19,19 @@ export interface MobileState {
   locked: boolean;
   busy: boolean;
   error: string | null;
+  /** Public URL from cloudflared, or null when only local. */
+  tunnelUrl: string | null;
+  tunnelBusy: boolean;
+  /** Why the tunnel isn't up — usually "cloudflared isn't installed". */
+  tunnelError: string | null;
 }
 
 /** Wire shape from Rust (serde renames nothing, so these are snake-free). */
+interface WireTunnel {
+  running: boolean;
+  url: string | null;
+}
+
 interface WireStatus {
   sharing: boolean;
   code: string | null;
@@ -40,6 +50,9 @@ const EMPTY: MobileState = {
   locked: false,
   busy: false,
   error: null,
+  tunnelUrl: null,
+  tunnelBusy: false,
+  tunnelError: null,
 };
 
 /** Expiry choices. Deliberately short by default: a share you forgot about is
@@ -70,6 +83,8 @@ class MobileStore {
   }
 
   private apply(w: WireStatus): void {
+    // A share that ended must not leave a tunnel behind pointing at a dead port.
+    if (!w.sharing && this.state.tunnelUrl) void this.stopTunnel();
     this.set({
       sharing: w.sharing,
       code: w.code,
@@ -88,8 +103,33 @@ class MobileStore {
   async refresh(): Promise<void> {
     try {
       this.apply(await invoke<WireStatus>("mobile_status"));
+      const t = await invoke<WireTunnel>("tunnel_status");
+      this.set({ tunnelUrl: t.running ? t.url : null });
     } catch (e) {
       this.set({ busy: false, error: String(e) });
+    }
+  }
+
+  /** Open a public tunnel to the running share. */
+  async startTunnel(): Promise<void> {
+    const port = this.state.port;
+    if (!port) return;
+    this.set({ tunnelBusy: true, tunnelError: null });
+    try {
+      const t = await invoke<WireTunnel>("tunnel_start", { port });
+      this.set({ tunnelUrl: t.url, tunnelBusy: false });
+    } catch (e) {
+      // Not having cloudflared is the common case, not a crash — the local
+      // server keeps working, so this is a note rather than a failure.
+      this.set({ tunnelBusy: false, tunnelError: String(e) });
+    }
+  }
+
+  async stopTunnel(): Promise<void> {
+    try {
+      await invoke<WireTunnel>("tunnel_stop");
+    } finally {
+      this.set({ tunnelUrl: null, tunnelError: null });
     }
   }
 
@@ -125,6 +165,9 @@ class MobileStore {
   async stop(): Promise<void> {
     this.set({ busy: true, error: null });
     try {
+      // Order matters: drop the tunnel FIRST, so there is never a public URL
+      // pointing at a port that is about to belong to something else.
+      await this.stopTunnel();
       this.apply(await invoke<WireStatus>("mobile_stop"));
     } catch (e) {
       this.set({ busy: false, error: String(e) });

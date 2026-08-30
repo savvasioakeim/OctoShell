@@ -11,6 +11,7 @@ mod mods;
 mod ollama;
 mod pty;
 mod service;
+mod tunnel;
 
 use acp::AcpManager;
 use agent::AgentManager;
@@ -132,6 +133,7 @@ pub fn run() {
         )
         // Shared, thread-safe registries of all open PTY + agent sessions.
         .manage(mobile::MobileServer::default())
+        .manage(tunnel::TunnelManager::default())
         .manage(PtyManager::default())
         .manage(AgentManager::default())
         .manage(AiManager::default())
@@ -202,6 +204,9 @@ pub fn run() {
             mobile::mobile_stop,
             mobile::mobile_status,
             mobile::mobile_respond,
+            tunnel::tunnel_start,
+            tunnel::tunnel_stop,
+            tunnel::tunnel_status,
             mods::mods_list,
             mods::mods_dir_path,
             write_text_file,

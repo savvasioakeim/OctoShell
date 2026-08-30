@@ -150,6 +150,51 @@ export function startMobileBridge(getProjects: () => BridgeProject[]): () => voi
         return;
       }
 
+      if (e.kind === "approvals") {
+        // Every agent that is currently blocked waiting for a human. This is the
+        // reason the companion exists: without it an agent that hits an approval
+        // stops dead until someone is back at the desk.
+        const items: Record<string, unknown>[] = [];
+        for (const p of projects) {
+          for (const b of p.controller.getSnapshot().blocks) {
+            if (b.kind === "agentApproval" && b.status === "pending") {
+              items.push({
+                requestId: b.requestId,
+                projectId: p.id,
+                projectName: p.name,
+                tool: b.toolName,
+                input: truncate(b.toolInput ?? "", TEXT_CAP),
+                at: b.startedAt,
+              });
+            }
+          }
+        }
+        answer(e.id, { approvals: items });
+        return;
+      }
+
+      if (e.kind === "approve") {
+        const requestId = String(e.params.requestId ?? "");
+        const allow = e.params.allow === true;
+        // Route the decision through the SAME path the desktop uses. Two
+        // consequences worth having: the block's status updates in the UI as if
+        // you had clicked it, and whoever answers first wins — approval_respond
+        // resolves the waiting channel once, so a second answer is a no-op rather
+        // than a conflict between the phone and the desk.
+        const owner = projects.find((p) =>
+          p.controller
+            .getSnapshot()
+            .blocks.some((b) => b.kind === "agentApproval" && b.requestId === requestId),
+        );
+        if (!owner) {
+          answer(e.id, { error: "that request is no longer waiting" });
+          return;
+        }
+        owner.controller.respondApproval(requestId, allow);
+        answer(e.id, { ok: true, requestId, allow });
+        return;
+      }
+
       answer(e.id, { error: `unknown request "${e.kind}"` });
     } catch (err) {
       // Always answer. An unanswered question ties up a phone request until the

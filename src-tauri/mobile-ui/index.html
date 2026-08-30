@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#292D3E" />
+<link rel="manifest" href="/manifest.webmanifest" />
+<title>OctoShell</title>
+<style>
+  /* One file, no build step, no CDN. The page is served from the user's own
+     machine through a tunnel, so every extra origin would be another thing that
+     can fail on a phone with bad signal — and another thing to trust. */
+  :root {
+    --ink: #292D3E; --panel: #252A3A; --edge: #3A3F58;
+    --accent: #7E57C2; --muted: #8087A8; --text: #E6E9F5;
+    --ok: #34D399; --bad: #F87171; --warn: #FBBF24;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body {
+    margin: 0; background: var(--ink); color: var(--text);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  }
+  header {
+    position: sticky; top: 0; z-index: 5; background: var(--ink);
+    border-bottom: 1px solid var(--edge); padding: 12px 16px;
+    display: flex; align-items: center; gap: 10px;
+  }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; letter-spacing: .02em; }
+  header .sp { margin-left: auto; }
+  main { padding: 12px 16px 40px; }
+  button {
+    font: inherit; color: var(--text); background: var(--panel);
+    border: 1px solid var(--edge); border-radius: 10px; padding: 10px 14px;
+    /* 44px is the smallest reliably tappable target; approvals get pressed in a
+       hurry, often one-handed. */
+    min-height: 44px; cursor: pointer;
+  }
+  button.primary { background: var(--accent); border-color: var(--accent); font-weight: 600; }
+  button.ok { background: rgba(52,211,153,.15); border-color: rgba(52,211,153,.5); color: var(--ok); }
+  button.bad { background: rgba(248,113,113,.15); border-color: rgba(248,113,113,.5); color: var(--bad); }
+  input {
+    font: 20px/1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .3em;
+    text-align: center; text-transform: uppercase;
+    width: 100%; padding: 14px; border-radius: 10px;
+    background: var(--panel); border: 1px solid var(--edge); color: var(--text);
+  }
+  .card { background: var(--panel); border: 1px solid var(--edge); border-radius: 12px; padding: 12px 14px; margin-bottom: 10px; }
+  .card.urgent { border-color: var(--warn); background: rgba(251,191,36,.07); }
+  .row { display: flex; align-items: center; gap: 10px; }
+  .muted { color: var(--muted); font-size: 13px; }
+  .tiny { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .12em; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; background: var(--edge); }
+  .dot.busy { background: var(--accent); animation: pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: .35; } }
+  pre {
+    margin: 8px 0 0; padding: 10px; background: #0008; border-radius: 8px;
+    font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+    white-space: pre-wrap; word-break: break-word; max-height: 40vh; overflow: auto;
+  }
+  .err { color: var(--bad); font-size: 13px; margin-top: 10px; }
+  .center { text-align: center; }
+  .stack > * + * { margin-top: 10px; }
+</style>
+</head>
+<body>
+<header>
+  <span style="font-size:18px">🐙</span>
+  <h1>OctoShell</h1>
+  <span class="sp"></span>
+  <button id="back" style="display:none;padding:6px 12px;min-height:36px">← Back</button>
+  <button id="signout" style="display:none;padding:6px 12px;min-height:36px">Sign out</button>
+</header>
+<main id="app"></main>
+
+<script>
+(() => {
+  "use strict";
+  const app = document.getElementById("app");
+  const backBtn = document.getElementById("back");
+  const outBtn = document.getElementById("signout");
+  const KEY = "octoshell.mobile.token";
+
+  let token = null;
+  try { token = localStorage.getItem(KEY); } catch { /* private mode */ }
+  let view = { name: "projects" };
+  let poll = null;
+
+  const el = (tag, props = {}, ...kids) => {
+    const n = Object.assign(document.createElement(tag), props);
+    for (const k of kids.flat()) n.append(k?.nodeType ? k : document.createTextNode(String(k)));
+    return n;
+  };
+  const ago = (ms) => {
+    if (!ms) return "";
+    const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
+    if (s < 60) return s + "s ago";
+    if (s < 3600) return Math.round(s / 60) + "m ago";
+    return Math.round(s / 3600) + "h ago";
+  };
+
+  async function api(path, opts = {}) {
+    const r = await fetch(path, {
+      ...opts,
+      headers: { "content-type": "application/json", ...(token ? { authorization: "Bearer " + token } : {}), ...(opts.headers || {}) },
+    });
+    if (r.status === 401 || r.status === 410) {
+      // The share ended or the token died. Drop it and go back to the code
+      // screen rather than leaving a dead UI that keeps failing silently.
+      signOut();
+      throw new Error("This share has ended. Ask for a new code.");
+    }
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(body.error || ("request failed (" + r.status + ")"));
+    return body;
+  }
+
+  function signOut() {
+    token = null;
+    try { localStorage.removeItem(KEY); } catch {}
+    view = { name: "projects" };
+    stopPolling();
+    render();
+  }
+
+  function stopPolling() { if (poll) { clearInterval(poll); poll = null; } }
+
+  // ---------- screens ----------
+
+  function loginScreen(error) {
+    const input = el("input", { id: "code", autocomplete: "one-time-code", inputMode: "text", placeholder: "CODE" });
+    const go = el("button", { className: "primary", style: "width:100%" }, "Connect");
+    const box = el("div", { className: "stack" },
+      el("p", { className: "muted center" }, "Enter the code shown in OctoShell on your computer."),
+      input, go);
+    if (error) box.append(el("p", { className: "err center" }, error));
+    go.onclick = async () => {
+      const code = input.value.trim();
+      if (!code) return;
+      go.disabled = true; go.textContent = "Connecting…";
+      try {
+        const r = await api("/api/auth", { method: "POST", body: JSON.stringify({ code }) });
+        token = r.token;
+        try { localStorage.setItem(KEY, token); } catch {}
+        render();
+      } catch (e) {
+        go.disabled = false; go.textContent = "Connect";
+        render(String(e.message || e));
+      }
+    };
+    input.onkeydown = (e) => { if (e.key === "Enter") go.click(); };
+    app.replaceChildren(box);
+    input.focus();
+  }
+
+  async function projectsScreen() {
+    const wrap = el("div", { className: "stack" });
+    app.replaceChildren(el("p", { className: "muted" }, "Loading…"));
+    try {
+      // Approvals first, always: a blocked agent is the only thing here that is
+      // costing time right now.
+      const [ap, pr] = await Promise.all([api("/api/approvals"), api("/api/projects")]);
+      if (ap.approvals?.length) {
+        wrap.append(el("p", { className: "tiny" }, "Waiting for you"));
+        for (const a of ap.approvals) wrap.append(approvalCard(a));
+      }
+      wrap.append(el("p", { className: "tiny", style: "margin-top:18px" }, "Projects"));
+      if (!pr.projects?.length) wrap.append(el("p", { className: "muted" }, "No projects open."));
+      for (const p of pr.projects || []) {
+        const card = el("div", { className: "card" },
+          el("div", { className: "row" },
+            el("span", { className: "dot" + (p.agentBusy ? " busy" : "") }),
+            el("strong", {}, p.name),
+            el("span", { className: "sp muted", style: "margin-left:auto" }, p.agentBusy ? "working" : ago(p.lastAt))),
+          el("p", { className: "muted", style: "margin:6px 0 0" }, p.blocks + " entries"));
+        card.onclick = () => { view = { name: "feed", id: p.id, name2: p.name }; render(); };
+        wrap.append(card);
+      }
+      app.replaceChildren(wrap);
+    } catch (e) {
+      app.replaceChildren(el("p", { className: "err" }, String(e.message || e)));
+    }
+  }
+
+  function approvalCard(a) {
+    const card = el("div", { className: "card urgent" },
+      el("div", { className: "row" }, el("strong", {}, a.tool), el("span", { className: "muted", style: "margin-left:auto" }, a.projectName)),
+      el("pre", {}, a.input || ""));
+    const deny = el("button", { className: "bad", style: "flex:1" }, "Deny");
+    const allow = el("button", { className: "ok", style: "flex:1" }, "Approve");
+    const decide = async (v, btn) => {
+      deny.disabled = allow.disabled = true;
+      btn.textContent = "…";
+      try { await api("/api/approve", { method: "POST", body: JSON.stringify({ requestId: a.requestId, allow: v }) }); render(); }
+      catch (e) { card.append(el("p", { className: "err" }, String(e.message || e))); deny.disabled = allow.disabled = false; }
+    };
+    deny.onclick = () => decide(false, deny);
+    allow.onclick = () => decide(true, allow);
+    card.append(el("div", { className: "row", style: "margin-top:10px" }, deny, allow));
+    return card;
+  }
+
+  async function feedScreen(id, name, before) {
+    app.replaceChildren(el("p", { className: "muted" }, "Loading…"));
+    try {
+      const q = "/api/session?id=" + encodeURIComponent(id) + "&limit=20" + (before != null ? "&before=" + before : "");
+      const d = await api(q);
+      const wrap = el("div", { className: "stack" }, el("p", { className: "tiny" }, name));
+      if (d.nextBefore != null) {
+        const more = el("button", { style: "width:100%" }, "Load older");
+        more.onclick = () => feedScreen(id, name, d.nextBefore);
+        wrap.append(more);
+      }
+      for (const b of d.blocks || []) wrap.append(blockCard(b));
+      if (!d.blocks?.length) wrap.append(el("p", { className: "muted" }, "Nothing here yet."));
+      app.replaceChildren(wrap);
+    } catch (e) {
+      app.replaceChildren(el("p", { className: "err" }, String(e.message || e)));
+    }
+  }
+
+  function blockCard(b) {
+    if (b.kind === "command") {
+      return el("div", { className: "card" },
+        el("div", { className: "row" },
+          el("span", {}, b.status === "error" ? "✗" : "$"),
+          el("strong", { style: "font-family:ui-monospace,monospace;font-size:13px" }, b.command),
+          el("span", { className: "muted", style: "margin-left:auto" }, ago(b.at))),
+        b.output ? el("pre", {}, b.output) : "");
+    }
+    if (b.kind === "agentText") {
+      return el("div", { className: "card" },
+        el("div", { className: "row" },
+          el("span", { className: "tiny" }, b.role === "user" ? "You" : "Agent"),
+          el("span", { className: "muted", style: "margin-left:auto" }, ago(b.at))),
+        el("p", { style: "margin:6px 0 0;white-space:pre-wrap" }, b.text || ""));
+    }
+    if (b.kind === "agentTool") {
+      return el("div", { className: "card" },
+        el("div", { className: "row" }, el("span", { className: "muted" }, "🔧 " + b.tool), el("span", { className: "muted", style: "margin-left:auto" }, b.status || "")),
+        b.input ? el("pre", {}, b.input) : "");
+    }
+    return el("div", { className: "card muted" }, b.kind);
+  }
+
+  // ---------- routing ----------
+
+  function render(loginError) {
+    stopPolling();
+    const authed = !!token;
+    backBtn.style.display = authed && view.name === "feed" ? "" : "none";
+    outBtn.style.display = authed ? "" : "none";
+    if (!authed) return loginScreen(loginError);
+    if (view.name === "feed") return feedScreen(view.id, view.name2, null);
+    projectsScreen();
+    // Only the list polls. A feed you are reading must not reshuffle under your
+    // thumb; you pull back to the list to refresh it.
+    poll = setInterval(() => { if (view.name === "projects" && document.visibilityState === "visible") projectsScreen(); }, 5000);
+  }
+
+  backBtn.onclick = () => { view = { name: "projects" }; render(); };
+  outBtn.onclick = signOut;
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible" && token && view.name === "projects") projectsScreen();
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>

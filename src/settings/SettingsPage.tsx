@@ -1710,12 +1710,45 @@ function MobileSharingSection() {
             </span>
           </div>
 
-          {/* Honest about the current limit rather than implying it works from
-              outside the machine already. */}
-          <p className="text-xs text-muted">
-            The server is listening on this machine only. Reaching it from your phone needs the
-            tunnel, which isn't wired up yet — until then this is testable from a browser here.
-          </p>
+          <div className="rounded-md border border-edge bg-card px-3 py-2">
+            {m.tunnelUrl ? (
+              <div className="space-y-1.5">
+                <p className="text-[10px] uppercase tracking-widest text-muted">Open this on your phone</p>
+                <button
+                  onClick={() => void navigator.clipboard?.writeText(m.tunnelUrl!)}
+                  className="block w-full truncate text-left font-mono text-sm text-sky-300 hover:text-sky-200"
+                  title="Copy"
+                >
+                  {m.tunnelUrl} ⧉
+                </button>
+                <p className="text-xs text-muted">
+                  Anyone with this address reaches the code screen — the code, and the lockout
+                  behind it, are what protect the machine. It closes when you stop sharing.
+                </p>
+                <button
+                  onClick={() => void mobileStore.stopTunnel()}
+                  className="rounded border border-edge px-2 py-1 text-xs text-muted hover:bg-edge"
+                >
+                  Close the public address
+                </button>
+              </div>
+            ) : (
+              <div className="flex flex-wrap items-center gap-3">
+                <button
+                  onClick={() => void mobileStore.startTunnel()}
+                  disabled={m.tunnelBusy}
+                  className="rounded border border-edge px-3 py-1.5 text-sm text-gray-200 hover:bg-edge disabled:opacity-60"
+                >
+                  {m.tunnelBusy ? "Opening…" : "Open a public address"}
+                </button>
+                <span className="text-xs text-muted">
+                  Runs a Cloudflare quick tunnel so your phone can reach this machine. Without it,
+                  the server is local only.
+                </span>
+              </div>
+            )}
+            {m.tunnelError && <p className="mt-2 text-xs text-amber-300">{m.tunnelError}</p>}
+          </div>
         </div>
       )}
 

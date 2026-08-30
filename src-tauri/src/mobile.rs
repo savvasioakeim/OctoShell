@@ -325,6 +325,81 @@ struct FeedQuery {
     limit: Option<usize>,
 }
 
+/// The phone UI, embedded in the binary.
+///
+/// One self-contained file rather than a bundled app: it is served from the
+/// user's own machine over a tunnel, so every extra origin would be another thing
+/// to trust and another thing to fail on a bad connection. It also means the
+/// mobile UI ships with the binary and can never be out of step with the API.
+const MOBILE_HTML: &str = include_str!("../mobile-ui/index.html");
+
+/// The page itself. Unauthenticated on purpose — it contains no data, only the
+/// code prompt; everything it shows comes from the authenticated API.
+async fn ui() -> axum::response::Response {
+    use axum::response::IntoResponse;
+    ([(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")], MOBILE_HTML).into_response()
+}
+
+/// Enough manifest for "Add to Home Screen" to give a real app icon and name.
+async fn manifest() -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let body = json!({
+        "name": "OctoShell",
+        "short_name": "OctoShell",
+        "start_url": "/",
+        "display": "standalone",
+        "background_color": "#292D3E",
+        "theme_color": "#292D3E",
+        "icons": []
+    });
+    (
+        [(axum::http::header::CONTENT_TYPE, "application/manifest+json")],
+        body.to_string(),
+    )
+        .into_response()
+}
+
+/// Every agent currently blocked on a human decision.
+async fn approvals(State(server): State<MobileServer>, headers: HeaderMap) -> (StatusCode, Json<Value>) {
+    if !authed(&server, &headers) {
+        return (StatusCode::UNAUTHORIZED, Json(json!({ "error": "unauthorized" })));
+    }
+    match server.ask("approvals", json!({})).await {
+        Ok(v) => (StatusCode::OK, Json(v)),
+        Err(e) => (StatusCode::BAD_GATEWAY, Json(json!({ "error": e }))),
+    }
+}
+
+#[derive(Deserialize)]
+struct ApproveBody {
+    #[serde(rename = "requestId")]
+    request_id: String,
+    allow: bool,
+}
+
+/// Answer one approval prompt.
+///
+/// The decision goes through the webview so it takes the SAME path as a click on
+/// the desktop: the block updates, and `approval_respond` resolves the waiting
+/// channel exactly once — so if the phone and the desk answer together, the first
+/// wins and the second is a no-op instead of a conflict.
+async fn approve(
+    State(server): State<MobileServer>,
+    headers: HeaderMap,
+    Json(body): Json<ApproveBody>,
+) -> (StatusCode, Json<Value>) {
+    if !authed(&server, &headers) {
+        return (StatusCode::UNAUTHORIZED, Json(json!({ "error": "unauthorized" })));
+    }
+    match server
+        .ask("approve", json!({ "requestId": body.request_id, "allow": body.allow }))
+        .await
+    {
+        Ok(v) => (StatusCode::OK, Json(v)),
+        Err(e) => (StatusCode::BAD_GATEWAY, Json(json!({ "error": e }))),
+    }
+}
+
 /// Minimal authenticated probe: proves the token works without asking the UI.
 async fn status(State(server): State<MobileServer>, headers: HeaderMap) -> (StatusCode, Json<serde_json::Value>) {
     if !authed(&server, &headers) {
@@ -408,6 +483,10 @@ async fn start_sharing(server: &MobileServer, minutes: u64) -> Result<MobileStat
         .route("/api/status", get(status))
         .route("/api/projects", get(projects))
         .route("/api/session", get(session_feed))
+        .route("/api/approvals", get(approvals))
+        .route("/api/approve", post(approve))
+        .route("/", get(ui))
+        .route("/manifest.webmanifest", get(manifest))
         .with_state(app_state);
 
     tokio::spawn(async move {
@@ -562,6 +641,40 @@ mod tests {
             .send()
             .await;
         assert!(gone.is_err(), "the listener must be gone after stopping");
+    }
+
+    /// The phone UI is served without a token (it holds no data) while every
+    /// data route still refuses one. Getting this backwards would either lock
+    /// people out of the login page or hand out state to anyone with the URL.
+    #[tokio::test]
+    async fn the_page_is_public_but_the_data_is_not() {
+        let server = MobileServer::default();
+        let st = start_sharing(&server, 30).await.expect("start");
+        let base = format!("http://127.0.0.1:{}", st.port.unwrap());
+        let http = reqwest::Client::new();
+
+        let r = http.get(&base).send().await.unwrap();
+        assert_eq!(r.status(), 200);
+        let html = r.text().await.unwrap();
+        assert!(html.contains("OctoShell"));
+        assert!(html.contains("/api/auth"), "the page must know where to log in");
+        // The page must not ship a token or a code.
+        assert!(!html.contains(&st.code.clone().unwrap()));
+
+        let r = http.get(format!("{base}/manifest.webmanifest")).send().await.unwrap();
+        assert_eq!(r.status(), 200);
+
+        for path in ["/api/projects", "/api/session?id=x", "/api/approvals", "/api/status"] {
+            let r = http.get(format!("{base}{path}")).send().await.unwrap();
+            assert_eq!(r.status(), 401, "{path} must require a token");
+        }
+        let r = http
+            .post(format!("{base}/api/approve"))
+            .json(&serde_json::json!({ "requestId": "x", "allow": true }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 401, "/api/approve must require a token");
     }
 
     /// The whole ask/respond round trip, with a stand-in for the window. This is
