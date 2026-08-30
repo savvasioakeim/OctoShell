@@ -201,6 +201,7 @@ pub fn run() {
             mobile::mobile_start,
             mobile::mobile_stop,
             mobile::mobile_status,
+            mobile::mobile_respond,
             mods::mods_list,
             mods::mods_dir_path,
             write_text_file,

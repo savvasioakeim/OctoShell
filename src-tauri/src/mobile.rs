@@ -27,15 +27,18 @@
 //! Everything here is the front door. Reading real state and answering approvals
 //! is the bridge to the webview, and lands next.
 
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
+use tauri::{AppHandle, Emitter};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 
@@ -118,9 +121,89 @@ impl Session {
     }
 }
 
-/// Managed state: at most one sharing session at a time.
+/// How long a question to the webview may take before the phone gets an error.
+/// Bounded because the UI answering these is the same thread that renders: a
+/// wedged answer must fail the one request, never hang the connection.
+const ASK_TIMEOUT: Duration = Duration::from_secs(8);
+
+static ASK_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+/// Managed state: at most one sharing session, plus the questions in flight.
+///
+/// The phone asks for things only the WEBVIEW knows. The project list, which
+/// agent is busy, what a session's blocks say — none of that is in the database
+/// (the project list lives in localStorage, and live status lives only in memory).
+/// So this server does not read state; it asks the running app for it, exactly
+/// the way `approval.rs` asks the user for a decision.
 #[derive(Default, Clone)]
-pub struct MobileServer(Arc<Mutex<Option<Session>>>);
+pub struct MobileServer {
+    session: Arc<Mutex<Option<Session>>>,
+    /// Question id → where to deliver the answer.
+    pending: Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<Value>>>>,
+    /// How to deliver a question to the window. A closure rather than the
+    /// `AppHandle` itself, for two reasons:
+    ///
+    /// - Storing `AppHandle` (which is `AppHandle<Wry>`) in a field drags the
+    ///   webview runtime's types into anything that constructs this struct. The
+    ///   library's TEST binary then fails to start at all — STATUS_ENTRYPOINT_
+    ///   NOT_FOUND, before a single test runs — because it has no WebView2
+    ///   alongside it. Erasing the runtime behind a trait object keeps the server
+    ///   testable, which for the piece that faces the internet is not optional.
+    /// - It also lets a test install its own emitter and exercise the whole
+    ///   ask/respond round trip without a window.
+    emit: Arc<Mutex<Option<AskEmit>>>,
+}
+
+/// Delivers one question; returns false if the window is gone.
+type AskEmit = Arc<dyn Fn(AskEvent) -> bool + Send + Sync>;
+
+/// A question for the webview, delivered as `mobile://request`.
+#[derive(Clone, Serialize)]
+struct AskEvent {
+    id: String,
+    kind: String,
+    params: Value,
+}
+
+impl MobileServer {
+    /// Ask the webview something and wait for `mobile_respond`.
+    ///
+    /// Every failure path resolves rather than hanging: no window, no listener,
+    /// or a UI that never answers all become an error the phone can render.
+    async fn ask(&self, kind: &str, params: Value) -> Result<Value, String> {
+        let id = format!("m{}", ASK_COUNTER.fetch_add(1, Ordering::Relaxed));
+        let (tx, rx) = tokio::sync::oneshot::channel::<Value>();
+        self.pending.lock().unwrap().insert(id.clone(), tx);
+
+        let emit = self.emit.lock().unwrap().clone();
+        let Some(emit) = emit else {
+            self.pending.lock().unwrap().remove(&id);
+            return Err("the app window is not available".into());
+        };
+        if !emit(AskEvent { id: id.clone(), kind: kind.to_string(), params }) {
+            self.pending.lock().unwrap().remove(&id);
+            return Err("could not reach the app window".into());
+        }
+
+        match tokio::time::timeout(ASK_TIMEOUT, rx).await {
+            Ok(Ok(v)) => Ok(v),
+            Ok(Err(_)) => Err("the app closed the request".into()),
+            Err(_) => {
+                // Drop the slot so a late answer doesn't accumulate forever.
+                self.pending.lock().unwrap().remove(&id);
+                Err("the app did not answer in time".into())
+            }
+        }
+    }
+}
+
+/// The webview's answer to one `mobile://request`.
+#[tauri::command]
+pub fn mobile_respond(server: tauri::State<'_, MobileServer>, id: String, data: Value) {
+    if let Some(tx) = server.pending.lock().unwrap().remove(&id) {
+        let _ = tx.send(data);
+    }
+}
 
 /// What the UI needs to render the sharing panel.
 #[derive(Serialize)]
@@ -152,7 +235,7 @@ fn bearer(headers: &HeaderMap) -> Option<String> {
 
 /// Exchange the access code for a session token. The ONLY unauthenticated route.
 async fn auth(State(server): State<MobileServer>, Json(body): Json<AuthBody>) -> (StatusCode, Json<serde_json::Value>) {
-    let mut guard = server.0.lock().unwrap();
+    let mut guard = server.session.lock().unwrap();
     let Some(s) = guard.as_mut() else {
         return (StatusCode::GONE, Json(json!({ "error": "sharing is off" })));
     };
@@ -188,7 +271,7 @@ async fn auth(State(server): State<MobileServer>, Json(body): Json<AuthBody>) ->
 
 /// Whether the request carries a valid, unexpired token.
 fn authed(server: &MobileServer, headers: &HeaderMap) -> bool {
-    let guard = server.0.lock().unwrap();
+    let guard = server.session.lock().unwrap();
     let Some(s) = guard.as_ref() else { return false };
     if s.expired() {
         return false;
@@ -199,12 +282,55 @@ fn authed(server: &MobileServer, headers: &HeaderMap) -> bool {
     }
 }
 
-/// Minimal authenticated probe. Real state arrives with the webview bridge.
+/// The open projects and what each one is doing.
+async fn projects(State(server): State<MobileServer>, headers: HeaderMap) -> (StatusCode, Json<Value>) {
+    if !authed(&server, &headers) {
+        return (StatusCode::UNAUTHORIZED, Json(json!({ "error": "unauthorized" })));
+    }
+    match server.ask("projects", json!({})).await {
+        Ok(v) => (StatusCode::OK, Json(v)),
+        Err(e) => (StatusCode::BAD_GATEWAY, Json(json!({ "error": e }))),
+    }
+}
+
+/// One project's feed, newest last, a page at a time.
+///
+/// Paginated on purpose: a session is stored as ONE JSON blob (measured at
+/// hundreds of KB), which is fine on the desktop and unacceptable over mobile
+/// data. The phone never asks for a whole session.
+async fn session_feed(
+    State(server): State<MobileServer>,
+    headers: HeaderMap,
+    axum::extract::Query(q): axum::extract::Query<FeedQuery>,
+) -> (StatusCode, Json<Value>) {
+    if !authed(&server, &headers) {
+        return (StatusCode::UNAUTHORIZED, Json(json!({ "error": "unauthorized" })));
+    }
+    let limit = q.limit.unwrap_or(20).clamp(1, 100);
+    match server
+        .ask("session", json!({ "id": q.id, "before": q.before, "limit": limit }))
+        .await
+    {
+        Ok(v) => (StatusCode::OK, Json(v)),
+        Err(e) => (StatusCode::BAD_GATEWAY, Json(json!({ "error": e }))),
+    }
+}
+
+#[derive(Deserialize)]
+struct FeedQuery {
+    /// Project (session) id.
+    id: String,
+    /// Return blocks before this index — the cursor for "load older".
+    before: Option<usize>,
+    limit: Option<usize>,
+}
+
+/// Minimal authenticated probe: proves the token works without asking the UI.
 async fn status(State(server): State<MobileServer>, headers: HeaderMap) -> (StatusCode, Json<serde_json::Value>) {
     if !authed(&server, &headers) {
         return (StatusCode::UNAUTHORIZED, Json(json!({ "error": "unauthorized" })));
     }
-    let guard = server.0.lock().unwrap();
+    let guard = server.session.lock().unwrap();
     let expires = guard.as_ref().map(|s| s.expires_at).unwrap_or(0);
     (
         StatusCode::OK,
@@ -214,7 +340,7 @@ async fn status(State(server): State<MobileServer>, headers: HeaderMap) -> (Stat
 
 impl MobileServer {
     fn snapshot(&self) -> MobileStatus {
-        let guard = self.0.lock().unwrap();
+        let guard = self.session.lock().unwrap();
         match guard.as_ref() {
             Some(s) if !s.expired() => MobileStatus {
                 sharing: true,
@@ -240,9 +366,14 @@ impl MobileServer {
 #[tauri::command]
 pub async fn mobile_start(
     server: tauri::State<'_, MobileServer>,
+    app: AppHandle,
     minutes: u64,
 ) -> Result<MobileStatus, String> {
-    start_sharing(&MobileServer(server.inner().0.clone()), minutes).await
+    let s = server.inner().clone();
+    *s.emit.lock().unwrap() = Some(Arc::new(move |e: AskEvent| {
+        app.emit("mobile://request", e).is_ok()
+    }));
+    start_sharing(&s, minutes).await
 }
 
 /// The whole of starting, minus Tauri — so the door can be tested by knocking on
@@ -257,9 +388,9 @@ async fn start_sharing(server: &MobileServer, minutes: u64) -> Result<MobileStat
     let port = listener.local_addr().map_err(|e| e.to_string())?.port();
 
     let (tx, rx) = oneshot::channel::<()>();
-    let inner = MobileServer(server.0.clone());
+    let inner = server.clone();
     {
-        let mut guard = inner.0.lock().unwrap();
+        let mut guard = inner.session.lock().unwrap();
         *guard = Some(Session {
             code: make_code(),
             token: make_token(),
@@ -275,6 +406,8 @@ async fn start_sharing(server: &MobileServer, minutes: u64) -> Result<MobileStat
     let router = Router::new()
         .route("/api/auth", post(auth))
         .route("/api/status", get(status))
+        .route("/api/projects", get(projects))
+        .route("/api/session", get(session_feed))
         .with_state(app_state);
 
     tokio::spawn(async move {
@@ -295,7 +428,7 @@ async fn start_sharing(server: &MobileServer, minutes: u64) -> Result<MobileStat
 #[tauri::command]
 pub fn mobile_stop(server: tauri::State<'_, MobileServer>) -> MobileStatus {
     {
-        let mut guard = server.0.lock().unwrap();
+        let mut guard = server.session.lock().unwrap();
         *guard = None;
     }
     server.inner().snapshot()
@@ -306,7 +439,7 @@ pub fn mobile_stop(server: tauri::State<'_, MobileServer>) -> MobileStatus {
 #[tauri::command]
 pub fn mobile_status(server: tauri::State<'_, MobileServer>) -> MobileStatus {
     {
-        let mut guard = server.0.lock().unwrap();
+        let mut guard = server.session.lock().unwrap();
         if guard.as_ref().map(|s| s.expired()).unwrap_or(false) {
             *guard = None;
         }
@@ -418,7 +551,7 @@ mod tests {
 
         // Stopping removes the socket, not merely the permission.
         {
-            let mut g = server.0.lock().unwrap();
+            let mut g = server.session.lock().unwrap();
             *g = None;
         }
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
@@ -429,6 +562,106 @@ mod tests {
             .send()
             .await;
         assert!(gone.is_err(), "the listener must be gone after stopping");
+    }
+
+    /// The whole ask/respond round trip, with a stand-in for the window. This is
+    /// what the trait-object emitter buys: the bridge is exercised, not assumed.
+    #[tokio::test]
+    async fn a_question_reaches_the_window_and_the_answer_comes_back() {
+        let server = MobileServer::default();
+        let seen = Arc::new(Mutex::new(Vec::<AskEvent>::new()));
+        {
+            let seen = seen.clone();
+            let s2 = server.clone();
+            *server.emit.lock().unwrap() = Some(Arc::new(move |e: AskEvent| {
+                seen.lock().unwrap().push(e.clone());
+                // Answer the way the webview does, from another task so `ask` is
+                // genuinely waiting rather than resolving inline.
+                let s3 = s2.clone();
+                tokio::spawn(async move {
+                    if let Some(tx) = s3.pending.lock().unwrap().remove(&e.id) {
+                        let _ = tx.send(json!({ "echo": e.kind }));
+                    }
+                });
+                true
+            }));
+        }
+
+        let got = server.ask("projects", json!({ "a": 1 })).await.unwrap();
+        assert_eq!(got, json!({ "echo": "projects" }));
+        let asked = seen.lock().unwrap();
+        assert_eq!(asked.len(), 1);
+        assert_eq!(asked[0].kind, "projects");
+        assert_eq!(asked[0].params, json!({ "a": 1 }));
+        // Nothing left waiting.
+        assert!(server.pending.lock().unwrap().is_empty());
+    }
+
+    /// A window that never answers must time out, not wedge the connection.
+    #[tokio::test]
+    async fn a_silent_window_times_out() {
+        let server = MobileServer::default();
+        *server.emit.lock().unwrap() = Some(Arc::new(|_| true)); // accepts, never replies
+        let began = std::time::Instant::now();
+        let err = tokio::time::timeout(ASK_TIMEOUT * 2, server.ask("projects", json!({})))
+            .await
+            .expect("ask must return on its own")
+            .unwrap_err();
+        assert!(err.contains("did not answer"));
+        assert!(began.elapsed() >= ASK_TIMEOUT);
+        // The slot is released, so a silent window can't leak memory per request.
+        assert!(server.pending.lock().unwrap().is_empty());
+    }
+
+    /// With no window to ask, a state request FAILS rather than hanging. The
+    /// phone must get an error it can render, not a connection that sits open
+    /// until the 8-second timeout — and certainly not one that never returns.
+    #[tokio::test]
+    async fn a_state_request_without_a_window_fails_fast() {
+        let server = MobileServer::default();
+        let st = start_sharing(&server, 30).await.expect("start");
+        let base = format!("http://127.0.0.1:{}", st.port.unwrap());
+        let http = reqwest::Client::new();
+        let token = http
+            .post(format!("{base}/api/auth"))
+            .json(&serde_json::json!({ "code": st.code.unwrap() }))
+            .send()
+            .await
+            .unwrap()
+            .json::<serde_json::Value>()
+            .await
+            .unwrap()["token"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let began = std::time::Instant::now();
+        let r = http
+            .get(format!("{base}/api/projects"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 502);
+        assert!(began.elapsed() < ASK_TIMEOUT, "must not wait out the ask timeout");
+        let body = r.json::<serde_json::Value>().await.unwrap();
+        assert!(body["error"].as_str().unwrap().contains("window"));
+    }
+
+    /// mobile_respond delivers an answer to the waiting request, and a second
+    /// answer for the same id is harmless (the phone must not get two replies).
+    #[tokio::test]
+    async fn responding_resolves_exactly_once() {
+        let server = MobileServer::default();
+        let (tx, rx) = tokio::sync::oneshot::channel::<Value>();
+        server.pending.lock().unwrap().insert("m1".into(), tx);
+
+        if let Some(t) = server.pending.lock().unwrap().remove("m1") {
+            let _ = t.send(json!({ "ok": true }));
+        }
+        assert_eq!(rx.await.unwrap(), json!({ "ok": true }));
+        // The slot is gone, so a late duplicate is a no-op rather than a panic.
+        assert!(server.pending.lock().unwrap().remove("m1").is_none());
     }
 
     /// An expired share serves nothing, even to a token issued while it was live.
@@ -453,7 +686,7 @@ mod tests {
 
         // Move expiry into the past rather than sleeping through it.
         {
-            let mut g = server.0.lock().unwrap();
+            let mut g = server.session.lock().unwrap();
             g.as_mut().unwrap().expires_at = now_secs() - 1;
         }
 

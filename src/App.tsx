@@ -15,6 +15,7 @@ import { Titlebar } from "./chrome/Titlebar";
 import { serviceStore } from "./services/serviceStore";
 import { SettingsPage } from "./settings/SettingsPage";
 import { StrategyPanel } from "./strategy/StrategyPanel";
+import { startMobileBridge } from "./mobile/mobileBridge";
 import { modStore } from "./mods/modStore";
 import { settingsStore, useSettings } from "./settings/settingsStore";
 import { KEY, loadJSON, saveJSON } from "./util/persist";
@@ -711,6 +712,10 @@ export function App({ initial }: { initial: ShellController }) {
     serviceStore.init();
     modStore.start();
   }, []);
+
+  // Answer the mobile server's questions about live state. Registered once and
+  // reading tabs through the ref, so it never re-subscribes as projects change.
+  useEffect(() => startMobileBridge(() => tabsRef.current), []);
 
 
   return (

@@ -25,7 +25,7 @@ serde_json = "1"
 base64 = "0.22"
 # Mobile companion server (mobile.rs). axum shares hyper/tower with what reqwest
 # and bollard already pull in, so the added weight is the router, not a stack.
-axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio"] }
 # OS entropy for the access code. Deliberately NOT the RandomState trick used by
 # approval.rs: that is adequate against a local process guessing a localhost
 # token, but this code is reachable through a public tunnel and must be
