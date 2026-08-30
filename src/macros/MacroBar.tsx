@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
+import { modStore, useMods } from "../mods/modStore";
 import { buildProbe, parseProbe, testCommandFor, testableStackLabels } from "../projects/stacks";
 import { invoke } from "@tauri-apps/api/core";
 import { AiClient } from "../ai/AiClient";
@@ -82,6 +83,24 @@ const MACROS: Macro[] = [
 export function MacroBar({ controller, active = true }: { controller: ShellController; active?: boolean }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [moreOpen, setMoreOpen] = useState(false);
+  // Mod-contributed buttons, appended after the built-ins so a mod extends the
+  // menu without reordering what the user already knows. useMods() is the
+  // subscription; the store applies the enabled/disabled filter.
+  const mods = useMods();
+  const modMacros: Macro[] = useMemo(
+    () =>
+      modStore.macros().map((m) => ({
+        label: m.label,
+        title: m.title ?? m.command,
+        // A mod supplies a command, never behaviour: "input" types it out for the
+        // user to read first, "submit" runs it. Nothing else is reachable from here.
+        run: async (c: ShellController) => {
+          if (m.mode === "submit") c.submit(m.command);
+          else c.setInput(m.command);
+        },
+      })),
+    [mods],
+  );
 
   const run = async (m: Macro) => {
     setBusy(m.label);
@@ -113,7 +132,7 @@ export function MacroBar({ controller, active = true }: { controller: ShellContr
             style={{ minWidth: "12rem" }}
           >
             <SmartPrButton controller={controller} active={active} asMenuItem />
-            {MACROS.map((m) => (
+            {[...MACROS, ...modMacros].map((m) => (
               <li key={m.label}>
                 <button
                   title={m.title}

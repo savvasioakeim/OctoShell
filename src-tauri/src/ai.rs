@@ -73,6 +73,12 @@ pub async fn ai_chat(
     // MCP server names the orchestrator may use (from Settings). Empty/None =
     // planner-only (no MCP servers loaded, the safe default).
     allowed_mcp: Option<Vec<String>>,
+    // MCP servers contributed by enabled mods, as `{name: {command,args,env}}`.
+    // Merged with the ones from the user's Claude config, but NEVER on top of
+    // them: a mod must not be able to shadow a server the user already trusts by
+    // claiming its name. Still subject to `allowed_mcp` — a mod can offer a
+    // server, never grant itself the use of one.
+    mod_mcp: Option<serde_json::Value>,
     // When true, the orchestrator gets READ-ONLY inspection tools (Read/Grep/Glob +
     // a git/gh/ls read-only Bash allowlist) so it can verify state instead of
     // guessing. Never Edit/Write or unrestricted Bash — it must not write code.
@@ -92,7 +98,7 @@ pub async fn ai_chat(
         // child is registered under `request_id` so `ai_cancel` can kill it.
         let runs = manager.runs.clone();
         tauri::async_runtime::spawn_blocking(move || {
-            chat_via_cli(runs, request_id, provider, messages, system, model, config_dir, allowed_mcp, readonly)
+            chat_via_cli(runs, request_id, provider, messages, system, model, config_dir, allowed_mcp, mod_mcp, readonly)
         })
         .await
         .map_err(|e| e.to_string())?
@@ -332,6 +338,7 @@ fn chat_via_cli(
     model: Option<String>,
     config_dir: Option<String>,
     allowed_mcp: Option<Vec<String>>,
+    mod_mcp: Option<serde_json::Value>,
     readonly: Option<bool>,
 ) -> Result<String, String> {
     use std::io::Write;
@@ -430,7 +437,15 @@ fn chat_via_cli(
             }
         }
         if !selected.is_empty() {
-            let all = mcp_servers_map(config_dir.as_deref());
+            let mut all = mcp_servers_map(config_dir.as_deref());
+            // Mods fill only the gaps: a config server always wins a name
+            // collision, so installing a mod can never silently redirect an MCP
+            // server the user already relies on.
+            if let Some(serde_json::Value::Object(extra)) = mod_mcp {
+                for (name, def) in extra {
+                    all.entry(name).or_insert(def);
+                }
+            }
             let mut chosen = serde_json::Map::new();
             for name in &selected {
                 if let Some(def) = all.get(name) {

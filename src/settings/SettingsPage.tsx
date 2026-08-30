@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -346,6 +346,13 @@ function OrchestratorMcpSection() {
   const configDir = profiles.find((p) => p.id === orchestrator.profileId)?.configDir ?? null;
   const [servers, setServers] = useState<McpServer[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  // Servers offered by enabled mods. They are listed here, not auto-enabled: a
+  // mod can put a server in front of you, never tick the box for you.
+  // useMods() is the subscription: the list itself comes from the store (which
+  // applies the enabled/disabled filter), and `mods` is what tells us to recompute
+  // when a mod is toggled or reloaded.
+  const mods = useMods();
+  const modServers = useMemo(() => Object.keys(modStore.mcpServers()), [mods]);
 
   useEffect(() => {
     let live = true;
@@ -366,7 +373,7 @@ function OrchestratorMcpSection() {
     >
       {err && <p className="text-xs text-red-300">Couldn't read MCP config: {err}</p>}
       {!err && servers === null && <p className="text-xs text-muted">Loading MCP servers…</p>}
-      {!err && servers?.length === 0 && (
+      {!err && servers?.length === 0 && modServers.length === 0 && (
         <p className="text-xs text-muted">
           No MCP servers found in this profile's Claude config ({configDir ? configDir : "~/.claude.json"}).
         </p>
@@ -390,6 +397,35 @@ function OrchestratorMcpSection() {
                 <span className="ml-auto rounded bg-well px-1.5 py-0.5 text-[10px] uppercase text-muted">
                   {s.transport}
                 </span>
+              </label>
+            );
+          })}
+        </div>
+      )}
+      {modServers.length > 0 && (
+        <div className="mt-2 space-y-1">
+          <p className="text-[11px] uppercase tracking-wider text-muted/70">From mods</p>
+          {modServers.map((name) => {
+            const shadowed = servers?.some((s) => s.name === name) ?? false;
+            return (
+              <label
+                key={name}
+                className="flex cursor-pointer items-center gap-2 rounded border border-edge px-2 py-1.5 text-sm hover:border-accent"
+              >
+                <input
+                  type="checkbox"
+                  checked={orchestratorMcp.includes(name)}
+                  disabled={shadowed}
+                  onChange={(e) => settingsStore.setOrchestratorMcp(name, e.target.checked)}
+                  className="accent-accent"
+                />
+                <span className="font-medium">{name}</span>
+                {shadowed && (
+                  <span className="text-[10px] text-amber-300/90" title="Your own config already defines this name, and it wins.">
+                    shadowed by your config
+                  </span>
+                )}
+                <span className="ml-auto rounded bg-well px-1.5 py-0.5 text-[10px] uppercase text-muted">mod</span>
               </label>
             );
           })}

@@ -41,6 +41,10 @@ export interface ChatOpts {
   /** MCP server names the orchestrator may use (Settings → MCP access). Empty =
    *  planner-only. Applies to the `claude`/`gemini` CLI transport (ai_chat). */
   allowedMcp?: string[] | null;
+  /** MCP servers contributed by enabled mods, `{name: {command,args,env}}`.
+   *  Offered to the backend, which merges them UNDER the user's own config
+   *  servers and still honours allowedMcp. */
+  modMcp?: Record<string, unknown> | null;
   /** Give the orchestrator read-only inspection tools (git/gh/ls + file reads),
    *  never Edit/Write. Applies to the `claude` CLI transport (ai_chat). */
   readonly?: boolean | null;
@@ -70,6 +74,7 @@ export class AiClient {
       numCtx: opts?.numCtx ?? null,
       temperature: opts?.temperature ?? null,
       allowedMcp: opts?.allowedMcp ?? null,
+      modMcp: opts?.modMcp ?? null,
       readonly: opts?.readonly ?? null,
     });
   }

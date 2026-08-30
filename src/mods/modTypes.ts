@@ -18,12 +18,13 @@ import type { StackDef } from "../projects/stacks";
 /** What a mod says it touches, shown in plain language before it's enabled.
  *  Nothing is granted implicitly: a contribution whose permission isn't declared
  *  is rejected, so the list the user reads is the whole truth. */
-export type ModPermission = "mcp" | "agents" | "stacks";
+export type ModPermission = "mcp" | "agents" | "stacks" | "macros";
 
 export const PERMISSION_LABELS: Record<ModPermission, string> = {
   mcp: "Add MCP servers the orchestrator can use",
   agents: "Add coding agents to the provider picker",
   stacks: "Teach OctoShell new project types and their commands",
+  macros: "Add buttons to the macro bar that put a command in the terminal",
 };
 
 /** Which permission each contribution key requires. */
@@ -31,6 +32,7 @@ const CONTRIBUTION_PERMISSION: Record<string, ModPermission> = {
   mcpServers: "mcp",
   agentProviders: "agents",
   stacks: "stacks",
+  macros: "macros",
 };
 
 /** An MCP server a mod contributes, in the shape Claude Code's config uses. */
@@ -52,9 +54,29 @@ export interface ModStack {
   serverPatterns?: string[];
 }
 
+/** A macro button a mod contributes.
+ *
+ *  Deliberately NOT a function. A built-in macro is `(controller) => …` and can do
+ *  anything; a mod's is a command string plus how to deliver it. That keeps mods
+ *  data — the button can type a command for you or run one, and nothing else. It
+ *  cannot read output, chain steps, or call into the app. */
+export interface ModMacro {
+  /** Button text. Short — the bar collapses past three. */
+  label: string;
+  /** Tooltip; falls back to the command. */
+  title?: string;
+  /** The shell command. */
+  command: string;
+  /** "submit" runs it; "input" puts it in the box for the user to review first.
+   *  Default is "input", the cautious one: a mod-supplied command should be seen
+   *  before it runs. */
+  mode?: "submit" | "input";
+}
+
 export interface ModContributions {
   mcpServers?: Record<string, ModMcpServer>;
   stacks?: ModStack[];
+  macros?: ModMacro[];
   /** Reserved: agent providers. Not accepted yet — see validate(). */
   agentProviders?: unknown;
 }
@@ -81,6 +103,8 @@ export interface LoadedMod {
   manifest?: ModManifest;
   /** Compiled stacks, ready to merge into the built-in table. */
   stacks: StackDef[];
+  /** Validated macros, ready to append to the macro bar. */
+  macros: ModMacro[];
   /** Everything wrong with this mod. Non-empty means it is NOT loaded. */
   errors: string[];
 }
@@ -98,7 +122,7 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
 export function validateManifest(
   dir: string,
   raw: unknown,
-): { manifest: ModManifest; stacks: StackDef[] } | { errors: string[] } {
+): { manifest: ModManifest; stacks: StackDef[]; macros: ModMacro[] } | { errors: string[] } {
   const errors: string[] = [];
 
   if (!isPlainObject(raw)) return { errors: ["mod.json must contain a JSON object"] };
@@ -235,6 +259,36 @@ export function validateManifest(
       }
     }
 
+    if (contributes.macros !== undefined) {
+      if (!Array.isArray(contributes.macros)) {
+        errors.push('"contributes.macros" must be an array');
+      } else {
+        const ok: ModMacro[] = [];
+        contributes.macros.forEach((m, i) => {
+          const where = `macros[${i}]`;
+          if (!isPlainObject(m)) {
+            errors.push(`${where} must be an object`);
+            return;
+          }
+          if (typeof m.label !== "string" || !m.label.trim()) errors.push(`${where}.label is required`);
+          if (typeof m.command !== "string" || !m.command.trim()) errors.push(`${where}.command is required`);
+          if (m.title !== undefined && typeof m.title !== "string") errors.push(`${where}.title must be a string`);
+          if (m.mode !== undefined && m.mode !== "submit" && m.mode !== "input") {
+            errors.push(`${where}.mode must be "submit" or "input"`);
+          }
+          if (typeof m.label === "string" && typeof m.command === "string") {
+            ok.push({
+              label: m.label,
+              title: m.title as string | undefined,
+              command: m.command,
+              mode: (m.mode as "submit" | "input" | undefined) ?? "input",
+            });
+          }
+        });
+        out.macros = ok;
+      }
+    }
+
     if (contributes.agentProviders !== undefined) {
       // Honest refusal rather than a silent no-op: the provider table still
       // derives its TypeScript union at compile time, so a runtime entry would
@@ -247,6 +301,7 @@ export function validateManifest(
   if (errors.length) return { errors };
 
   return {
+    macros: (out.macros ?? []) as ModMacro[],
     manifest: {
       id: id as string,
       name: raw.name as string,

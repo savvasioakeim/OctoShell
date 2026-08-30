@@ -13,6 +13,7 @@ import { aggregateReviews, type ReviewSnapshot } from "../review/ReviewAgentCont
 import { serviceStore } from "../services/serviceStore";
 import { projectConfigStore } from "../projects/projectConfig";
 import { supportsProfile } from "../agents/providers";
+import { modStore } from "../mods/modStore";
 import { registerOrchestrator } from "../strategy/orchestratorBridge";
 import { useSettings } from "../settings/settingsStore";
 import { dragHasFiles, filesFromDrop, saveDroppedFile } from "../util/drop";
@@ -655,6 +656,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
           temperature: aiProvider === "acp-ollama" ? settings.ollama.temperature : null,
           // MCP servers the user allowed the orchestrator to use (Settings → MCP).
           allowedMcp: settings.orchestratorMcp,
+          modMcp: modStore.mcpServers(),
           // Read-only inspection tools (verify instead of guess; never write code).
           readonly: settings.orchestratorReadonly,
         });

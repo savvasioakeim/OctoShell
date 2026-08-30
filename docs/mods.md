@@ -51,6 +51,7 @@ enabling a mod trustworthy.
 |---|---|
 | `stacks` | Teach OctoShell new project types and their commands |
 | `mcp` | Add MCP servers the orchestrator can use |
+| `macros` | Add buttons to the macro bar that put a command in the terminal |
 | `agents` | Add coding agents to the provider picker *(not accepted yet)* |
 
 ## Contributions
@@ -82,11 +83,30 @@ letting it wedge a shell or, worse, an agent turn.
 Mod stacks are appended **after** the built-ins, so a mod can add a project type
 but never shadow a built-in one that matches the same marker.
 
+### `macros`
+
+A button in the macro bar. Deliberately **not** a function: a built-in macro is
+`(controller) => …` and can do anything, while a mod's is a command string plus
+how to deliver it.
+
+```jsonc
+{
+  "macros": [
+    { "label": "🐳 Docker ps", "title": "List running containers",
+      "command": "docker ps", "mode": "submit" },
+    { "label": "🌿 Branches", "command": "git branch -vv" }
+  ]
+}
+```
+
+`mode` is `"input"` by default — the cautious one, which types the command into
+the box for you to read before running it. `"submit"` runs it immediately. A mod
+macro cannot read output, chain steps, or call into the app; those two deliveries
+are the whole surface.
+
 ### `mcpServers`
 
 MCP servers the orchestrator may use, in the same shape as Claude Code's config.
-The user still ticks each one in **Settings → MCP access** — a mod can offer a
-server, never grant itself use of one.
 
 ```jsonc
 {
@@ -95,6 +115,15 @@ server, never grant itself use of one.
   }
 }
 ```
+
+Two limits, both deliberate:
+
+- The user still ticks each one in **Settings → MCP access**. A mod can put a
+  server in front of you; it can never tick the box for you.
+- **Your own config always wins a name collision.** A mod that declares a server
+  called `github` when your Claude config already has one is ignored and shown as
+  *shadowed by your config*, so installing a mod can never silently redirect an
+  MCP server you already rely on.
 
 ### `agentProviders`
 

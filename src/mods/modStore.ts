@@ -13,7 +13,7 @@ import { useSyncExternalStore } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { KEY, loadJSON, saveJSON } from "../util/persist";
 import { setModStackSource, type StackDef } from "../projects/stacks";
-import { validateManifest, type LoadedMod, type ModMcpServer } from "./modTypes";
+import { validateManifest, type LoadedMod, type ModMacro, type ModMcpServer } from "./modTypes";
 
 interface RawMod {
   dir: string;
@@ -77,16 +77,16 @@ class ModStore {
       const seen = new Set<string>();
       const mods: LoadedMod[] = raw.map((r) => {
         if (r.json === null) {
-          return { dir: r.dir, path: r.path, stacks: [], errors: [r.error ?? "unreadable"] };
+          return { dir: r.dir, path: r.path, stacks: [], macros: [], errors: [r.error ?? "unreadable"] };
         }
         let parsed: unknown;
         try {
           parsed = JSON.parse(r.json);
         } catch (e) {
-          return { dir: r.dir, path: r.path, stacks: [], errors: [`mod.json is not valid JSON — ${e}`] };
+          return { dir: r.dir, path: r.path, stacks: [], macros: [], errors: [`mod.json is not valid JSON — ${e}`] };
         }
         const res = validateManifest(r.dir, parsed);
-        if ("errors" in res) return { dir: r.dir, path: r.path, stacks: [], errors: res.errors };
+        if ("errors" in res) return { dir: r.dir, path: r.path, stacks: [], macros: [], errors: res.errors };
         // Two folders can't both claim an id; the first in (alphabetical) order
         // keeps it, so the outcome doesn't depend on filesystem enumeration luck.
         if (seen.has(res.manifest.id)) {
@@ -94,11 +94,12 @@ class ModStore {
             dir: r.dir,
             path: r.path,
             stacks: [],
+            macros: [],
             errors: [`duplicate mod id "${res.manifest.id}" — another folder already uses it`],
           };
         }
         seen.add(res.manifest.id);
-        return { dir: r.dir, path: r.path, manifest: res.manifest, stacks: res.stacks, errors: [] };
+        return { dir: r.dir, path: r.path, manifest: res.manifest, stacks: res.stacks, macros: res.macros, errors: [] };
       });
       this.emit({ mods, dir, loading: false });
     } catch (e) {
@@ -128,6 +129,11 @@ class ModStore {
   /** Stacks contributed by enabled mods, in mod order. */
   stacks(): StackDef[] {
     return this.active().flatMap((m) => m.stacks);
+  }
+
+  /** Macro buttons contributed by enabled mods, in mod order. */
+  macros(): ModMacro[] {
+    return this.active().flatMap((m) => m.macros);
   }
 
   /** MCP servers contributed by enabled mods, keyed by server name. */
