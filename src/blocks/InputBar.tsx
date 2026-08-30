@@ -523,8 +523,8 @@ export function InputBar({ controller, cwd, busy, value, altScreen, interacting,
                 {/* Native CLIs vs ACP adapters — two labelled sections, so it's
                     clear which integration path each agent runs on. */}
                 {[
-                  { header: "Native CLI", items: PROVIDERS.filter((p) => !p.value.startsWith("acp")) },
-                  { header: "ACP agents", items: PROVIDERS.filter((p) => p.value.startsWith("acp")) },
+                  { header: "Native CLI", items: PROVIDERS.filter((p) => !isAcp(p.value)) },
+                  { header: "ACP agents", items: PROVIDERS.filter((p) => isAcp(p.value)) },
                 ].map((sec) => (
                   <div key={sec.header} className="border-b border-edge/60 py-1 last:border-b-0">
                     <div className="px-2.5 pb-0.5 pt-1 text-[9px] font-semibold uppercase tracking-widest text-muted/70">

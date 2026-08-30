@@ -305,47 +305,8 @@ export function useSettings(): SettingsState {
   return useSyncExternalStore(settingsStore.subscribe, settingsStore.getSnapshot);
 }
 
-/** Models offered for claude (CLI aliases passed to `--model`; null = CLI default). */
-export const CLAUDE_MODELS: { label: string; value: string | null }[] = [
-  { label: "Default", value: null },
-  { label: "Fable", value: "fable" },
-  { label: "Opus", value: "opus" },
-  { label: "Sonnet", value: "sonnet" },
-  { label: "Haiku", value: "haiku" },
-];
-
-/** Models offered for gemini (passed to `-m`; null = CLI default). Kept in sync
- *  with InputBar's MODELS_BY_PROVIDER.gemini — the names this build reports. */
-export const GEMINI_MODELS: { label: string; value: string | null }[] = [
-  { label: "Default (auto)", value: null },
-  { label: "Gemini 3 Pro", value: "gemini-3.1-pro-preview" },
-  { label: "Gemini 3 Flash", value: "gemini-3-flash-preview" },
-  { label: "Gemini 3 Flash Lite", value: "gemini-3.1-flash-lite" },
-];
-
-/** Models offered for local Ollama (via OpenCode's ACP server). Values carry the
- *  `ollama/` provider prefix OpenCode expects (`-m ollama/<model>`); null = let
- *  OpenCode use its configured default. These are common local coding models —
- *  the user must have pulled them (`ollama pull …`) and configured the `ollama`
- *  provider in OpenCode. Qwen2.5-Coder is the strongest at agentic tool-use;
- *  Gemma is lighter but weaker at multi-step tool calls. */
-export const OLLAMA_MODELS: { label: string; value: string | null }[] = [
-  { label: "Default (OpenCode)", value: null },
-  { label: "Qwen2.5 Coder 14B", value: "ollama/qwen2.5-coder:14b" },
-  { label: "Qwen2.5 Coder 7B", value: "ollama/qwen2.5-coder:7b" },
-  { label: "Qwen2.5 Coder 3B", value: "ollama/qwen2.5-coder:3b" },
-  { label: "Gemma 3 4B", value: "ollama/gemma3:4b" },
-];
-
-/** Providers with no wired-up model picker (model selection isn't plumbed through
- *  their adapter yet) — they run their own default, so only "Default" is offered.
- *  Prevents e.g. Codex from wrongly showing Claude's model aliases. */
-const DEFAULT_ONLY: { label: string; value: string | null }[] = [{ label: "Default", value: null }];
-
-/** The model list for a given provider. */
-export function modelsFor(provider: AgentProvider): { label: string; value: string | null }[] {
-  if (provider === "claude" || provider === "acp-claude") return CLAUDE_MODELS;
-  if (provider === "gemini" || provider === "acp-gemini") return GEMINI_MODELS;
-  if (provider === "acp-ollama") return OLLAMA_MODELS;
-  return DEFAULT_ONLY; // codex, cursor, copilot, kiro, opencode — default only
-}
+// Model lists and `modelsFor` moved into agents/providers.ts, where they belong:
+// they are provider data, and keeping them here meant a new agent had to be
+// registered in two files that could silently disagree. Re-exported so the many
+// callers that import them from settings keep working.
+export { CLAUDE_MODELS, GEMINI_MODELS, OLLAMA_MODELS, modelsFor } from "../agents/providers";
