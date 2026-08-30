@@ -189,8 +189,11 @@ mod tests {
 
     #[test]
     fn finds_the_url_in_cloudflareds_decorated_output() {
-        // Real shapes cloudflared has used, box drawing and all.
+        // The first case is VERBATIM output from cloudflared 2026.8.2, captured by
+        // running it — not a remembered shape. The others are older forms kept so
+        // a version bump that reverts the formatting doesn't break the feature.
         let cases = [
+            "2026-08-30T18:15:01Z INF |  https://contributed-native-anybody-tales.trycloudflare.com                                |",
             "2026-08-30T12:00:00Z INF |  https://brave-lion-tiny-fox.trycloudflare.com  |",
             "|  https://abc-def.trycloudflare.com                                       |",
             "INF Your quick Tunnel has been created! Visit it at https://x-y-z.trycloudflare.com",
@@ -208,6 +211,10 @@ mod tests {
         // cloudflared logs its own docs and update links; picking one of those up
         // would hand the user an address that has nothing to do with their machine.
         assert_eq!(extract_url("INF see https://developers.cloudflare.com/argo-tunnel"), None);
+        // Also real: cloudflared announces the request BEFORE it has a URL, and
+        // that line names trycloudflare.com without one. Matching on the domain
+        // instead of the scheme would have returned a truncated address here.
+        assert_eq!(extract_url("2026-08-30T18:14:56Z INF Requesting new quick Tunnel on trycloudflare.com..."), None);
         assert_eq!(extract_url("no url here at all"), None);
     }
 
