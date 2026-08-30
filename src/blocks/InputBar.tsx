@@ -3,7 +3,7 @@ import type { Mode, ShellController } from "../shell/ShellController";
 import { kindLabel, longestCommonPrefix, requestCompletion, type CMatch } from "../shell/completion";
 import { PROVIDERS, supportsProfile, isAcp, type AgentProvider } from "../agents/providers";
 import { useOllamaModels, ollamaModelOptions } from "../agents/ollamaModels";
-import { isServerCommand } from "../services/serviceDetect";
+import { isServerCommand } from "../projects/stacks";
 import { serviceStore } from "../services/serviceStore";
 import { settingsStore, useSettings } from "../settings/settingsStore";
 import { open } from "@tauri-apps/plugin-dialog";

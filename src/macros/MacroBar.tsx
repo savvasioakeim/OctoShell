@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { buildProbe, parseProbe, testCommandFor, testableStackLabels } from "../projects/stacks";
 import { invoke } from "@tauri-apps/api/core";
 import { AiClient } from "../ai/AiClient";
 import type { ShellController } from "../shell/ShellController";
@@ -63,20 +64,17 @@ const MACROS: Macro[] = [
     title: "Run the project tests (auto-detect: npm / cargo / pytest / go)",
     run: async (controller) => {
       const cwd = controller.getCwd();
-      // Detect the right test command from project marker files (cheap probe).
-      const probe =
-        "if(Test-Path package.json){try{$j=Get-Content package.json -Raw|ConvertFrom-Json;" +
-        "if($j.scripts.test){'npm test'}else{'#none'}}catch{'npm test'}}" +
-        "elseif(Test-Path Cargo.toml){'cargo test'}" +
-        "elseif((Test-Path pyproject.toml)-or(Test-Path pytest.ini)-or(Test-Path setup.py)){'pytest'}" +
-        "elseif(Test-Path go.mod){'go test ./...'}else{'#none'}";
-      const cmd = (await invoke<string>("run_capture", { cwd, command: probe })).trim();
-      if (!cmd || cmd === "#none") {
-        controller.setInput("# No test command found (npm/cargo/pytest/go)");
+      // One round trip: ask which marker files exist (and, for JS projects, which
+      // npm scripts are defined), then decide HERE. The probe is generated from
+      // the stack table, so teaching OctoShell a new stack needs no shell code.
+      const out = await invoke<string>("run_capture", { cwd, command: buildProbe() });
+      const hit = testCommandFor(parseProbe(out));
+      if (!hit) {
+        controller.setInput(`# No test command found (looked for ${testableStackLabels()})`);
         return;
       }
       // Run it as a real command so its output lands in the feed as a block.
-      controller.submit(cmd);
+      controller.submit(hit.command);
     },
   },
 ];
