@@ -69,6 +69,7 @@
   <h1>OctoShell</h1>
   <span class="sp"></span>
   <button id="back" style="display:none;padding:6px 12px;min-height:36px">← Back</button>
+  <button id="install" style="display:none;padding:6px 12px;min-height:36px">Install</button>
   <button id="signout" style="display:none;padding:6px 12px;min-height:36px">Sign out</button>
 </header>
 <main id="app"></main>
@@ -79,6 +80,7 @@
   const app = document.getElementById("app");
   const backBtn = document.getElementById("back");
   const outBtn = document.getElementById("signout");
+  const installBtn = document.getElementById("install");
   const KEY = "octoshell.mobile.token";
 
   let token = null;
@@ -249,6 +251,7 @@
     stopPolling();
     const authed = !!token;
     backBtn.style.display = authed && view.name === "feed" ? "" : "none";
+    if (!authed) installBtn.style.display = "none";
     outBtn.style.display = authed ? "" : "none";
     if (!authed) return loginScreen(loginError);
     if (view.name === "feed") return feedScreen(view.id, view.name2, null);
@@ -263,6 +266,46 @@
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible" && token && view.name === "projects") projectsScreen();
   });
+
+  // ---------- install to the home screen ----------
+  //
+  // Chrome fires beforeinstallprompt and lets us show our own button, which is
+  // the whole point: one tap instead of hunting through a menu. Safari has no
+  // such API at all, so iOS gets the instruction once rather than a button that
+  // would do nothing.
+  let deferredPrompt = null;
+  window.addEventListener("beforeinstallprompt", (e) => {
+    e.preventDefault();
+    deferredPrompt = e;
+    installBtn.style.display = "";
+  });
+  installBtn.onclick = async () => {
+    if (!deferredPrompt) return;
+    installBtn.disabled = true;
+    deferredPrompt.prompt();
+    await deferredPrompt.userChoice.catch(() => {});
+    deferredPrompt = null;
+    installBtn.style.display = "none";
+  };
+  window.addEventListener("appinstalled", () => { installBtn.style.display = "none"; });
+
+  function iosHint() {
+    const isIOS = /iP(hone|ad|od)/.test(navigator.userAgent);
+    const standalone = window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone;
+    if (!isIOS || standalone) return null;
+    try { if (localStorage.getItem("octoshell.iosHint") === "seen") return null; } catch {}
+    const bar = el("div", { className: "card", style: "border-color:var(--accent)" },
+      el("p", { style: "margin:0" }, "Add to Home Screen: tap Share, then “Add to Home Screen”."));
+    const dismiss = el("button", { style: "margin-top:8px;width:100%" }, "Got it");
+    dismiss.onclick = () => { try { localStorage.setItem("octoshell.iosHint", "seen"); } catch {} bar.remove(); };
+    bar.append(dismiss);
+    return bar;
+  }
+
+  // Registered only for installability — it caches nothing on purpose.
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.register("/sw.js").catch(() => {});
+  }
 
   render();
 })();

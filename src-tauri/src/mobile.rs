@@ -340,6 +340,36 @@ async fn ui() -> axum::response::Response {
     ([(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")], MOBILE_HTML).into_response()
 }
 
+/// The app icon, as SVG. One file, no raster sizes to keep in step — Android
+/// accepts SVG in a manifest and scales it for every launcher density.
+const ICON_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192">
+<rect width="192" height="192" rx="42" fill="#292D3E"/>
+<text x="96" y="130" font-size="104" text-anchor="middle">🐙</text>
+</svg>"##;
+
+async fn icon() -> axum::response::Response {
+    use axum::response::IntoResponse;
+    ([(axum::http::header::CONTENT_TYPE, "image/svg+xml")], ICON_SVG).into_response()
+}
+
+/// A service worker exists for one reason: Chrome refuses to treat a page as
+/// installable without one. It deliberately caches NOTHING — a stale shell that
+/// talks to a changed API is worse than a page that simply needs the network,
+/// and this app is useless offline anyway (its whole content is live state).
+const SERVICE_WORKER: &str = r#"self.addEventListener("install", () => self.skipWaiting());
+self.addEventListener("activate", (e) => e.waitUntil(self.clients.claim()));
+self.addEventListener("fetch", () => {});
+"#;
+
+async fn service_worker() -> axum::response::Response {
+    use axum::response::IntoResponse;
+    (
+        [(axum::http::header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+        SERVICE_WORKER,
+    )
+        .into_response()
+}
+
 /// Enough manifest for "Add to Home Screen" to give a real app icon and name.
 async fn manifest() -> axum::response::Response {
     use axum::response::IntoResponse;
@@ -347,10 +377,13 @@ async fn manifest() -> axum::response::Response {
         "name": "OctoShell",
         "short_name": "OctoShell",
         "start_url": "/",
+        "scope": "/",
         "display": "standalone",
         "background_color": "#292D3E",
         "theme_color": "#292D3E",
-        "icons": []
+        "icons": [
+            { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+        ]
     });
     (
         [(axum::http::header::CONTENT_TYPE, "application/manifest+json")],
@@ -487,6 +520,8 @@ async fn start_sharing(server: &MobileServer, minutes: u64) -> Result<MobileStat
         .route("/api/approve", post(approve))
         .route("/", get(ui))
         .route("/manifest.webmanifest", get(manifest))
+        .route("/icon.svg", get(icon))
+        .route("/sw.js", get(service_worker))
         .with_state(app_state);
 
     tokio::spawn(async move {
@@ -663,6 +698,12 @@ mod tests {
 
         let r = http.get(format!("{base}/manifest.webmanifest")).send().await.unwrap();
         assert_eq!(r.status(), 200);
+
+        // The PWA's own files must be public too, or Chrome can't install it.
+        for path in ["/manifest.webmanifest", "/icon.svg", "/sw.js"] {
+            let r = http.get(format!("{base}{path}")).send().await.unwrap();
+            assert_eq!(r.status(), 200, "{path} must be served without a token");
+        }
 
         for path in ["/api/projects", "/api/session?id=x", "/api/approvals", "/api/status"] {
             let r = http.get(format!("{base}{path}")).send().await.unwrap();

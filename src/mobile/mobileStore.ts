@@ -135,7 +135,20 @@ class MobileStore {
 
   private startTicking(): void {
     if (this.timer) return;
+    let tick = 0;
     this.timer = setInterval(() => {
+      // Every ten seconds, ask whether the tunnel is still alive. cloudflared can
+      // die on its own, and a UI still showing its address would send you to a
+      // dead link from your phone with nothing to explain it.
+      if (this.state.tunnelUrl && ++tick % 10 === 0) {
+        void invoke<WireTunnel>("tunnel_status")
+          .then((t) => {
+            if (!t.running && this.state.tunnelUrl) {
+              this.set({ tunnelUrl: null, tunnelError: "The tunnel stopped. Open a new address." });
+            }
+          })
+          .catch(() => {});
+      }
       const left = this.state.secondsLeft;
       if (left === null) return;
       if (left <= 1) {

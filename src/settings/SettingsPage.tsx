@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import QRCode from "qrcode";
 import { EXPIRY_CHOICES, fmtCountdown, mobileStore, useMobile } from "../mobile/mobileStore";
 import { modStore, useMods } from "../mods/modStore";
 import { PERMISSION_LABELS } from "../mods/modTypes";
@@ -1641,6 +1642,31 @@ function ModsSection() {
  *  The code is rendered large and monospaced because its whole job is to be read
  *  off this screen and typed on another; the countdown is there because a share
  *  you forgot about is the failure mode this feature has. */
+/** The tunnel address as a QR code, so the phone can just point at it.
+ *  Rendered to SVG (crisp at any size, no canvas) and only re-rendered when the
+ *  URL changes. */
+function TunnelQr({ url }: { url: string }) {
+  const [svg, setSvg] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    void QRCode.toString(url, { type: "svg", margin: 1, width: 168 })
+      .then((s) => live && setSvg(s))
+      .catch(() => live && setSvg(null));
+    return () => {
+      live = false;
+    };
+  }, [url]);
+  if (!svg) return null;
+  return (
+    <div
+      className="mt-2 inline-block rounded-md bg-white p-2"
+      // The SVG comes from the QR library over a URL we produced ourselves, not
+      // from anything a user or mod supplied.
+      dangerouslySetInnerHTML={{ __html: svg }}
+    />
+  );
+}
+
 function MobileSharingSection() {
   const m = useMobile();
   const [minutes, setMinutes] = useState(EXPIRY_CHOICES[0].minutes);
@@ -1721,6 +1747,9 @@ function MobileSharingSection() {
                 >
                   {m.tunnelUrl} ⧉
                 </button>
+                {/* The point of the QR: this address is a random string of words
+                    that nobody wants to retype on a phone keyboard. */}
+                <TunnelQr url={m.tunnelUrl} />
                 <p className="text-xs text-muted">
                   Anyone with this address reaches the code screen — the code, and the lockout
                   behind it, are what protect the machine. It closes when you stop sharing.

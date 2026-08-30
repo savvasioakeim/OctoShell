@@ -36,6 +36,7 @@ struct Running {
     url: String,
 }
 
+
 impl Drop for Running {
     fn drop(&mut self) {
         // Best effort: the job object is the real guarantee, this is just tidy.
@@ -74,6 +75,19 @@ fn extract_url(line: &str) -> Option<String> {
 
 impl TunnelManager {
     pub fn status(&self) -> TunnelStatus {
+        // Reap first: cloudflared can die on its own (network drop, edge refusing
+        // the tunnel), and a UI still showing its address would send you to a
+        // dead link from your phone with no clue why.
+        {
+            let mut guard = self.0.lock().unwrap();
+            let dead = guard
+                .as_mut()
+                .map(|r| matches!(r.child.try_wait(), Ok(Some(_))))
+                .unwrap_or(false);
+            if dead {
+                *guard = None;
+            }
+        }
         let guard = self.0.lock().unwrap();
         match guard.as_ref() {
             Some(r) => TunnelStatus { running: true, url: Some(r.url.clone()) },
