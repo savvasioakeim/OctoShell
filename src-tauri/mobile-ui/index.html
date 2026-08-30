@@ -157,13 +157,30 @@
     input.focus();
   }
 
-  async function projectsScreen() {
+  // A signature of what the list currently shows, so a poll that found nothing
+  // new touches no DOM at all.
+  let listSignature = null;
+
+  async function projectsScreen(opts = {}) {
+    const silent = opts.silent === true;
     const wrap = el("div", { className: "stack" });
-    app.replaceChildren(el("p", { className: "muted" }, "Loading…"));
+    const hint = iosHint();
+    if (hint) wrap.append(hint);
+    // "Loading…" belongs to a screen you asked for, never to a background poll:
+    // wiping what you are reading every few seconds is worse than showing data
+    // that is a moment stale.
+    if (!silent) app.replaceChildren(el("p", { className: "muted" }, "Loading…"));
     try {
       // Approvals first, always: a blocked agent is the only thing here that is
       // costing time right now.
       const [ap, pr] = await Promise.all([api("/api/approvals"), api("/api/projects")]);
+      // Only what is actually rendered. Block counts and busy flags change
+      // constantly while an agent works; including anything finer would put us
+      // straight back to redrawing every few seconds.
+      const signature = JSON.stringify([
+        (ap.approvals || []).map((a) => a.requestId),
+        (pr.projects || []).map((p) => [p.id, p.name, p.agentBusy, p.blocks]),
+      ]);
       if (ap.approvals?.length) {
         wrap.append(el("p", { className: "tiny" }, "Waiting for you"));
         for (const a of ap.approvals) wrap.append(approvalCard(a));
@@ -180,9 +197,19 @@
         card.onclick = () => { view = { name: "feed", id: p.id, name2: p.name }; render(); };
         wrap.append(card);
       }
+      // Nothing changed: leave the DOM, the scroll position and any half-pressed
+      // button exactly as they are.
+      if (silent && signature === listSignature) return;
+      listSignature = signature;
+      const y = window.scrollY;
       app.replaceChildren(wrap);
+      // Replacing content resets scroll, and a poll must not throw you back to
+      // the top while you are reading further down.
+      if (silent) window.scrollTo(0, y);
     } catch (e) {
-      app.replaceChildren(el("p", { className: "err" }, String(e.message || e)));
+      // A failed poll must not blank the screen either — only a screen you asked
+      // for gets to show an error in place of content.
+      if (!silent) app.replaceChildren(el("p", { className: "err" }, String(e.message || e)));
     }
   }
 
@@ -251,6 +278,7 @@
 
   function render(loginError) {
     stopPolling();
+    listSignature = null; // a screen you asked for always draws
     const authed = !!token;
     backBtn.style.display = authed && view.name === "feed" ? "" : "none";
     if (!authed) installBtn.style.display = "none";
@@ -261,13 +289,19 @@
     projectsScreen();
     // Only the list polls. A feed you are reading must not reshuffle under your
     // thumb; you pull back to the list to refresh it.
-    poll = setInterval(() => { if (view.name === "projects" && document.visibilityState === "visible") projectsScreen(); }, 5000);
+    poll = setInterval(() => {
+      if (view.name === "projects" && document.visibilityState === "visible") {
+        void projectsScreen({ silent: true });
+      }
+    }, 5000);
   }
 
   backBtn.onclick = () => { view = { name: "projects" }; render(); };
   outBtn.onclick = signOut;
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible" && token && view.name === "projects") projectsScreen();
+    if (document.visibilityState === "visible" && token && view.name === "projects") {
+      void projectsScreen({ silent: true });
+    }
   });
 
   // ---------- notifications ----------
