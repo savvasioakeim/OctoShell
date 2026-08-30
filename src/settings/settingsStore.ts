@@ -36,6 +36,23 @@ export type TraceSpeed = "fast" | "normal" | "stealth" | "static";
 /** Speech-to-text backend: the browser's free Web Speech API, or Whisper. */
 export type SttEngine = "web" | "whisper";
 
+/** How the phone companion is exposed to the internet.
+ *
+ *  "quick" needs nothing but cloudflared and gives a random address that dies
+ *  with the session. "named" is a tunnel you created in Cloudflare's dashboard:
+ *  the address is yours and stays put, which is the only way an app saved to a
+ *  phone's home screen still works tomorrow. */
+export interface MobileSettings {
+  mode: "quick" | "named";
+  /** Tunnel token from the Cloudflare dashboard. Only for "named". */
+  token: string;
+  /** The public hostname routed to that tunnel, e.g. mobile.example.com. */
+  hostname: string;
+  /** Port the companion binds to in "named" mode — must match the dashboard's
+   *  ingress, because dashboard ingress ignores --url. */
+  port: number;
+}
+
 export interface WorkspaceSettings {
   /** The orchestrator isolates each dispatched task in its own git worktree. */
   orchestratorWorktrees: boolean;
@@ -125,6 +142,8 @@ export interface SettingsState {
   orchestratorReadonly: boolean;
   /** Workspace memory: semantic recall over past reports/reviews/dispatches. */
   memory: MemorySettings;
+  /** Phone companion exposure. */
+  mobile: MobileSettings;
 }
 
 export interface MemorySettings {
@@ -137,6 +156,15 @@ export interface MemorySettings {
   /** How many memories are injected into the orchestrator's context. */
   topK: number;
 }
+
+const DEFAULT_MOBILE: MobileSettings = {
+  // Quick by default: it works with nothing configured, and its address dying
+  // with the session is a security property, not a shortcoming.
+  mode: "quick",
+  token: "",
+  hostname: "",
+  port: 8787,
+};
 
 const DEFAULT_WORKSPACE: WorkspaceSettings = {
   orchestratorWorktrees: true,
@@ -192,6 +220,7 @@ class SettingsStore {
       orchestratorMcp: loadJSON<string[]>(KEY.orchestratorMcp, []),
       orchestratorReadonly: loadJSON<boolean>(KEY.orchestratorReadonly, true),
       memory: { ...DEFAULT_MEMORY, ...loadJSON<Partial<MemorySettings>>(KEY.memorySettings, {}) },
+      mobile: { ...DEFAULT_MOBILE, ...loadJSON<Partial<MobileSettings>>(KEY.mobileSettings, {}) },
     };
     // Push the persisted sandbox flag to the backend once at startup so the ACP
     // terminal routing matches the UI from the first turn (fire-and-forget).
@@ -226,11 +255,16 @@ class SettingsStore {
     saveJSON(KEY.orchestratorMcp, next.orchestratorMcp);
     saveJSON(KEY.orchestratorReadonly, next.orchestratorReadonly);
     saveJSON(KEY.memorySettings, next.memory);
+    saveJSON(KEY.mobileSettings, next.mobile);
     this.listeners.forEach((l) => l());
   }
 
   setOrchestratorReadonly(on: boolean): void {
     this.commit({ ...this.state, orchestratorReadonly: on });
+  }
+
+  setMobile(patch: Partial<MobileSettings>): void {
+    this.commit({ ...this.state, mobile: { ...this.state.mobile, ...patch } });
   }
 
   setMemory(patch: Partial<MemorySettings>): void {

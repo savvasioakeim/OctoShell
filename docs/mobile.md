@@ -47,6 +47,36 @@ Two more, worth knowing:
 - The page itself is served without a token (it holds no data, only the code
   prompt). Every data route refuses without one.
 
+## A permanent address (and why you'd want one)
+
+A quick tunnel's address is **random and different every session**. That's good
+for security and fatal for one thing: an app saved to your phone's home screen
+would open a dead address tomorrow. If you want to install it, you need a named
+tunnel.
+
+**Settings → Phone companion → Public address → Named tunnel.**
+
+In Cloudflare: **Zero Trust → Networks → Tunnels → Create**, copy the token, and
+add a public hostname pointing at `http://127.0.0.1:8787` (or whichever port you
+set). Paste the token and hostname into OctoShell.
+
+The port has to match, and cannot be random: a dashboard-managed tunnel takes its
+ingress from the dashboard, and `--url` does not override that.
+
+### Put Access in front of it
+
+A permanent address is findable by anyone, and it points at a machine where
+agents may run without asking. The quick tunnel's random, short-lived URL was
+doing real work; a named one gives that up.
+
+**Zero Trust → Access → Applications**, add the hostname, and allow only your own
+email. A request then never reaches your machine without a verified identity, and
+the access code becomes a second factor instead of the only one. It's free, and
+the session cookie lasts as long as you configure — in practice you sign in once
+a month, not every time.
+
+This is the one part of the setup I'd call non-optional.
+
 ## The public address
 
 "Open a public address" runs a [Cloudflare quick

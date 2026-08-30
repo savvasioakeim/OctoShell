@@ -1669,6 +1669,7 @@ function TunnelQr({ url }: { url: string }) {
 
 function MobileSharingSection() {
   const m = useMobile();
+  const { mobile: mobileCfg } = useSettings();
   const [minutes, setMinutes] = useState(EXPIRY_CHOICES[0].minutes);
 
   useEffect(() => {
@@ -1681,6 +1682,65 @@ function MobileSharingSection() {
       title="Phone companion"
       desc="Share this workspace with your phone: see what the agents are doing from anywhere. The server only exists while sharing is on — stopping it removes the socket, not just the permission."
     >
+      <div className="mb-3 space-y-2 rounded-md border border-edge bg-card px-3 py-2">
+        <Field label="Public address">
+          <Select
+            value={mobileCfg.mode}
+            onChange={(v) => settingsStore.setMobile({ mode: v as "quick" | "named" })}
+            options={[
+              { label: "Quick tunnel — random address, gone when you stop", value: "quick" },
+              { label: "Named tunnel — your own domain, stays put", value: "named" },
+            ]}
+          />
+        </Field>
+        {mobileCfg.mode === "named" ? (
+          <div className="space-y-2">
+            <Field label="Tunnel token (Cloudflare → Zero Trust → Networks → Tunnels)">
+              <input
+                type="password"
+                value={mobileCfg.token}
+                onChange={(e) => settingsStore.setMobile({ token: e.target.value })}
+                placeholder="eyJhIjoi…"
+                className="w-full rounded border border-edge bg-well px-2 py-1.5 text-sm"
+              />
+            </Field>
+            <Field label="Public hostname you routed to it">
+              <input
+                value={mobileCfg.hostname}
+                onChange={(e) => settingsStore.setMobile({ hostname: e.target.value })}
+                placeholder="mobile.example.com"
+                className="w-full rounded border border-edge bg-well px-2 py-1.5 text-sm"
+              />
+            </Field>
+            <Field label="Local port (must match the tunnel's public-hostname service)">
+              <input
+                type="number"
+                value={mobileCfg.port}
+                onChange={(e) => settingsStore.setMobile({ port: Number(e.target.value) || 8787 })}
+                className="w-32 rounded border border-edge bg-well px-2 py-1.5 text-sm"
+              />
+            </Field>
+            {/* This is the trade the mode makes, and it should be impossible to
+                miss: a permanent address is findable, where a quick tunnel's is
+                random and gone in an hour. */}
+            <p className="text-xs text-amber-300">
+              A permanent address can be found by anyone, and it points at a machine where agents
+              may run without asking. Put <strong>Cloudflare Access</strong> in front of this
+              hostname (free, Zero Trust → Access → Applications) so a request never reaches this
+              machine without a verified identity. The access code then becomes a second factor
+              rather than the only one.
+            </p>
+          </div>
+        ) : (
+          <p className="text-xs text-muted">
+            Needs nothing configured. The address is random and stops existing when you stop
+            sharing — which is a security property, not a shortcoming. It also changes every time,
+            so an app saved to your phone's home screen won't keep working; use a named tunnel for
+            that.
+          </p>
+        )}
+      </div>
+
       {!m.sharing ? (
         <div className="flex flex-wrap items-center gap-3">
           <Select
@@ -1771,8 +1831,9 @@ function MobileSharingSection() {
                   {m.tunnelBusy ? "Opening…" : "Open a public address"}
                 </button>
                 <span className="text-xs text-muted">
-                  Runs a Cloudflare quick tunnel so your phone can reach this machine. Without it,
-                  the server is local only.
+                  {mobileCfg.mode === "named"
+                    ? `Runs your named tunnel and serves it at ${mobileCfg.hostname || "the hostname above"}.`
+                    : "Runs a Cloudflare quick tunnel so your phone can reach this machine. Without it, the server is local only."}
                 </span>
               </div>
             )}

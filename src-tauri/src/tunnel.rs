@@ -101,20 +101,47 @@ impl TunnelManager {
     }
 }
 
-/// Start a quick tunnel to `port` and return its public URL.
+/// Start a tunnel to `port` and return its public URL.
+///
+/// Two modes. A **quick** tunnel needs nothing but the binary and hands back a
+/// random `trycloudflare.com` address that dies with the session. A **named**
+/// tunnel is one you created in Cloudflare's dashboard: pass its token and the
+/// hostname you routed to it, and the address is yours and stays put — which is
+/// the only way an installed home-screen app keeps working tomorrow.
+///
+/// Named mode takes its ingress from the dashboard, so it never sees `--url` and
+/// never prints a URL: the hostname the caller supplies IS the address.
 #[tauri::command]
 pub async fn tunnel_start(
     manager: tauri::State<'_, TunnelManager>,
     port: u16,
+    token: Option<String>,
+    hostname: Option<String>,
 ) -> Result<TunnelStatus, String> {
     let mgr = TunnelManager(manager.inner().0.clone());
     mgr.stop(); // never leave a second tunnel pointing at an old port
 
+    let named = match (token.as_deref(), hostname.as_deref()) {
+        (Some(t), Some(h)) if !t.trim().is_empty() && !h.trim().is_empty() => {
+            Some((t.trim().to_string(), h.trim().trim_end_matches('/').to_string()))
+        }
+        (Some(t), _) if !t.trim().is_empty() => {
+            return Err("a named tunnel also needs the public hostname you routed to it".into())
+        }
+        _ => None,
+    };
+
     tauri::async_runtime::spawn_blocking(move || {
         let mut cmd = Command::new("cloudflared");
-        cmd.args(["tunnel", "--no-autoupdate", "--url", &format!("http://127.0.0.1:{port}")])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+        match &named {
+            Some((token, _)) => {
+                cmd.args(["tunnel", "--no-autoupdate", "run", "--token", token]);
+            }
+            None => {
+                cmd.args(["tunnel", "--no-autoupdate", "--url", &format!("http://127.0.0.1:{port}")]);
+            }
+        }
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
@@ -133,6 +160,16 @@ pub async fn tunnel_start(
             Err(e) => return Err(format!("could not start cloudflared: {e}")),
         };
         crate::jobctl::add(child.id());
+
+        // Named tunnels never print an address — the hostname from the dashboard
+        // is the address. Wait for the edge to serve it, then report it.
+        if let Some((_, host)) = &named {
+            let url = if host.starts_with("http") { host.clone() } else { format!("https://{host}") };
+            wait_until_live(&url);
+            let status = TunnelStatus { running: true, url: Some(url.clone()) };
+            *mgr.0.lock().unwrap() = Some(Running { child, url });
+            return Ok(status);
+        }
 
         // cloudflared prints the URL on stderr, but that has moved between
         // versions — read BOTH rather than depending on which stream it picked.
@@ -164,6 +201,12 @@ pub async fn tunnel_start(
         let began = Instant::now();
         loop {
             if let Some(url) = found.lock().unwrap().clone() {
+                // cloudflared prints the address BEFORE Cloudflare's edge has
+                // finished registering the tunnel, so opening it immediately gives
+                // error 1033 — "no tunnel here". Wait for the edge to agree before
+                // handing the URL to the UI, or the first thing the user sees on
+                // their phone is a Cloudflare error page.
+                wait_until_live(&url);
                 let status = TunnelStatus { running: true, url: Some(url.clone()) };
                 *mgr.0.lock().unwrap() = Some(Running { child, url });
                 return Ok(status);
@@ -184,6 +227,33 @@ pub async fn tunnel_start(
     })
     .await
     .map_err(|e| format!("tunnel task failed: {e}"))?
+}
+
+/// Poll the public address until Cloudflare's edge serves it, or give up.
+///
+/// Giving up is fine and deliberate: the tunnel is up either way, and a URL that
+/// needs another second is better than refusing to show one at all. This only
+/// removes the common case of handing over an address a moment too early.
+fn wait_until_live(url: &str) {
+    const BUDGET: Duration = Duration::from_secs(12);
+    let began = Instant::now();
+    let client = match reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(4))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    while began.elapsed() < BUDGET {
+        if let Ok(r) = client.get(url).send() {
+            // Any answer from OUR server counts, including the 401 an unauthorised
+            // probe gets. What we're waiting out is Cloudflare's own 5xx/1033.
+            if r.status().as_u16() < 500 {
+                return;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(400));
+    }
 }
 
 #[tauri::command]

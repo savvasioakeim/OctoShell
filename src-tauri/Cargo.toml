@@ -32,7 +32,7 @@ axum = { version = "0.8", default-features = false, features = ["http1", "json",
 # unguessable, not merely unpredictable.
 getrandom = "0.3"
 # Server-side AI calls; rustls avoids a system OpenSSL dependency on Windows.
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream", "blocking"] }
 
 # Optional Docker sandbox for agent commands (docker.rs). bollard's default
 # features use rustls (not system OpenSSL), so they're consistent with our

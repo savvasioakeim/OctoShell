@@ -471,28 +471,42 @@ impl MobileServer {
 }
 
 /// Start sharing for `minutes`, replacing any current session. Returns the code.
+///
+/// `port` binds somewhere specific instead of a random port. A NAMED tunnel needs
+/// it: its ingress is configured in Cloudflare's dashboard against a fixed
+/// address, and `--url` does not override dashboard ingress rules — so the port
+/// has to be the one the dashboard was told about. Quick tunnels keep the random
+/// port, which is one less thing to collide with.
 #[tauri::command]
 pub async fn mobile_start(
     server: tauri::State<'_, MobileServer>,
     app: AppHandle,
     minutes: u64,
+    port: Option<u16>,
 ) -> Result<MobileStatus, String> {
     let s = server.inner().clone();
     *s.emit.lock().unwrap() = Some(Arc::new(move |e: AskEvent| {
         app.emit("mobile://request", e).is_ok()
     }));
-    start_sharing(&s, minutes).await
+    start_sharing(&s, minutes, port).await
 }
 
 /// The whole of starting, minus Tauri — so the door can be tested by knocking on
 /// it, rather than by reading the code and hoping.
-async fn start_sharing(server: &MobileServer, minutes: u64) -> Result<MobileStatus, String> {
+async fn start_sharing(server: &MobileServer, minutes: u64, port: Option<u16>) -> Result<MobileStatus, String> {
     let minutes = minutes.clamp(1, 24 * 60);
     // Bind before publishing any state, so a failure leaves sharing off rather
     // than advertising a code nobody can reach.
-    let listener = TcpListener::bind(("127.0.0.1", 0))
-        .await
-        .map_err(|e| format!("could not open the mobile port: {e}"))?;
+    let want = port.unwrap_or(0);
+    let listener = TcpListener::bind(("127.0.0.1", want)).await.map_err(|e| {
+        if want == 0 {
+            format!("could not open the mobile port: {e}")
+        } else {
+            // Naming the port matters: with a fixed one this is usually "something
+            // else already has it", which the user can act on.
+            format!("could not open port {want}: {e}. Something else may be using it.")
+        }
+    })?;
     let port = listener.local_addr().map_err(|e| e.to_string())?.port();
 
     let (tx, rx) = oneshot::channel::<()>();
@@ -593,7 +607,7 @@ mod tests {
     #[tokio::test]
     async fn the_front_door_holds() {
         let server = MobileServer::default();
-        let st = start_sharing(&server, 30).await.expect("start");
+        let st = start_sharing(&server, 30, None).await.expect("start");
         let port = st.port.expect("port");
         let code = st.code.clone().expect("code");
         let base = format!("http://127.0.0.1:{port}");
@@ -684,7 +698,7 @@ mod tests {
     #[tokio::test]
     async fn the_page_is_public_but_the_data_is_not() {
         let server = MobileServer::default();
-        let st = start_sharing(&server, 30).await.expect("start");
+        let st = start_sharing(&server, 30, None).await.expect("start");
         let base = format!("http://127.0.0.1:{}", st.port.unwrap());
         let http = reqwest::Client::new();
 
@@ -773,7 +787,7 @@ mod tests {
     #[tokio::test]
     async fn a_state_request_without_a_window_fails_fast() {
         let server = MobileServer::default();
-        let st = start_sharing(&server, 30).await.expect("start");
+        let st = start_sharing(&server, 30, None).await.expect("start");
         let base = format!("http://127.0.0.1:{}", st.port.unwrap());
         let http = reqwest::Client::new();
         let token = http
@@ -822,7 +836,7 @@ mod tests {
     #[tokio::test]
     async fn expiry_closes_the_door() {
         let server = MobileServer::default();
-        let st = start_sharing(&server, 30).await.expect("start");
+        let st = start_sharing(&server, 30, None).await.expect("start");
         let port = st.port.unwrap();
         let base = format!("http://127.0.0.1:{port}");
         let http = reqwest::Client::new();

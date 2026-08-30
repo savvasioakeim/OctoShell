@@ -7,6 +7,7 @@
 
 import { useSyncExternalStore } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { settingsStore } from "../settings/settingsStore";
 
 export interface MobileState {
   sharing: boolean;
@@ -116,7 +117,13 @@ class MobileStore {
     if (!port) return;
     this.set({ tunnelBusy: true, tunnelError: null });
     try {
-      const t = await invoke<WireTunnel>("tunnel_start", { port });
+      const cfg = settingsStore.getSnapshot().mobile;
+      const named = cfg.mode === "named";
+      const t = await invoke<WireTunnel>("tunnel_start", {
+        port,
+        token: named ? cfg.token : null,
+        hostname: named ? cfg.hostname : null,
+      });
       this.set({ tunnelUrl: t.url, tunnelBusy: false });
     } catch (e) {
       // Not having cloudflared is the common case, not a crash — the local
@@ -168,8 +175,12 @@ class MobileStore {
 
   async start(minutes: number): Promise<void> {
     this.set({ busy: true, error: null });
+    const cfg = settingsStore.getSnapshot().mobile;
     try {
-      this.apply(await invoke<WireStatus>("mobile_start", { minutes }));
+      // A named tunnel's ingress points at a fixed port, so the companion has to
+      // bind there rather than wherever the OS felt like.
+      const port = cfg.mode === "named" ? cfg.port : null;
+      this.apply(await invoke<WireStatus>("mobile_start", { minutes, port }));
     } catch (e) {
       this.set({ busy: false, error: String(e) });
     }
