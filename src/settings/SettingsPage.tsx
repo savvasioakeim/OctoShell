@@ -1851,6 +1851,21 @@ function MobileSharingSection() {
                 {/* The point of the QR: this address is a random string of words
                     that nobody wants to retype on a phone keyboard. */}
                 <TunnelQr url={m.tunnelUrl} />
+                {m.tunnelConnections !== null && m.tunnelConnections < m.tunnelHealthyConnections && (
+                  <p className="rounded border border-amber-400/40 bg-amber-500/10 px-2 py-1 text-xs text-amber-300">
+                    Connected to only <strong>{m.tunnelConnections} of {m.tunnelHealthyConnections}</strong>{" "}
+                    Cloudflare locations. The address may work from this computer and fail from your
+                    phone, because a request arriving somewhere the tunnel isn't connected has
+                    nowhere to go. Stop and start the public address to try for a full set.
+                  </p>
+                )}
+                {m.tunnelUrlIsNew && (
+                  <p className="rounded border border-amber-400/40 bg-amber-500/10 px-2 py-1 text-xs text-amber-300">
+                    This address is <strong>new</strong>. Anything pointing at the previous one — a
+                    saved link, your phone's history, an installed app — will say the site can't be
+                    reached. Scan the code again, or use a named tunnel to stop the address moving.
+                  </p>
+                )}
                 <p className="text-xs text-muted">
                   Anyone with this address reaches the code screen — the code, and the lockout
                   behind it, are what protect the machine. It closes when you stop sharing.

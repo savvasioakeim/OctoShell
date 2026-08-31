@@ -8,6 +8,7 @@
 import { useSyncExternalStore } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { settingsStore } from "../settings/settingsStore";
+import { KEY, loadJSON, saveJSON } from "../util/persist";
 
 export interface MobileState {
   sharing: boolean;
@@ -27,6 +28,15 @@ export interface MobileState {
   /** Public URL from cloudflared, or null when only local. */
   tunnelUrl: string | null;
   tunnelBusy: boolean;
+  /** True when this address differs from the last one handed out. A quick
+   *  tunnel's address changes every session, and reusing yesterday's is the
+   *  single most common way this feature appears broken. */
+  tunnelUrlIsNew: boolean;
+  /** Live edge connections cloudflared holds, and how many a healthy tunnel has.
+   *  Fewer means the address answers from some networks and not others — the
+   *  failure that looks like "it works on my computer but not my phone". */
+  tunnelConnections: number | null;
+  tunnelHealthyConnections: number;
   /** Why the tunnel isn't up — usually "cloudflared isn't installed". */
   tunnelError: string | null;
 }
@@ -35,6 +45,8 @@ export interface MobileState {
 interface WireTunnel {
   running: boolean;
   url: string | null;
+  connections: number | null;
+  healthy_connections: number;
 }
 
 interface WireStatus {
@@ -61,6 +73,9 @@ const EMPTY: MobileState = {
   error: null,
   tunnelUrl: null,
   tunnelBusy: false,
+  tunnelUrlIsNew: false,
+  tunnelConnections: null,
+  tunnelHealthyConnections: 4,
   tunnelError: null,
 };
 
@@ -115,7 +130,11 @@ class MobileStore {
     try {
       this.apply(await invoke<WireStatus>("mobile_status"));
       const t = await invoke<WireTunnel>("tunnel_status");
-      this.set({ tunnelUrl: t.running ? t.url : null });
+      this.set({
+        tunnelUrl: t.running ? t.url : null,
+        tunnelConnections: t.connections,
+        tunnelHealthyConnections: t.healthy_connections,
+      });
     } catch (e) {
       this.set({ busy: false, error: String(e) });
     }
@@ -134,7 +153,19 @@ class MobileStore {
         token: named ? cfg.token : null,
         hostname: named ? cfg.hostname : null,
       });
-      this.set({ tunnelUrl: t.url, tunnelBusy: false });
+      // Say so when the address changed. A saved link, a browser history entry or
+      // an installed app all point at the previous one, and they fail in a way
+      // that looks like the server is down rather than like the address moved.
+      const previous = loadJSON<string | null>(KEY.lastTunnelUrl, null);
+      const changed = !!t.url && !!previous && t.url !== previous;
+      if (t.url) saveJSON(KEY.lastTunnelUrl, t.url);
+      this.set({
+        tunnelUrl: t.url,
+        tunnelBusy: false,
+        tunnelUrlIsNew: changed,
+        tunnelConnections: t.connections,
+        tunnelHealthyConnections: t.healthy_connections,
+      });
     } catch (e) {
       // Not having cloudflared is the common case, not a crash — the local
       // server keeps working, so this is a note rather than a failure.
@@ -162,6 +193,10 @@ class MobileStore {
           .then((t) => {
             if (!t.running && this.state.tunnelUrl) {
               this.set({ tunnelUrl: null, tunnelError: "The tunnel stopped. Open a new address." });
+            } else if (t.running) {
+              // Health can degrade after it starts, so keep watching rather than
+              // trusting the reading taken at the moment it came up.
+              this.set({ tunnelConnections: t.connections });
             }
           })
           .catch(() => {});

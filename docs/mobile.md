@@ -75,6 +75,24 @@ Two costs, both real:
 Windows will ask to allow OctoShell on private networks the first time. Say yes
 for **Private** and not Public, or the phone simply times out with no clue why.
 
+### If the address works on your computer but not your phone
+
+Check the connection count in the sharing panel. cloudflared normally holds
+**four** connections to different Cloudflare locations; with fewer, a request
+arriving somewhere it isn't connected has nowhere to go — so the same address
+answers from one network and fails from another, which looks exactly like the app
+being broken.
+
+Stop and start the public address to try for a full set.
+
+Two more things that look like a broken tunnel and aren't:
+
+- **`*.trycloudflare.com` is a wildcard.** Every subdomain resolves, whether a
+  tunnel is behind it or not, so "it resolves" proves nothing.
+- **The address changes every session.** A saved link, browser history or an
+  installed app all point at the previous one. The panel says when the address is
+  new; a named tunnel stops it moving at all.
+
 ## A permanent address (and why you'd want one)
 
 A quick tunnel's address is **random and different every session**. That's good

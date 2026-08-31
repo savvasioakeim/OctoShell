@@ -34,7 +34,18 @@ const URL_TIMEOUT: Duration = Duration::from_secs(25);
 struct Running {
     child: Child,
     url: String,
+    /// cloudflared's own metrics server, logged at startup. It answers /ready
+    /// with how many edge connections are live — the difference between a tunnel
+    /// that works and one that works only from where you happen to be standing.
+    metrics: Option<String>,
 }
+
+/// How many edge connections a healthy quick tunnel keeps. cloudflared spreads
+/// them across data centres on purpose: with fewer, a request that lands at a
+/// centre the tunnel isn't connected to has nowhere to go, so the address answers
+/// from one network and not another. That failure is invisible from the machine
+/// running it, which is exactly where you'd be looking.
+const HEALTHY_CONNECTIONS: u32 = 4;
 
 
 impl Drop for Running {
@@ -52,6 +63,35 @@ pub struct TunnelManager(Arc<Mutex<Option<Running>>>);
 pub struct TunnelStatus {
     pub running: bool,
     pub url: Option<String>,
+    /// Live edge connections, when cloudflared will tell us. None = unknown.
+    pub connections: Option<u32>,
+    /// What a healthy tunnel should have, so the UI needn't hardcode it.
+    pub healthy_connections: u32,
+}
+
+/// The address cloudflared logs for its own metrics server, e.g.
+/// `Starting metrics server on 127.0.0.1:20241/metrics`.
+fn extract_metrics(line: &str) -> Option<String> {
+    let idx = line.find("metrics server on ")? + "metrics server on ".len();
+    let rest = &line[idx..];
+    let end = rest.find(|c: char| c.is_whitespace()).unwrap_or(rest.len());
+    let addr = rest[..end].trim_end_matches("/metrics");
+    if addr.contains(':') {
+        Some(addr.to_string())
+    } else {
+        None
+    }
+}
+
+/// How many edge connections cloudflared currently has, or None if it won't say.
+fn ready_connections(metrics: &str) -> Option<u32> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .ok()?;
+    let body = client.get(format!("http://{metrics}/ready")).send().ok()?.text().ok()?;
+    let v: serde_json::Value = serde_json::from_str(&body).ok()?;
+    v.get("readyConnections")?.as_u64().map(|n| n as u32)
 }
 
 /// Pull the first `https://…trycloudflare.com` out of a log line.
@@ -90,8 +130,18 @@ impl TunnelManager {
         }
         let guard = self.0.lock().unwrap();
         match guard.as_ref() {
-            Some(r) => TunnelStatus { running: true, url: Some(r.url.clone()) },
-            None => TunnelStatus { running: false, url: None },
+            Some(r) => TunnelStatus {
+                running: true,
+                url: Some(r.url.clone()),
+                connections: r.metrics.as_deref().and_then(ready_connections),
+                healthy_connections: HEALTHY_CONNECTIONS,
+            },
+            None => TunnelStatus {
+                running: false,
+                url: None,
+                connections: None,
+                healthy_connections: HEALTHY_CONNECTIONS,
+            },
         }
     }
 
@@ -161,21 +211,12 @@ pub async fn tunnel_start(
         };
         crate::jobctl::add(child.id());
 
-        // Named tunnels never print an address — the hostname from the dashboard
-        // is the address. Wait for the edge to serve it, then report it.
-        if let Some((_, host)) = &named {
-            let url = if host.starts_with("http") { host.clone() } else { format!("https://{host}") };
-            wait_until_live(&url);
-            let status = TunnelStatus { running: true, url: Some(url.clone()) };
-            *mgr.0.lock().unwrap() = Some(Running { child, url });
-            return Ok(status);
-        }
-
         // cloudflared prints the URL on stderr, but that has moved between
         // versions — read BOTH rather than depending on which stream it picked.
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
         let found: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let metrics: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
         let mut readers = Vec::new();
         for stream in [
             stdout.map(|s| Box::new(s) as Box<dyn std::io::Read + Send>),
@@ -185,6 +226,7 @@ pub async fn tunnel_start(
         .flatten()
         {
             let found = found.clone();
+            let metrics = metrics.clone();
             readers.push(std::thread::spawn(move || {
                 for line in BufReader::new(stream).lines().map_while(Result::ok) {
                     if let Some(u) = extract_url(&line) {
@@ -192,23 +234,57 @@ pub async fn tunnel_start(
                         if g.is_none() {
                             *g = Some(u);
                         }
-                        // Keep draining: a full pipe would block cloudflared.
                     }
+                    if let Some(m) = extract_metrics(&line) {
+                        let mut g = metrics.lock().unwrap();
+                        if g.is_none() {
+                            *g = Some(m);
+                        }
+                    }
+                    // Keep draining either way: a full pipe would block cloudflared.
                 }
             }));
+        }
+
+        // Named tunnels never print an address — the hostname from the dashboard
+        // IS the address. Placed after the readers start so the metrics address
+        // is captured for them too: connection health matters just as much on a
+        // tunnel you rely on every day.
+        if let Some((_, host)) = &named {
+            let url = if host.starts_with("http") { host.clone() } else { format!("https://{host}") };
+            wait_until_live(&url);
+            let m = metrics.lock().unwrap().clone();
+            let status = TunnelStatus {
+                running: true,
+                url: Some(url.clone()),
+                connections: m.as_deref().and_then(ready_connections),
+                healthy_connections: HEALTHY_CONNECTIONS,
+            };
+            *mgr.0.lock().unwrap() = Some(Running { child, url, metrics: m });
+            return Ok(status);
         }
 
         let began = Instant::now();
         loop {
             if let Some(url) = found.lock().unwrap().clone() {
+                // Give the remaining edge connections a moment to register before
+                // reporting health — they come up over a second or two, and
+                // reporting 1-of-4 the instant the URL appears would cry wolf.
+                std::thread::sleep(Duration::from_millis(1200));
                 // cloudflared prints the address BEFORE Cloudflare's edge has
                 // finished registering the tunnel, so opening it immediately gives
                 // error 1033 — "no tunnel here". Wait for the edge to agree before
                 // handing the URL to the UI, or the first thing the user sees on
                 // their phone is a Cloudflare error page.
                 wait_until_live(&url);
-                let status = TunnelStatus { running: true, url: Some(url.clone()) };
-                *mgr.0.lock().unwrap() = Some(Running { child, url });
+                let m = metrics.lock().unwrap().clone();
+                let status = TunnelStatus {
+                    running: true,
+                    url: Some(url.clone()),
+                    connections: m.as_deref().and_then(ready_connections),
+                    healthy_connections: HEALTHY_CONNECTIONS,
+                };
+                *mgr.0.lock().unwrap() = Some(Running { child, url, metrics: m });
                 return Ok(status);
             }
             // A cloudflared that exits without printing a URL (no network, blocked
@@ -300,6 +376,16 @@ mod tests {
         // instead of the scheme would have returned a truncated address here.
         assert_eq!(extract_url("2026-08-30T18:14:56Z INF Requesting new quick Tunnel on trycloudflare.com..."), None);
         assert_eq!(extract_url("no url here at all"), None);
+    }
+
+    #[test]
+    fn finds_the_metrics_address() {
+        // Verbatim from cloudflared 2026.8.2.
+        assert_eq!(
+            extract_metrics("2026-08-30T18:15:02Z INF Starting metrics server on 127.0.0.1:20241/metrics"),
+            Some("127.0.0.1:20241".to_string())
+        );
+        assert_eq!(extract_metrics("2026-08-30T18:15:02Z INF Something else entirely"), None);
     }
 
     #[test]
