@@ -88,6 +88,9 @@
   let token = null;
   try { token = localStorage.getItem(KEY); } catch { /* private mode */ }
   let view = { name: "projects" };
+  // Whether OctoShell allows tasks from here at all. The phone only uses this to
+  // decide what to show; the refusal that counts happens on the machine.
+  let canDispatch = false;
   let poll = null;
 
   const el = (tag, props = {}, ...kids) => {
@@ -181,6 +184,7 @@
         (ap.approvals || []).map((a) => a.requestId),
         (pr.projects || []).map((p) => [p.id, p.name, p.agentBusy, p.blocks]),
       ]);
+      canDispatch = pr.canDispatch === true;
       if (ap.approvals?.length) {
         wrap.append(el("p", { className: "tiny" }, "Waiting for you"));
         for (const a of ap.approvals) wrap.append(approvalCard(a));
@@ -244,10 +248,44 @@
       }
       for (const b of d.blocks || []) wrap.append(blockCard(b));
       if (!d.blocks?.length) wrap.append(el("p", { className: "muted" }, "Nothing here yet."));
+      if (canDispatch) wrap.append(taskBox(id, name));
       app.replaceChildren(wrap);
     } catch (e) {
       app.replaceChildren(el("p", { className: "err" }, String(e.message || e)));
     }
+  }
+
+  /** Send a follow-up to this project's agent. Kept at the BOTTOM of the feed,
+   *  under what the agent just said: on a phone the useful task is almost always
+   *  a reply to what you're reading, not a fresh instruction typed blind. */
+  function taskBox(id, name) {
+    const input = el("textarea", {
+      rows: 3,
+      placeholder: "Send a task to " + name + "…",
+      style:
+        "width:100%;font:inherit;letter-spacing:normal;text-align:left;text-transform:none;" +
+        "background:var(--panel);border:1px solid var(--edge);border-radius:10px;color:var(--text);padding:10px",
+    });
+    const send = el("button", { className: "primary", style: "width:100%;margin-top:8px" }, "Send");
+    const box = el("div", { className: "card" }, input, send);
+    send.onclick = async () => {
+      const prompt = input.value.trim();
+      if (!prompt) return;
+      send.disabled = true;
+      send.textContent = "Sending…";
+      try {
+        await api("/api/dispatch", { method: "POST", body: JSON.stringify({ projectId: id, prompt }) });
+        input.value = "";
+        // Straight back to the feed so you see the task land, rather than a
+        // success message that tells you nothing about what happens next.
+        feedScreen(id, name, null);
+      } catch (e) {
+        send.disabled = false;
+        send.textContent = "Send";
+        box.append(el("p", { className: "err" }, String(e.message || e)));
+      }
+    };
+    return box;
   }
 
   function blockCard(b) {
@@ -262,7 +300,7 @@
     if (b.kind === "agentText") {
       return el("div", { className: "card" },
         el("div", { className: "row" },
-          el("span", { className: "tiny" }, b.role === "user" ? "You" : "Agent"),
+          el("span", { className: "tiny" }, b.role === "user" ? (b.via === "phone" ? "You 📱" : "You") : "Agent"),
           el("span", { className: "muted", style: "margin-left:auto" }, ago(b.at))),
         el("p", { style: "margin:6px 0 0;white-space:pre-wrap" }, b.text || ""));
     }

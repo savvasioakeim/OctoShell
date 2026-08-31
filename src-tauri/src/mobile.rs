@@ -443,6 +443,37 @@ async fn manifest() -> axum::response::Response {
         .into_response()
 }
 
+#[derive(Deserialize)]
+struct DispatchBody {
+    #[serde(rename = "projectId")]
+    project_id: String,
+    prompt: String,
+}
+
+/// Send a new task to a project's agent.
+///
+/// The most dangerous thing the companion can do — it makes a machine run code
+/// on someone's say-so from the other side of a tunnel. Two guards, and neither
+/// lives here: the webview refuses unless the user turned this on (a client can
+/// be modified, a server-side check cannot), and it refuses to interrupt a busy
+/// agent. This function only carries the request.
+async fn dispatch(
+    State(server): State<MobileServer>,
+    headers: HeaderMap,
+    Json(body): Json<DispatchBody>,
+) -> (StatusCode, Json<Value>) {
+    if !authed(&server, &headers) {
+        return (StatusCode::UNAUTHORIZED, Json(json!({ "error": "unauthorized" })));
+    }
+    match server
+        .ask("dispatch", json!({ "projectId": body.project_id, "prompt": body.prompt }))
+        .await
+    {
+        Ok(v) => (StatusCode::OK, Json(v)),
+        Err(e) => (StatusCode::BAD_GATEWAY, Json(json!({ "error": e }))),
+    }
+}
+
 /// The VAPID public key, so the page can subscribe. Authenticated: it isn't a
 /// secret, but there's no reason to hand it to an unauthenticated caller either.
 async fn push_key(State(server): State<MobileServer>, headers: HeaderMap) -> (StatusCode, Json<Value>) {
@@ -628,6 +659,7 @@ async fn start_sharing(
         .route("/api/session", get(session_feed))
         .route("/api/approvals", get(approvals))
         .route("/api/approve", post(approve))
+        .route("/api/dispatch", post(dispatch))
         .route("/api/push/key", get(push_key))
         .route("/api/push/subscribe", post(push_subscribe))
         .route("/", get(ui))
@@ -830,6 +862,49 @@ mod tests {
         let r = http.get(format!("http://{lan}:{port}/")).send().await;
         assert!(r.is_ok(), "LAN mode must accept the machine's own network address");
         assert_eq!(r.unwrap().status(), 200);
+    }
+
+    /// Dispatch demands a token like every other data route. Worth its own
+    /// assertion rather than trusting the loop below: this is the one route that
+    /// makes the machine RUN something, so "it's covered by the general check"
+    /// is not good enough to leave unstated.
+    #[tokio::test]
+    async fn dispatch_is_not_reachable_without_a_token() {
+        let server = MobileServer::default();
+        let st = start_sharing(&server, 30, None, false).await.expect("start");
+        let base = format!("http://127.0.0.1:{}", st.port.unwrap());
+        let http = reqwest::Client::new();
+
+        let r = http
+            .post(format!("{base}/api/dispatch"))
+            .json(&serde_json::json!({ "projectId": "x", "prompt": "rm -rf /" }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 401);
+
+        // And with a valid token it still cannot act on its own: with no window
+        // to ask, it fails rather than doing anything.
+        let token = http
+            .post(format!("{base}/api/auth"))
+            .json(&serde_json::json!({ "code": st.code.unwrap() }))
+            .send()
+            .await
+            .unwrap()
+            .json::<serde_json::Value>()
+            .await
+            .unwrap()["token"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let r = http
+            .post(format!("{base}/api/dispatch"))
+            .bearer_auth(&token)
+            .json(&serde_json::json!({ "projectId": "x", "prompt": "hello" }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 502, "with no window, dispatch must fail rather than proceed");
     }
 
     /// The phone UI is served without a token (it holds no data) while every

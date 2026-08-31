@@ -39,6 +39,17 @@ export function AgentTextBlockView({ block }: { block: AgentTextBlock }) {
         <span className={isUser ? "font-semibold text-gray-300" : "font-semibold text-accent"}>
           {isUser ? "you" : prov.label.toLowerCase()}
         </span>
+        {/* A task that arrived over the network must never look like one typed
+            here. The mark is the audit trail for a feature that lets a phone make
+            this machine run code. */}
+        {block.via === "phone" && (
+          <span
+            className="rounded border border-amber-400/40 bg-amber-500/10 px-1 text-[10px] text-amber-300"
+            title="Sent from the phone companion"
+          >
+            📱 phone
+          </span>
+        )}
         <span className="text-muted">{fmtTime(block.startedAt)}</span>
       </div>
       <Markdown text={text} />

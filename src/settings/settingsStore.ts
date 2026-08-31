@@ -55,6 +55,12 @@ export interface MobileSettings {
    *  without any tunnel. Off by default: it widens exposure from this machine to
    *  everyone on the network. */
   lan: boolean;
+  /** Let the phone send new tasks to agents, not just read and approve.
+   *
+   *  Off by default and deliberately separate from sharing itself: reading is a
+   *  window onto the machine, this is a hand on it. Whoever holds the access code
+   *  can then make an agent run code here. */
+  allowDispatch: boolean;
 }
 
 export interface WorkspaceSettings {
@@ -169,6 +175,7 @@ const DEFAULT_MOBILE: MobileSettings = {
   hostname: "",
   port: 8787,
   lan: false,
+  allowDispatch: false,
 };
 
 const DEFAULT_WORKSPACE: WorkspaceSettings = {

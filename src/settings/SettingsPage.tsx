@@ -1743,6 +1743,15 @@ function MobileSharingSection() {
 
       <div className="mb-3">
         <ToggleRow
+          label="Let the phone send tasks to agents"
+          desc="Without this, the phone can read and answer approvals but never start work. With it, anyone holding the access code can make an agent run code on this machine. Tasks that arrive this way are marked 📱 in the feed so they are never mistaken for something you typed here."
+          checked={mobileCfg.allowDispatch}
+          onChange={(v) => settingsStore.setMobile({ allowDispatch: v })}
+        />
+      </div>
+
+      <div className="mb-3">
+        <ToggleRow
           label="Also allow phones on this WiFi"
           desc="Listens on the local network as well, so a phone on the same WiFi can connect with no tunnel and nothing in between — which also means Cloudflare never sees your agents' output. It does widen access from this machine to everyone on the network, and it is plain HTTP, so the app can't be installed to a home screen over it."
           checked={mobileCfg.lan}

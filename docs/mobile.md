@@ -159,10 +159,33 @@ The message deliberately says only *what* happened and *where* — "the agent
 finished in ridebly-client" — never the report. It is encrypted, but it still
 lands on a lock screen, and the detail is one tap away.
 
+## Sending tasks from the phone
+
+Off by default. **Settings → Phone companion → "Let the phone send tasks to
+agents"**.
+
+Without it the phone is a window onto the machine: read, and answer approvals.
+With it, the phone is a hand on the machine — whoever holds the access code can
+make an agent run code here. That is why it is a separate switch from sharing
+itself, rather than something you get by turning sharing on.
+
+The task box sits at the **bottom of a project's feed**, under what the agent
+just said, because on a phone the useful task is nearly always a reply to what
+you are reading rather than an instruction typed blind.
+
+Three things constrain it:
+
+- **It refuses a busy agent** instead of interrupting it. On the desktop, typing
+  while an agent works cancels the turn and queues your message — reasonable when
+  you can see what you just cut short, and not something to do blind from a
+  phone.
+- **The switch is enforced on the machine, not on the phone.** The phone hides the
+  box when it is off, but a modified client still gets refused.
+- **Tasks that arrive this way are marked 📱** in the desktop feed and in the
+  phone's, so a task sent over the network never looks like one typed at the
+  keyboard.
+
 ## Known limits
 
 - **The live terminal isn't streamed.** Finished command output is there; the
   command running right now is not.
-- **Read and approve only.** You cannot dispatch new tasks from the phone. That
-  is deliberate for now: a good task prompt needs context that is awkward to
-  write on a phone, and it is the highest-risk thing the companion could do.

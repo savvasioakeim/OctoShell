@@ -13,6 +13,7 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import type { Block, ShellController } from "../shell/ShellController";
+import { settingsStore } from "../settings/settingsStore";
 
 /** What the server sends us. */
 interface AskEvent {
@@ -53,7 +54,9 @@ export function wireBlock(b: Block, index: number): Record<string, unknown> {
         output: truncate(b.outputText ?? "", OUTPUT_CAP),
       };
     case "agentText":
-      return { ...base, role: b.role, text: truncate(b.text, TEXT_CAP) };
+      // `via` travels so the phone can show which tasks came from a phone — the
+      // same audit mark the desktop shows, rather than two different truths.
+      return { ...base, role: b.role, text: truncate(b.text, TEXT_CAP), via: b.via ?? null };
     case "agentTool":
       return {
         ...base,
@@ -105,6 +108,10 @@ export function startMobileBridge(getProjects: () => BridgeProject[]): () => voi
         answer(
           e.id,
           {
+            // The phone hides its input when this is false, but the check that
+            // matters is the one in the "dispatch" branch: a client can be
+            // modified, a server-side refusal cannot.
+            canDispatch: settingsStore.getSnapshot().mobile.allowDispatch,
             projects: projects.map((p) => {
               const s = p.controller.getSnapshot();
               const last = s.blocks[s.blocks.length - 1];
@@ -115,6 +122,7 @@ export function startMobileBridge(getProjects: () => BridgeProject[]): () => voi
                 agentBusy: s.agentBusy,
                 shellBusy: s.busy,
                 blocks: s.blocks.length,
+                idle: !s.agentBusy,
                 // Enough for a list row: what is this project doing right now.
                 lastAt: last?.startedAt ?? null,
                 provider: s.agentProvider,
@@ -192,6 +200,36 @@ export function startMobileBridge(getProjects: () => BridgeProject[]): () => voi
         }
         owner.controller.respondApproval(requestId, allow);
         answer(e.id, { ok: true, requestId, allow });
+        return;
+      }
+
+      if (e.kind === "dispatch") {
+        // Enforced HERE, not on the phone: this is the setting's real boundary.
+        if (!settingsStore.getSnapshot().mobile.allowDispatch) {
+          answer(e.id, { error: "Sending tasks from a phone is turned off in OctoShell." });
+          return;
+        }
+        const projectId = String(e.params.projectId ?? "");
+        const prompt = String(e.params.prompt ?? "").trim();
+        if (!prompt) {
+          answer(e.id, { error: "empty task" });
+          return;
+        }
+        const target = projects.find((p) => p.id === projectId);
+        if (!target) {
+          answer(e.id, { error: "that project is no longer open" });
+          return;
+        }
+        // Refuse rather than interrupt. On the desktop a typed message cancels a
+        // running turn and queues itself, which is fine when you can see what you
+        // just cut short; from a phone it would silently kill work you can't see.
+        if (target.controller.getSnapshot().agentBusy) {
+          answer(e.id, { error: "that agent is busy — wait for it to finish" });
+          return;
+        }
+        target.controller.setMode("agent");
+        const ok = target.controller.runAgent(prompt, { via: "phone" });
+        answer(e.id, ok ? { ok: true, project: target.name } : { error: "the agent refused the task" });
         return;
       }
 

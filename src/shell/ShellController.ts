@@ -85,6 +85,10 @@ export interface AgentTextBlock extends BaseBlock {
   text: string;
   /** Which agent produced this (assistant messages) — for the block header. */
   provider?: AgentProvider;
+  /** Where a user message came from, when it wasn't typed here. Recorded so a
+   *  task that arrived over the network is never indistinguishable from one the
+   *  person at the keyboard typed. */
+  via?: "phone";
 }
 
 /** One tool the agent invoked (e.g. a Bash command) and its result. */
@@ -901,7 +905,7 @@ export class ShellController {
   /** Send a prompt to the local `claude` agent; render its stream as blocks.
    *  `orchestrated` marks turns the assistant dispatched (vs. the user typing),
    *  so the board can light the whole tentacle route to this agent. */
-  runAgent(prompt: string, opts?: { orchestrated?: boolean }): boolean {
+  runAgent(prompt: string, opts?: { orchestrated?: boolean; via?: "phone" }): boolean {
     const text = prompt.trim();
     if (!text) return false;
     if (this.agentBusy) {
@@ -925,6 +929,7 @@ export class ShellController {
       role: "user",
       text,
       startedAt: Date.now(),
+      via: opts?.via,
     });
     this.agentBusy = true;
     this.agentOrchestrated = !!opts?.orchestrated;
