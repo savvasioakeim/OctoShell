@@ -474,6 +474,80 @@ async fn dispatch(
     }
 }
 
+/// The orchestrator conversation, so the phone can read what it is saying.
+async fn orchestrator(State(server): State<MobileServer>, headers: HeaderMap) -> (StatusCode, Json<Value>) {
+    if !authed(&server, &headers) {
+        return (StatusCode::UNAUTHORIZED, Json(json!({ "error": "unauthorized" })));
+    }
+    match server.ask("orchestrator", json!({})).await {
+        Ok(v) => (StatusCode::OK, Json(v)),
+        Err(e) => (StatusCode::BAD_GATEWAY, Json(json!({ "error": e }))),
+    }
+}
+
+#[derive(Deserialize)]
+struct OrchestratorBody {
+    text: String,
+}
+
+/// Say something to the orchestrator.
+///
+/// Held to the same switch as dispatching to a single agent, and it deserves it
+/// more: the orchestrator can hand work to every open project at once. As with
+/// every other route here, the refusal that counts lives in the webview.
+async fn orchestrator_send(
+    State(server): State<MobileServer>,
+    headers: HeaderMap,
+    Json(body): Json<OrchestratorBody>,
+) -> (StatusCode, Json<Value>) {
+    if !authed(&server, &headers) {
+        return (StatusCode::UNAUTHORIZED, Json(json!({ "error": "unauthorized" })));
+    }
+    match server.ask("orchestratorSend", json!({ "text": body.text })).await {
+        Ok(v) => (StatusCode::OK, Json(v)),
+        Err(e) => (StatusCode::BAD_GATEWAY, Json(json!({ "error": e }))),
+    }
+}
+
+#[derive(Deserialize)]
+struct ChatBody {
+    #[serde(rename = "chatId")]
+    chat_id: Option<String>,
+    /// Start a new conversation instead of switching to an existing one.
+    fresh: Option<bool>,
+}
+
+/// Switch the orchestrator to another saved conversation, or start a fresh one.
+async fn orchestrator_chat(
+    State(server): State<MobileServer>,
+    headers: HeaderMap,
+    Json(body): Json<ChatBody>,
+) -> (StatusCode, Json<Value>) {
+    if !authed(&server, &headers) {
+        return (StatusCode::UNAUTHORIZED, Json(json!({ "error": "unauthorized" })));
+    }
+    match server
+        .ask("orchestratorChat", json!({ "chatId": body.chat_id, "fresh": body.fresh.unwrap_or(false) }))
+        .await
+    {
+        Ok(v) => (StatusCode::OK, Json(v)),
+        Err(e) => (StatusCode::BAD_GATEWAY, Json(json!({ "error": e }))),
+    }
+}
+
+/// Cancel the orchestrator's in-flight turn. Deliberately narrow: the agents it
+/// already dispatched keep going, because stopping those is not the same
+/// decision and must not ride along on this button.
+async fn orchestrator_stop(State(server): State<MobileServer>, headers: HeaderMap) -> (StatusCode, Json<Value>) {
+    if !authed(&server, &headers) {
+        return (StatusCode::UNAUTHORIZED, Json(json!({ "error": "unauthorized" })));
+    }
+    match server.ask("orchestratorStop", json!({})).await {
+        Ok(v) => (StatusCode::OK, Json(v)),
+        Err(e) => (StatusCode::BAD_GATEWAY, Json(json!({ "error": e }))),
+    }
+}
+
 /// The VAPID public key, so the page can subscribe. Authenticated: it isn't a
 /// secret, but there's no reason to hand it to an unauthenticated caller either.
 async fn push_key(State(server): State<MobileServer>, headers: HeaderMap) -> (StatusCode, Json<Value>) {
@@ -660,6 +734,10 @@ async fn start_sharing(
         .route("/api/approvals", get(approvals))
         .route("/api/approve", post(approve))
         .route("/api/dispatch", post(dispatch))
+        .route("/api/orchestrator", get(orchestrator))
+        .route("/api/orchestrator/send", post(orchestrator_send))
+        .route("/api/orchestrator/chat", post(orchestrator_chat))
+        .route("/api/orchestrator/stop", post(orchestrator_stop))
         .route("/api/push/key", get(push_key))
         .route("/api/push/subscribe", post(push_subscribe))
         .route("/", get(ui))
@@ -868,6 +946,41 @@ mod tests {
     /// assertion rather than trusting the loop below: this is the one route that
     /// makes the machine RUN something, so "it's covered by the general check"
     /// is not good enough to leave unstated.
+    #[tokio::test]
+    async fn talking_to_the_orchestrator_needs_a_token() {
+        // The orchestrator can hand work to every open project at once, so an
+        // unauthenticated caller must not even be able to read it, let alone
+        // speak to it.
+        let server = MobileServer::default();
+        let st = start_sharing(&server, 30, None, false).await.expect("start");
+        let base = format!("http://127.0.0.1:{}", st.port.unwrap());
+        let http = reqwest::Client::new();
+
+        let r = http.get(format!("{base}/api/orchestrator")).send().await.unwrap();
+        assert_eq!(r.status(), 401, "reading the orchestrator must need a token");
+
+        let r = http
+            .post(format!("{base}/api/orchestrator/send"))
+            .json(&serde_json::json!({ "text": "dispatch to everything" }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 401, "speaking to the orchestrator must need a token");
+
+        // Steering it is at least as sensitive as speaking to it: switching the
+        // conversation changes what the person at the desk is looking at.
+        let r = http
+            .post(format!("{base}/api/orchestrator/chat"))
+            .json(&serde_json::json!({ "fresh": true }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 401, "switching chats must need a token");
+
+        let r = http.post(format!("{base}/api/orchestrator/stop")).send().await.unwrap();
+        assert_eq!(r.status(), 401, "stopping a turn must need a token");
+    }
+
     #[tokio::test]
     async fn dispatch_is_not_reachable_without_a_token() {
         let server = MobileServer::default();
