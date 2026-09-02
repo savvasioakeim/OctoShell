@@ -17,6 +17,7 @@ import { SettingsPage } from "./settings/SettingsPage";
 import { StrategyPanel } from "./strategy/StrategyPanel";
 import { startMobileBridge } from "./mobile/mobileBridge";
 import { modStore } from "./mods/modStore";
+import { normPath, parseMergedWorktrees, pollCommand } from "./projects/worktreePrs";
 import { settingsStore, useSettings } from "./settings/settingsStore";
 import { KEY, loadJSON, saveJSON } from "./util/persist";
 import { OnboardingOverlay } from "./onboarding/OnboardingOverlay";
@@ -667,25 +668,43 @@ export function App({ initial }: { initial: ShellController }) {
   useEffect(() => {
     const tick = async () => {
       if (settingsStore.getSnapshot().workspace.autoClean !== "onMerge") return;
-      for (const t of tabsRef.current) {
-        if (!t.worktree) continue;
-        let state = "";
+      const trees = tabsRef.current.filter((t) => t.worktree);
+      if (!trees.length) return;
+
+      // ONE capture per repository, not one per worktree.
+      //
+      // The old loop ran a fresh PowerShell per open worktree, each starting
+      // `git` and then `gh`. That is visible on Windows: `gh` starts a second
+      // `gh` (its git credential helper), which starts `tzutil`, which allocates
+      // its own console -- and with Windows Terminal as the default terminal
+      // application, allocating a console opens a real terminal window. With
+      // nineteen projects open that flashed a window across whatever you were
+      // doing, every two minutes.
+      const byRepo = new Map<string, typeof trees>();
+      for (const t of trees) {
+        const root = t.worktree!.repoRoot;
+        const list = byRepo.get(root);
+        if (list) list.push(t);
+        else byRepo.set(root, [t]);
+      }
+
+      for (const [root, group] of byRepo) {
+        let out = "";
         try {
-          state = (
-            await invoke<string>("run_capture", {
-              cwd: t.cwd,
-              command: "$b=git branch --show-current; if($b){gh pr view $b --json state -q .state 2>$null}",
-            })
-          )
-            .trim()
-            .toUpperCase();
+          out = await invoke<string>("run_capture", { cwd: root, command: pollCommand() });
         } catch {
-          continue; // gh missing / not authed / no PR — skip silently
+          continue; // gh missing / not authed / no remote — skip silently
         }
-        if (state.includes("MERGED") || state.includes("CLOSED")) closeProjectRef.current(t.id);
+        const finished = new Set(parseMergedWorktrees(out));
+        if (!finished.size) continue;
+        for (const t of group) {
+          if (finished.has(normPath(t.cwd))) closeProjectRef.current(t.id);
+        }
       }
     };
-    const iv = setInterval(() => void tick(), 120000);
+    // Five minutes rather than two: this only decides when a finished worktree
+    // disappears, and every tick costs two subprocesses per repository.
+    const iv = setInterval(() => void tick(), 300000);
     return () => clearInterval(iv);
   }, []);
 
