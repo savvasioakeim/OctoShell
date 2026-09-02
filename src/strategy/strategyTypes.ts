@@ -34,6 +34,19 @@ export interface StrategyMessage {
   status: "running" | "done" | "error";
 }
 
+/** The moderator's own contribution after a round.
+ *
+ *  The system prompt has always told participants a human moderator runs the
+ *  discussion; until now the moderator had no way to actually say anything, and
+ *  could only ask for another round and hope it went somewhere useful. */
+export interface ModeratorNote {
+  /** The completed round this note responds to (0-based). It is injected right
+   *  after that round's proposals, so every later round sees it in order. */
+  round: number;
+  text: string;
+  at: number;
+}
+
 /** The synthesized, reusable output of a discussion. A first-class object: it can
  *  be saved to the library, exported to Markdown, edited, and executed at any
  *  time in the future without repeating the discussion. */
@@ -65,6 +78,8 @@ export interface StrategySession {
   messages: StrategyMessage[];
   /** How many rounds have completed (0 = none yet). */
   round: number;
+  /** What the moderator said between rounds, at most one note per round. */
+  moderatorNotes: ModeratorNote[];
   phase: StrategyPhase;
   /** The generated report Markdown, once produced. */
   report: string | null;

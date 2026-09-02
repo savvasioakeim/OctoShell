@@ -886,7 +886,7 @@ const CenterPanel = memo(function CenterPanel({
   controller: ShellController;
   active: boolean;
 }) {
-  const { blocks, cwd, busy, input, altScreen, interacting, mode, agentBusy, agentOrchestrated, agentModel, agentProvider, agentConfigDir, agentTokens, agentContext, agentSessionId, agentProgress, agentApiKey, agentRateReset, agentApproval } = useShell(controller);
+  const { blocks, cwd, busy, input, altScreen, interacting, mode, agentBusy, agentOrchestrated, agentModel, agentEffort, agentThought, agentProvider, agentConfigDir, agentTokens, agentContext, agentSessionId, agentProgress, agentApiKey, agentRateReset, agentApproval } = useShell(controller);
   const reviewSnap = useReview(controller);
   const [view, setView] = useState<CenterView>("coding");
   // The Review view only exists while a review agent is active; fall back to Coding
@@ -932,6 +932,8 @@ const CenterPanel = memo(function CenterPanel({
         agentBusy={agentBusy}
         agentOrchestrated={agentOrchestrated}
         agentModel={agentModel}
+        agentEffort={agentEffort}
+        agentThought={agentThought}
         agentProvider={agentProvider}
         agentConfigDir={agentConfigDir}
         agentTokens={agentTokens}
