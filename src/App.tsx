@@ -668,6 +668,17 @@ export function App({ initial }: { initial: ShellController }) {
   useEffect(() => {
     const tick = async () => {
       if (settingsStore.getSnapshot().workspace.autoClean !== "onMerge") return;
+      // Only while OctoShell is the window you are actually looking at.
+      //
+      // `gh` occasionally starts a second `gh` (a token refresh, seen once after
+      // hours idle), whose `tzutil` child allocates its own console -- and on a
+      // machine with Windows Terminal as the default terminal application, that
+      // opens a real terminal window for a moment. One `gh` every five minutes
+      // makes that rare, but rare is not never, and the moment it lands over a
+      // full-screen game is the moment it is worst. Nothing here is time
+      // critical: it decides when an already-finished worktree leaves the
+      // sidebar, which nobody is waiting on while looking at something else.
+      if (document.hidden || !document.hasFocus()) return;
       const trees = tabsRef.current.filter((t) => t.worktree);
       if (!trees.length) return;
 
