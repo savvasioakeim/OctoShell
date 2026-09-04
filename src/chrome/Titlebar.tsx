@@ -14,19 +14,23 @@ const appWindow = getCurrentWindow();
  *
  * macOS keeps its native traffic lights instead (`titleBarStyle: "Overlay"` in
  * tauri.macos.conf.json draws them over this bar, at the left), so the bar only
- * leaves room for them and skips the Windows-style controls. The bar is `h-8`
- * (2rem = 34px at the app's 17px root); the lights' `trafficLightPosition.y`
- * in that config centres their 12px on it — change both together.
+ * leaves room for them and skips the Windows-style controls. It's the height of
+ * a standard macOS title bar (28px) with the lights at their default position,
+ * so they sit exactly where they do in every other Mac app; in fullscreen macOS
+ * hides them and the bar drops the space it kept for them.
  */
 export function Titlebar() {
   const [maximized, setMaximized] = useState(false);
+  const [fullscreen, setFullscreen] = useState(false);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
-    void appWindow.isMaximized().then(setMaximized);
-    void appWindow
-      .onResized(() => void appWindow.isMaximized().then(setMaximized))
-      .then((u) => { unlisten = u; });
+    const refresh = () => {
+      void appWindow.isMaximized().then(setMaximized);
+      void appWindow.isFullscreen().then(setFullscreen);
+    };
+    refresh();
+    void appWindow.onResized(refresh).then((u) => { unlisten = u; });
     return () => unlisten?.();
   }, []);
 
@@ -34,14 +38,16 @@ export function Titlebar() {
     "flex h-full w-[46px] items-center justify-center text-muted hover:bg-edge hover:text-white transition-colors";
 
   const mac = isMac();
+  // Room for the native traffic lights (they end at x≈58 by default), except in
+  // fullscreen where macOS hides them and the title would float mid-bar.
+  const leftPad = mac && !fullscreen ? "pl-[72px] pr-3" : "px-3";
 
   return (
     <div
       data-tauri-drag-region
-      className="flex h-8 shrink-0 select-none items-center justify-between border-b border-edge bg-chrome"
+      className={`flex shrink-0 select-none items-center justify-between border-b border-edge bg-chrome ${mac ? "h-[28px]" : "h-8"}`}
     >
-      {/* macOS: the traffic lights sit at x≈12–70 over this bar — keep clear of them. */}
-      <div data-tauri-drag-region className={`flex items-center gap-2 text-xs ${mac ? "pl-[78px] pr-3" : "px-3"}`}>
+      <div data-tauri-drag-region className={`flex items-center gap-2 text-xs ${leftPad}`}>
         <img src={logoUrl} alt="" aria-hidden className="h-4 w-4" />
         <span className="font-semibold tracking-wide text-gray-300">OctoShell</span>
       </div>

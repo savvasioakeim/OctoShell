@@ -1368,7 +1368,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
             onClick={stopAll}
             disabled={!canStop}
             title="Stop everything — orchestrator + all agents (like Escape)"
-            className={`inline-flex h-6 items-center gap-1 rounded border border-transparent px-1.5 text-[10px] font-semibold ${
+            className={`inline-flex h-6 flex-1 items-center justify-center gap-1 rounded border border-transparent px-1.5 text-[10px] font-semibold ${
               canStop
                 ? "bg-red-500/25 text-red-200 hover:bg-red-500/35"
                 : "border border-edge text-muted/50"
@@ -1382,7 +1382,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
               setSessionMenu(true);
             }}
             title="Chats — new chat + switch/search existing"
-            className="inline-flex h-6 items-center gap-1 rounded border border-[#7c5cff]/50 px-1.5 text-[10px] text-muted hover:bg-[#7c5cff]/15 hover:text-gray-200"
+            className="inline-flex h-6 flex-1 items-center justify-center gap-1 rounded border border-[#7c5cff]/50 px-1.5 text-[10px] text-muted hover:bg-[#7c5cff]/15 hover:text-gray-200"
           >
             <svg viewBox="0 0 24 24" fill="none" stroke="url(#chat-grad)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 shrink-0" aria-hidden>
               <defs>
@@ -1398,7 +1398,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
           <button
             onClick={() => setAutoRun((v) => !v)}
             title={autoRun ? "Auto-run: actions run without confirmation" : "Confirm: every action needs a click"}
-            className={`inline-flex h-6 items-center gap-1 rounded border border-transparent px-1.5 text-[10px] font-medium ${
+            className={`inline-flex h-6 flex-1 items-center justify-center gap-1 rounded border border-transparent px-1.5 text-[10px] font-medium ${
               autoRun ? "bg-amber-500/20 text-amber-300" : "text-muted hover:bg-edge/50 hover:text-gray-200"
             }`}
           >
@@ -1411,7 +1411,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
                 ? "Live watch: continues on its own when an agent finishes"
                 : "Live watch off"
             }
-            className={`inline-flex h-6 items-center gap-1 rounded border border-transparent px-1.5 text-[10px] font-medium ${
+            className={`inline-flex h-6 flex-1 items-center justify-center gap-1 rounded border border-transparent px-1.5 text-[10px] font-medium ${
               liveWatch ? "bg-emerald-500/20 text-emerald-300" : "text-muted hover:bg-edge/50 hover:text-gray-200"
             }`}
           >
