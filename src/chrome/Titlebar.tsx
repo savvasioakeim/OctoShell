@@ -14,7 +14,9 @@ const appWindow = getCurrentWindow();
  *
  * macOS keeps its native traffic lights instead (`titleBarStyle: "Overlay"` in
  * tauri.macos.conf.json draws them over this bar, at the left), so the bar only
- * leaves room for them and skips the Windows-style controls.
+ * leaves room for them and skips the Windows-style controls. The bar is `h-8`
+ * (2rem = 34px at the app's 17px root); the lights' `trafficLightPosition.y`
+ * in that config centres their 12px on it — change both together.
  */
 export function Titlebar() {
   const [maximized, setMaximized] = useState(false);

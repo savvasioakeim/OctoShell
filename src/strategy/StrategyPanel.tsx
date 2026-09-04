@@ -322,7 +322,9 @@ function ParticipantRow({ p }: { p: StrategyParticipant }) {
         <select
           value={p.model ?? ""}
           onChange={(e) => up({ model: e.target.value || null })}
-          className="min-w-0 flex-1 rounded border border-edge bg-panel px-1.5 py-1 text-[11px] text-gray-200 outline-none focus:border-accent"
+          // A floor on the width: when the card is narrow the colour dots wrap
+          // to the next line instead of squeezing the model name to "Defau…".
+          className="min-w-[7rem] flex-1 rounded border border-edge bg-panel px-1.5 py-1 text-[11px] text-gray-200 outline-none focus:border-accent"
         >
           {models.map((m) => (
             <option key={m.label} value={m.value ?? ""}>
@@ -330,7 +332,7 @@ function ParticipantRow({ p }: { p: StrategyParticipant }) {
             </option>
           ))}
         </select>
-        <div className="flex items-center gap-1">
+        <div className="flex shrink-0 items-center gap-1">
           {PARTICIPANT_COLORS.map((c) => (
             <button
               key={c}

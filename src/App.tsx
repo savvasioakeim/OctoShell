@@ -222,7 +222,9 @@ export function App({ initial }: { initial: ShellController }) {
   const [preloadProgress, setPreloadProgress] = useState(0);
   const [onboarding, setOnboarding] = useState(() => !loadJSON<boolean>(KEY.onboardingDone, false));
   // User-resizable panel widths (px), persisted across restarts.
-  const [layout, setLayout] = useState(() => loadJSON(KEY.layout, { left: 200, right: 344 }));
+  // Left default fits the three sidebar tabs at the 17px root font; the
+  // user can still drag it down to 160 (labels then truncate).
+  const [layout, setLayout] = useState(() => loadJSON(KEY.layout, { left: 216, right: 344 }));
 
   useEffect(() => { saveJSON(KEY.layout, layout); }, [layout]);
 
@@ -703,7 +705,7 @@ export function App({ initial }: { initial: ShellController }) {
         />
         <ResizeHandle
           onDrag={(dx) => setLayout((l) => ({ ...l, left: clamp(l.left + dx, 160, 460) }))}
-          onReset={() => setLayout((l) => ({ ...l, left: 208 }))}
+          onReset={() => setLayout((l) => ({ ...l, left: 216 }))}
         />
 
         {/* Every project's center panel stays mounted (so switching back doesn't

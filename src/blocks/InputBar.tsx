@@ -777,7 +777,9 @@ export function InputBar({ controller, cwd, busy, value, altScreen, interacting,
             agent ? "border-accent/40 focus-within:border-accent" : "border-edge focus-within:border-accent/60"
           }`}
         >
-          <span className="select-none pt-0.5 font-semibold leading-relaxed text-accent">
+          {/* Same font-size + line-height as the textarea, so the icon sits level
+              with the first line on any rendering engine (no hand-tuned nudge). */}
+          <span className="select-none text-sm font-semibold leading-relaxed text-accent">
             {agent ? "✦" : "❯"}
           </span>
           <textarea

@@ -1343,30 +1343,27 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
       className="flex shrink-0 flex-col gap-2 overflow-hidden rounded-xl border border-edge bg-panel p-2"
       style={{ width }}
     >
-      {/* Title, then a compact single-row button strip beneath it. */}
+      {/* Title row (with the Strategy entry at its right), then the run
+          controls on a row of their own. The panel can be 232-760px wide, so the
+          controls WRAP instead of overflowing — the old single row clipped the
+          last button below ~400px. */}
       <div className="px-1">
         <div className="flex items-center gap-1.5">
           <span className="text-grad text-sm font-semibold">Orchestrator</span>
           {thinking && <WorkingNode />}
-        </div>
-        {/* One panel split by a single centre divider: Strategy (the primary
-            planning entry) on the left, the run-controls cluster on the right,
-            reading as two glued panels joined by that vertical line. */}
-        <div className="mt-1 flex items-stretch overflow-hidden rounded-lg border border-edge bg-card">
           {onOpenStrategy && (
-            <div className="flex items-center px-1 py-1">
-              <button
-                onClick={onOpenStrategy}
-                title="Strategy Mode — plan complex work with a moderated multi-agent discussion before coding"
-                className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-semibold text-accent hover:bg-accent/15"
-              >
-                <img src={strategyIcon} alt="" className="h-6 w-6 object-contain" />
-                Strategy
-              </button>
-            </div>
+            <button
+              onClick={onOpenStrategy}
+              title="Strategy Mode — plan complex work with a moderated multi-agent discussion before coding"
+              className="ml-auto inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-xs font-semibold text-accent hover:bg-accent/15"
+            >
+              <img src={strategyIcon} alt="" className="h-5 w-5 object-contain" />
+              Strategy
+            </button>
           )}
-          <div className="w-px self-stretch bg-edge" />
-          <div className="flex flex-1 items-center justify-end gap-1 px-1.5 py-1">
+        </div>
+        <div className="mt-1 rounded-lg border border-edge bg-card">
+          <div className="flex flex-wrap items-center gap-1 px-1.5 py-1">
           <button
             onClick={stopAll}
             disabled={!canStop}
@@ -1704,16 +1701,15 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
           </div>
         )}
         <div
-          className={`flex items-end gap-2 rounded-lg border bg-panel px-3 py-2.5 focus-within:border-accent ${
+          className={`flex items-start gap-2 rounded-lg border bg-panel px-3 py-2.5 focus-within:border-accent ${
             dropping ? "border-accent bg-accent/5" : "border-accent/40"
           }`}
         >
-          <span
-            className="select-none font-semibold leading-relaxed text-accent"
-            style={{ transform: "translateY(4px)" }}
-          >
-            ✦
-          </span>
+          {/* Same font-size + line-height as the textarea: the icon's line box
+              equals the text's first line, so they align by construction
+              instead of by a hand-tuned offset (which drifted between WebView2
+              and WebKit). */}
+          <span className="select-none text-sm font-semibold leading-relaxed text-accent">✦</span>
           <textarea
             ref={inputRef}
             rows={1}
