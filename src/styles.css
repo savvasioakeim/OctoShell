@@ -9,6 +9,11 @@
    18px). All rem-based Tailwind sizes/spacing scale from this. */
 html {
   font-size: 17px;
+  /* OctoShell is dark-only. Telling the engine so matters on WebKit (macOS):
+     without it the scrollbar track below, declared transparent, is painted on
+     the engine's LIGHT default and shows up as a white bar down the feed. It
+     also keeps native controls (selects, their popups) dark on every system. */
+  color-scheme: dark;
 }
 
 /* Gradient text — the pink→violet neon used on the worktree/nav icons, clipped
