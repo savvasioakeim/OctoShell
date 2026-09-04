@@ -18,6 +18,7 @@ import { registerOrchestrator } from "../strategy/orchestratorBridge";
 import { useSettings } from "../settings/settingsStore";
 import { dragHasFiles, filesFromDrop, saveDroppedFile } from "../util/drop";
 import { memoryStore, type Recalled } from "../memory/memoryStore";
+import { platform, shellLabel } from "../platform/platform";
 import {
   statusOf,
   STATUS_COLOR,
@@ -38,6 +39,11 @@ interface ChatSession {
   updatedAt: number;
   messages: ChatMessage[];
   actionState: Record<string, ActionState>;
+}
+
+/** The OS, as the orchestrator's system prompt names it. */
+function osName(): string {
+  return { windows: "Windows", macos: "macOS", linux: "Linux" }[platform().os];
 }
 
 /** First real user line → a short title (skips internal live-watch breadcrumbs). */
@@ -554,9 +560,9 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
     // any of them by exact name, even ones we didn't digest.
     const names = tabs.map((p) => p.name).join(", ") || "(none)";
     const system = [
-      "You are OctoShell's workspace assistant for a Windows PowerShell dev environment.",
+      `You are OctoShell's workspace assistant for a ${osName()} ${shellLabel()} dev environment.`,
       "You can see every open project and what its terminal and its coding agent are doing.",
-      "Help the user understand, compare and coordinate work across all projects. When suggesting shell commands, target PowerShell (pwsh).",
+      `Help the user understand, compare and coordinate work across all projects. When suggesting shell commands, target ${shellLabel()}.`,
       // --- Orchestration protocol ---
       [
         "# Orchestration",

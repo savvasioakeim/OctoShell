@@ -29,8 +29,12 @@ export interface OrchestratorDefaults {
 
 /** When OctoShell auto-removes a worktree (and its local folder). */
 export type AutoCleanMode = "off" | "onApprove" | "onMerge";
-/** Which native shell the PTY launches. */
-export type DefaultShell = "powershell" | "cmd" | "wsl";
+/** Which native shell the PTY launches — an id from the backend's shell table
+ *  (`platform().shells`): "powershell" | "cmd" | "wsl" on Windows, "zsh" |
+ *  "bash" | "powershell" on macOS/Linux. The backend resolves an id this
+ *  platform doesn't have to its default, so a workspace moved between machines
+ *  keeps working. */
+export type DefaultShell = string;
 /** How fast the PCB trace animations flow while agents work. */
 export type TraceSpeed = "fast" | "normal" | "stealth" | "static";
 /** Speech-to-text backend: the browser's free Web Speech API, or Whisper. */

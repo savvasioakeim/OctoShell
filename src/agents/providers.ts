@@ -15,6 +15,8 @@
 // single table, and `AgentProvider` is DERIVED from its keys: a typo is a
 // compile error, and a new provider is one object.
 
+import { hostCommand } from "../platform/platform";
+
 /** One entry in a provider's model picker. `value: null` = let the CLI decide. */
 export interface ModelOption {
   label: string;
@@ -57,7 +59,9 @@ const DEFAULT_ONLY: ModelOption[] = [{ label: "Default", value: null }];
 
 /** An ACP-speaking agent: how to launch it, and how to set its model. */
 export interface AcpAgentDef {
-  /** Launch command (whitespace-split; `AcpAgent::from_str` parses it). */
+  /** Launch command in its plain form (whitespace-split; `AcpAgent::from_str`
+   *  parses it). On Windows, `acpCommandFor` runs it through `cmd /c`, since
+   *  npm-installed CLIs are `.cmd` shims there; elsewhere it runs as written. */
   command: string;
   /** Env var that selects the model, prefixed onto the command as
    *  `NAME=value` (ACP parses leading NAME=value tokens as env vars). Null when
@@ -98,7 +102,8 @@ export interface ProviderDef {
 }
 
 /** THE provider table. One entry per agent; the key is the persisted provider id.
- *  On Windows npx/gemini are `.cmd` shims, so their commands go through cmd.exe. */
+ *  Launch commands are written once, in plain form; `hostCommand` adds the
+ *  Windows `cmd /c` shim at launch time. */
 export const PROVIDER_DEFS = {
   claude: {
     label: "Claude",
@@ -121,7 +126,7 @@ export const PROVIDER_DEFS = {
     models: CLAUDE_MODELS,
     configDirEnv: "CLAUDE_CONFIG_DIR",
     acp: {
-      command: "cmd /c npx -y @agentclientprotocol/claude-agent-acp",
+      command: "npx -y @agentclientprotocol/claude-agent-acp",
       modelEnv: "ANTHROPIC_MODEL",
       // claude-code (which the adapter wraps) needs node >= 22.
       dockerImage: "node:22",
@@ -137,7 +142,7 @@ export const PROVIDER_DEFS = {
     acp: {
       // OpenAI Codex via Zed's ACP adapter. Model selection through the adapter
       // isn't confirmed yet, so it runs the agent's default (no modelEnv).
-      command: "cmd /c npx -y @zed-industries/codex-acp@latest",
+      command: "npx -y @zed-industries/codex-acp@latest",
       modelEnv: null,
       dockerImage: "node:22",
       dockerCommand: "npx -y @zed-industries/codex-acp@latest",
@@ -150,28 +155,28 @@ export const PROVIDER_DEFS = {
     transport: "acp",
     models: DEFAULT_ONLY,
     configDirEnv: "XDG_DATA_HOME",
-    acp: { command: "cmd /c opencode acp", modelEnv: null, dockerImage: null, dockerCommand: null, loginCommand: null },
+    acp: { command: "opencode acp", modelEnv: null, dockerImage: null, dockerCommand: null, loginCommand: null },
   },
   "acp-cursor": {
     label: "Cursor (ACP)",
     transport: "acp",
     models: DEFAULT_ONLY,
     configDirEnv: "CURSOR_CONFIG_DIR",
-    acp: { command: "cmd /c cursor-agent acp", modelEnv: null, dockerImage: null, dockerCommand: null, loginCommand: null },
+    acp: { command: "cursor-agent acp", modelEnv: null, dockerImage: null, dockerCommand: null, loginCommand: null },
   },
   "acp-copilot": {
     label: "Copilot (ACP)",
     transport: "acp",
     models: DEFAULT_ONLY,
     configDirEnv: "COPILOT_HOME",
-    acp: { command: "cmd /c copilot --acp --stdio", modelEnv: null, dockerImage: null, dockerCommand: null, loginCommand: null },
+    acp: { command: "copilot --acp --stdio", modelEnv: null, dockerImage: null, dockerCommand: null, loginCommand: null },
   },
   "acp-kiro": {
     label: "Kiro (ACP)",
     transport: "acp",
     models: DEFAULT_ONLY,
     configDirEnv: null,
-    acp: { command: "cmd /c kiro-cli acp --trust-all-tools", modelEnv: null, dockerImage: null, dockerCommand: null, loginCommand: null },
+    acp: { command: "kiro-cli acp --trust-all-tools", modelEnv: null, dockerImage: null, dockerCommand: null, loginCommand: null },
   },
   "acp-gemini": {
     label: "Gemini (ACP)",
@@ -188,7 +193,7 @@ export const PROVIDER_DEFS = {
       // and the Antigravity *IDE* is a GUI Electron app with no headless entry
       // point — so neither can be added as an adapter here yet. Revisit once
       // `agy` ships either --acp or a stream-json headless mode.
-      command: "cmd /c npx -y -- @google/gemini-cli@latest --experimental-acp",
+      command: "npx -y -- @google/gemini-cli@latest --experimental-acp",
       modelEnv: null,
       dockerImage: "node:22",
       dockerCommand: "npx -y -- @google/gemini-cli@latest --experimental-acp",
@@ -207,7 +212,7 @@ export const PROVIDER_DEFS = {
       // `-m ollama/<model>`, which is why OLLAMA_MODELS values carry the prefix.
       // Runs fully local, so there is no login. No generic image ships
       // OpenCode+Ollama, so it can't be sandboxed either.
-      command: "cmd /c opencode acp",
+      command: "opencode acp",
       modelEnv: null,
       dockerImage: null,
       dockerCommand: null,
@@ -258,7 +263,8 @@ export function acpCommandFor(
 ): string {
   const def = providerDef(provider).acp;
   if (!def) return "";
-  let cmd = def.command;
+  // `cmd /c …` on Windows (npm shims), the plain command elsewhere.
+  let cmd = hostCommand(def.command);
   if (model) cmd = def.modelEnv ? `${def.modelEnv}=${model} ${cmd}` : `${cmd} -m ${model}`;
   // Profile selection: point the CLI's config/account dir env var at the chosen
   // folder (forward-slashed so backslashes don't confuse the ACP tokeniser). NOTE:
@@ -540,6 +546,18 @@ function parseClaude(ev: any): NormEvent[] {
     }
     // message_stop, content_block_start/stop, thinking deltas → ignore.
   } else if (ev?.type === "assistant") {
+    // The CLI reports its OWN failures ("Not logged in · Please run /login",
+    // rate limits) as an assistant message from a `<synthetic>` model, on stdout,
+    // with an empty stderr and a non-zero exit. Those never stream as deltas, so
+    // without this the turn ended with nothing on screen at all.
+    if (ev.message?.model === "<synthetic>") {
+      const text = (ev.message?.content ?? [])
+        .map((c: any) => (c?.type === "text" ? c.text : ""))
+        .join("")
+        .trim();
+      if (text) out.push({ text: `⚠️ ${text}` });
+      return out;
+    }
     for (const c of ev.message?.content ?? []) {
       if (c.type === "tool_use") {
         const input =

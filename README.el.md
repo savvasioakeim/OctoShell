@@ -1,6 +1,6 @@
 # 🐙 OctoShell
 
-Ένα power-user terminal workspace για Windows με αρχιτεκτονική **Semantic Blocks** (à la Warp): το terminal είναι ένα *feed* από αυτόνομα command blocks, όχι ένα ενιαίο text stream. Χτισμένο με **Tauri v2 + Rust** (back-end) και **React + TypeScript + Tailwind + xterm.js/WebGL** (front-end).
+Ένα power-user terminal workspace για Windows και macOS με αρχιτεκτονική **Semantic Blocks** (à la Warp): το terminal είναι ένα *feed* από αυτόνομα command blocks, όχι ένα ενιαίο text stream. Χτισμένο με **Tauri v2 + Rust** (back-end) και **React + TypeScript + Tailwind + xterm.js/WebGL** (front-end).
 
 ## Χαρακτηριστικά
 
@@ -33,17 +33,38 @@ AiSidebar / MacroBar ──ai_chat / run_capture──►   ai.rs (API ή claude
 
 ## Προαπαιτούμενα
 
-- Node.js 18+, Rust 1.77+
-- [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) για Windows (WebView2 + MSVC build tools)
+- Node.js 18+, Rust 1.85+
+- **Windows:** PowerShell 7 (`pwsh`) και τα [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) (WebView2 + MSVC build tools)
+- **macOS:** macOS 12+ με Xcode Command Line Tools (`xcode-select --install`). Το terminal τρέχει το login shell σου, **zsh** (προεπιλογή) ή **bash**· δουλεύει και το `pwsh` αν το έχεις.
 
 ## Setup & Run
 
 ```powershell
+# Windows
 npm install
 # Προαιρετικό: $env:ANTHROPIC_API_KEY = "sk-ant-..."
 # Χωρίς key, το sidebar χρησιμοποιεί αυτόματα το τοπικό `claude` CLI.
 npm run tauri dev
 ```
+
+```bash
+# macOS
+npm install
+# Προαιρετικό: export ANTHROPIC_API_KEY="sk-ant-..."
+npm run tauri dev
+```
+
+> **macOS Gatekeeper:** ένα unsigned `.app` εμφανίζεται ως «damaged» ή «unidentified developer». Δεξί κλικ → *Open* την πρώτη φορά, ή `xattr -dr com.apple.quarantine /Applications/OctoShell.app`.
+
+## Σημειώσεις για macOS
+
+- Το ίδιο OSC 133 shell integration που έχει το PowerShell στα Windows γίνεται inject σε zsh (μέσω `ZDOTDIR` shim που πρώτα φορτώνει το δικό σου `.zshrc`) και bash (`--rcfile`): command blocks, exit codes και cwd tracking δουλεύουν ίδια. Το prompt, τα aliases και τα plugins σου μένουν ως έχουν.
+- Μια εφαρμογή που ανοίγει από το Finder/Dock παίρνει «γυμνό» PATH· το OctoShell υιοθετεί το PATH του login shell σου στην εκκίνηση, ώστε Homebrew, nvm/fnm και `~/.local/bin` εργαλεία (`claude`, `node`, `gh`) να βρίσκονται όπως στο Terminal.
+- Tab completion: native (εντολές στο PATH + paths), όχι PowerShell runspace.
+- Καθαρισμός διεργασιών: αντί για Job Object, κάθε dev server / agent τρέχει σε δικό του process group, οπότε το stop σκοτώνει όλο το δέντρο και η έξοδος τα μαζεύει όλα.
+- Shortcuts με ⌘ αντί για Ctrl (⌘T, ⌘W, ⌘1–9, ⌘⇧K). Το Ctrl+C στο input παραμένει interrupt.
+
+Πώς είναι οργανωμένο το platform layer (και πώς προστίθεται shell ή OS): [docs/platforms.md](docs/platforms.md).
 
 > Αν δεν υπάρχουν icons, τρέξε `npm run tauri icon path\to\logo.png`.
 

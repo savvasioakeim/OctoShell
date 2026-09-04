@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import logoUrl from "../assets/logo.png";
+import { isMac } from "../platform/platform";
 
 const appWindow = getCurrentWindow();
 
@@ -10,6 +11,10 @@ const appWindow = getCurrentWindow();
  * The draggable area uses `data-tauri-drag-region`, which Tauri handles natively
  * — including double-click-to-maximize and Windows snap. The three controls call
  * the window API directly; the close button gets the conventional red hover.
+ *
+ * macOS keeps its native traffic lights instead (`titleBarStyle: "Overlay"` in
+ * tauri.macos.conf.json draws them over this bar, at the left), so the bar only
+ * leaves room for them and skips the Windows-style controls.
  */
 export function Titlebar() {
   const [maximized, setMaximized] = useState(false);
@@ -26,16 +31,22 @@ export function Titlebar() {
   const btn =
     "flex h-full w-[46px] items-center justify-center text-muted hover:bg-edge hover:text-white transition-colors";
 
+  const mac = isMac();
+
   return (
     <div
       data-tauri-drag-region
       className="flex h-8 shrink-0 select-none items-center justify-between border-b border-edge bg-chrome"
     >
-      <div data-tauri-drag-region className="flex items-center gap-2 px-3 text-xs">
+      {/* macOS: the traffic lights sit at x≈12–70 over this bar — keep clear of them. */}
+      <div data-tauri-drag-region className={`flex items-center gap-2 text-xs ${mac ? "pl-[78px] pr-3" : "px-3"}`}>
         <img src={logoUrl} alt="" aria-hidden className="h-4 w-4" />
         <span className="font-semibold tracking-wide text-gray-300">OctoShell</span>
       </div>
 
+      {mac ? (
+        <div data-tauri-drag-region className="h-full flex-1" />
+      ) : (
       <div className="flex h-full">
         <button className={btn} title="Minimize" onClick={() => void appWindow.minimize()}>
           <svg width="11" height="11" viewBox="0 0 11 11"><rect x="1" y="5" width="9" height="1" fill="currentColor" /></svg>
@@ -61,6 +72,7 @@ export function Titlebar() {
           <svg width="11" height="11" viewBox="0 0 11 11" stroke="currentColor"><path d="M1 1 L10 10 M10 1 L1 10" /></svg>
         </button>
       </div>
+      )}
     </div>
   );
 }

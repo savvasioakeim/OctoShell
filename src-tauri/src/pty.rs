@@ -1,6 +1,7 @@
 //! Multi-session PTY management with **semantic block** detection.
 //!
-//! Each tab owns one `pwsh.exe` session. We inject a small *shell integration*
+//! Each tab owns one interactive shell (PowerShell on Windows; zsh, bash or
+//! pwsh on macOS/Linux — see `shells.rs`). We inject a small *shell integration*
 //! script (OSC 133 / FinalTerm markers + OSC 7 cwd reporting) so the backend
 //! can tell exactly where each command's output begins and ends, plus its exit
 //! code — the same technique Warp and VS Code use. A per-session
@@ -22,48 +23,34 @@
 //! output never stalls the async runtime or the UI.
 
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{Read, Write};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use base64::{engine::general_purpose::STANDARD, Engine};
-use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
+use portable_pty::{native_pty_system, Child, MasterPty, PtySize};
 use serde::Serialize;
 use tauri::ipc::{Channel, InvokeResponseBody};
 use tauri::{AppHandle, Emitter, State};
 
-/// PowerShell shell-integration script, injected at startup via `-EncodedCommand`.
-///
-/// It overrides `prompt` to emit OSC 133 D (previous command end + exit code),
-/// OSC 7 (cwd), and OSC 133 A/B (prompt boundaries). On the first prompt it also
-/// installs an Enter handler that emits OSC 133 C (command start) — registered
-/// lazily because PSReadLine is only loaded once the interactive prompt begins.
-const SHELL_INTEGRATION: &str = r#"
-function global:prompt {
-  if (-not $global:__octoInit) {
-    try {
-      Set-PSReadLineKeyHandler -Key Enter -ScriptBlock {
-        [Microsoft.PowerShell.PSConsoleReadLine]::AcceptLine()
-        [Console]::Write("$([char]27)]133;C$([char]7)")
-      }
-    } catch {}
-    try { Set-PSReadLineOption -PredictionSource None } catch {}
-    $global:__octoInit = $true
-  }
-  $e = [char]27; $b = [char]7
-  $c = if ($?) { 0 } else { if ($LASTEXITCODE) { $LASTEXITCODE } else { 1 } }
-  $p = (Get-Location).ProviderPath -replace '\\','/'
-  "$e]133;D;$c$b$e]7;file://$env:COMPUTERNAME/$p$b$e]133;A$b$e]133;B$b"
-}
-"#;
+use crate::platform;
+use crate::shells;
+
+pub use crate::completion::CompletionEngine;
 
 /// A single live terminal session.
 struct PtySession {
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
     child: Box<dyn Child + Send + Sync>,
+    /// Which spawn this is for its id. A session is reopened under the SAME id
+    /// (the frontend restarts an exited shell; dev hot-reload replaces one), and
+    /// the old spawn's reader thread only winds down afterwards — it must not
+    /// remove the new session from the registry or announce ITS exit.
+    generation: u64,
 }
+
+static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 /// Thread-safe registry of every open session.
 #[derive(Default, Clone)]
@@ -74,56 +61,6 @@ pub struct PtyManager {
 #[derive(Clone, Serialize)]
 struct IdPayload {
     id: String,
-}
-
-/// Run a helper process without flashing a console window, returning its stdout.
-#[cfg(windows)]
-fn run_hidden(program: &str, args: &[&str]) -> Option<String> {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    let out = std::process::Command::new(program)
-        .args(args)
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-        .ok()?;
-    Some(String::from_utf8_lossy(&out.stdout).into_owned())
-}
-
-/// PIDs of the direct children of `pid` — i.e. whatever the shell is currently
-/// running. Empty when the shell is idle at its prompt.
-#[cfg(windows)]
-fn child_pids(pid: u32) -> Vec<u32> {
-    let script = format!(
-        "Get-CimInstance Win32_Process -Filter 'ParentProcessId={pid}' | Select-Object -ExpandProperty ProcessId"
-    );
-    let out = run_hidden("powershell", &["-NoProfile", "-NonInteractive", "-Command", &script])
-        .unwrap_or_default();
-    out.lines().filter_map(|l| l.trim().parse::<u32>().ok()).collect()
-}
-
-#[cfg(not(windows))]
-fn child_pids(pid: u32) -> Vec<u32> {
-    let out = std::process::Command::new("pgrep")
-        .arg("-P")
-        .arg(pid.to_string())
-        .output()
-        .ok()
-        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-        .unwrap_or_default();
-    out.lines().filter_map(|l| l.trim().parse::<u32>().ok()).collect()
-}
-
-/// Encode a script as PowerShell `-EncodedCommand` (UTF-16LE → base64).
-/// Avoids all command-line quoting issues.
-fn encode_ps(script: &str) -> String {
-    let utf16: Vec<u8> = script.encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
-    STANDARD.encode(utf16)
-}
-
-fn shell_args(shell: &str) -> CommandBuilder {
-    let mut cmd = CommandBuilder::new(shell);
-    cmd.args(["-NoLogo", "-NoExit", "-EncodedCommand", &encode_ps(SHELL_INTEGRATION)]);
-    cmd
 }
 
 impl PtyManager {
@@ -152,31 +89,34 @@ impl PtyManager {
             .map_err(|e| e.to_string())?;
 
         let start_dir = if cwd.is_empty() {
-            std::env::var("USERPROFILE").unwrap_or_else(|_| ".".into())
+            platform::home_dir()
+                .map(|h| h.to_string_lossy().into_owned())
+                .unwrap_or_else(|| ".".into())
         } else {
             cwd
         };
 
-        // Spawn the requested shell in the start dir. PowerShell gets the OSC-133
-        // shell-integration script injected (the source of our per-command blocks);
-        // CMD and WSL are spawned raw — they work as plain terminals but, lacking
-        // that integration, don't produce semantic command blocks (flagged in the
-        // Settings UI).
-        let spawn = |builder: CommandBuilder| {
-            let mut b = builder;
-            b.cwd(&start_dir);
-            pair.slave.spawn_command(b)
-        };
-        let child = match shell.as_str() {
-            "cmd" => spawn(CommandBuilder::new("cmd.exe")),
-            "wsl" => spawn(CommandBuilder::new("wsl.exe")),
-            // "powershell" (default): prefer pwsh 7, fall back to Windows PowerShell.
-            _ => spawn(shell_args("pwsh.exe")).or_else(|_| spawn(shell_args("powershell.exe"))),
+        // Spawn the requested shell in the start dir. A shell the platform
+        // doesn't have (a setting carried over from another OS) resolves to the
+        // platform default. Shells with integration produce semantic command
+        // blocks; CMD and WSL are spawned raw and work as plain terminals
+        // (flagged in the Settings UI).
+        let shell_id = shells::resolve(&shell);
+        let mut child = None;
+        let mut last_err = String::from("no shell to try");
+        for builder in shells::commands(shell_id, &start_dir)? {
+            match pair.slave.spawn_command(builder) {
+                Ok(c) => {
+                    child = Some(c);
+                    break;
+                }
+                Err(e) => last_err = e.to_string(),
+            }
         }
-        .map_err(|e| format!("failed to spawn shell: {e}"))?;
+        let child = child.ok_or_else(|| format!("failed to spawn shell `{shell_id}`: {last_err}"))?;
 
         // Tie the shell (and every command it runs) to OctoShell's lifetime so a
-        // crash or hot-reload can't leave an orphaned pwsh.exe behind.
+        // crash or hot-reload can't leave an orphaned shell behind.
         if let Some(pid) = child.process_id() {
             crate::jobctl::add(pid);
         }
@@ -185,6 +125,7 @@ impl PtyManager {
 
         let reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
         let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
+        let generation = GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         self.sessions.lock().unwrap().insert(
             id.clone(),
@@ -192,11 +133,12 @@ impl PtyManager {
                 master: pair.master,
                 writer,
                 child,
+                generation,
             },
         );
 
         let sessions = self.sessions.clone();
-        thread::spawn(move || run_reader(app, sessions, id, reader, on_output));
+        thread::spawn(move || run_reader(app, sessions, id, generation, reader, on_output));
         Ok(())
     }
 
@@ -221,27 +163,18 @@ impl PtyManager {
     /// runs as a grandchild behind npm/cmd shims that swallow the signal, so the
     /// tab sits "running" forever with no way out. Instead we kill every direct
     /// child of the shell — process tree and all — which is exactly the foreground
-    /// command and its helpers, never the pwsh session itself.
+    /// command and its helpers, never the shell session itself.
     pub fn kill_foreground(&self, id: &str) -> Result<(), String> {
         let shell_pid = {
             let sessions = self.sessions.lock().unwrap();
             let s = sessions.get(id).ok_or("no such session")?;
             s.child.process_id().ok_or("session has no pid")?
         };
-        let kids = child_pids(shell_pid);
+        let kids = platform::child_pids(shell_pid);
         if kids.is_empty() {
             return Err("nothing is running in this shell".into());
         }
-        for pid in kids {
-            #[cfg(windows)]
-            {
-                let _ = run_hidden("taskkill", &["/F", "/T", "/PID", &pid.to_string()]);
-            }
-            #[cfg(not(windows))]
-            {
-                let _ = std::process::Command::new("kill").arg("-9").arg(pid.to_string()).status();
-            }
-        }
+        platform::kill_trees(&kids);
         Ok(())
     }
 
@@ -293,6 +226,7 @@ fn run_reader(
     app: AppHandle,
     sessions: Arc<Mutex<HashMap<String, PtySession>>>,
     id: String,
+    generation: u64,
     mut reader: Box<dyn Read + Send>,
     on_output: Channel<InvokeResponseBody>,
 ) {
@@ -389,8 +323,23 @@ fn run_reader(
         }
     }
 
-    sessions.lock().unwrap().remove(&id);
-    let _ = app.emit("pty://exit", IdPayload { id });
+    // Only OUR session: if the id was already reopened by a newer spawn, that
+    // one is live and must stay registered — and its owner must not hear an
+    // exit that isn't theirs.
+    let superseded = {
+        let mut map = sessions.lock().unwrap();
+        match map.get(&id) {
+            Some(s) if s.generation == generation => {
+                map.remove(&id);
+                false
+            }
+            Some(_) => true,
+            None => false, // closed via close_tab: still announce the end
+        }
+    };
+    if !superseded {
+        let _ = app.emit("pty://exit", IdPayload { id });
+    }
 }
 
 /// TEMP DEBUG: append an escaped view of a raw PTY chunk to a log file.
@@ -562,12 +511,55 @@ impl SemanticParser {
     }
 }
 
-/// Parse `file://HOST/C:/Users/...` into a Windows path `C:\Users\...`.
+/// Parse the OSC 7 `file://HOST/path` report into a native path.
+///
+/// Windows: `file://HOST/C:/Users/...` → `C:\Users\...` (PowerShell reports
+/// forward slashes; the rest of the app expects native ones). Elsewhere the path
+/// part already starts at the root, and our zsh/bash integration percent-encodes
+/// it, so decode `%XX` escapes back.
 fn parse_cwd(url: &str) -> Option<String> {
     let path = url.strip_prefix("file://")?;
     // Drop the host component (up to the first '/').
-    let rest = path.splitn(2, '/').nth(1)?;
-    Some(rest.replace("%20", " ").replace('/', "\\"))
+    let idx = path.find('/')?;
+    let rest = &path[idx..];
+    #[cfg(windows)]
+    {
+        Some(rest[1..].replace("%20", " ").replace('/', "\\"))
+    }
+    #[cfg(not(windows))]
+    {
+        Some(percent_decode(rest))
+    }
+}
+
+/// Decode `%XX` escapes (UTF-8 bytes), leaving anything malformed as-is.
+#[cfg(any(not(windows), test))]
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            if let (Some(h), Some(l)) = (hex(bytes.get(i + 1)), hex(bytes.get(i + 2))) {
+                out.push(h << 4 | l);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+#[cfg(any(not(windows), test))]
+fn hex(b: Option<&u8>) -> Option<u8> {
+    match b? {
+        c @ b'0'..=b'9' => Some(c - b'0'),
+        c @ b'a'..=b'f' => Some(c - b'a' + 10),
+        c @ b'A'..=b'F' => Some(c - b'A' + 10),
+        _ => None,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -583,7 +575,7 @@ pub fn open_new_tab(
     shell: Option<String>,
     on_output: Channel<InvokeResponseBody>,
 ) -> Result<(), String> {
-    manager.open(app, id, cwd, shell.unwrap_or_else(|| "powershell".into()), on_output)
+    manager.open(app, id, cwd, shell.unwrap_or_else(|| shells::default_id().into()), on_output)
 }
 
 #[tauri::command]
@@ -621,6 +613,8 @@ pub fn close_tab(manager: State<'_, PtyManager>, id: String) -> Result<(), Strin
 }
 
 /// One-shot captured subprocess (e.g. `git status`) for macros — not a PTY.
+/// The script runs through the platform's script shell (PowerShell on Windows,
+/// `sh` elsewhere); the frontend writes each script for both.
 ///
 /// `async` + `spawn_blocking` is deliberate: a synchronous `#[tauri::command]`
 /// runs on the main (UI) thread, so a slow/hanging child (e.g. `git worktree
@@ -629,21 +623,11 @@ pub fn close_tab(manager: State<'_, PtyManager>, id: String) -> Result<(), Strin
 #[tauri::command]
 pub async fn run_capture(cwd: String, command: String) -> Result<String, String> {
     tokio::task::spawn_blocking(move || {
-        use std::process::Command;
-
-        let shell = if which("pwsh.exe") { "pwsh.exe" } else { "powershell.exe" };
-        let mut cmd = Command::new(shell);
-        cmd.args(["-NoProfile", "-NonInteractive", "-Command", &command]);
+        let mut cmd = platform::script_command(&command);
         if !cwd.is_empty() {
             cmd.current_dir(&cwd);
         }
-
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            cmd.creation_flags(CREATE_NO_WINDOW);
-        }
+        platform::hide_console(&mut cmd);
 
         let out = cmd.output().map_err(|e| e.to_string())?;
         let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
@@ -656,151 +640,8 @@ pub async fn run_capture(cwd: String, command: String) -> Result<String, String>
     .map_err(|e| e.to_string())?
 }
 
-/// The empty completion result, used as a safe fallback everywhere.
-const EMPTY_COMPLETION: &str = r#"{"ri":0,"rl":0,"m":[]}"#;
-
-/// A persistent PowerShell process that answers Tab-completion requests.
-///
-/// Spawning a fresh `pwsh` per Tab cost ~1.5s (cold start dominates). Instead we
-/// keep ONE pwsh alive running a read-eval loop: each request is a single line
-/// `<cwd_b64> <line_b64> <cursor>\n` on stdin, and the reply is one line
-/// `OCTO\t<json>\n` on stdout. Warm round-trips are well under 100ms.
-///
-/// base64 dodges all quoting/whitespace issues in the request payload (base64
-/// never contains a space, so a space delimiter is safe). Requests are
-/// serialized by the mutex, which is fine since each is fast. If the process
-/// dies (crash, OOM), the next request transparently respawns and retries once.
-const COMPLETE_LOOP: &str = r#"
-$ErrorActionPreference='SilentlyContinue'
-[Console]::OutputEncoding=[System.Text.Encoding]::UTF8
-$enc=[System.Text.Encoding]::UTF8
-while(($req=[Console]::In.ReadLine()) -ne $null){
-  try{
-    $p=$req.Split(' ')
-    $cwd=if($p[0]){$enc.GetString([Convert]::FromBase64String($p[0]))}else{''}
-    $line=if($p.Length -gt 1 -and $p[1]){$enc.GetString([Convert]::FromBase64String($p[1]))}else{''}
-    $pos=[int]$p[2]
-    if($cwd){Set-Location -LiteralPath $cwd}
-    $r=TabExpansion2 -inputScript $line -cursorColumn $pos
-    if($r){
-      $o=[pscustomobject]@{ri=$r.ReplacementIndex;rl=$r.ReplacementLength;m=@($r.CompletionMatches|%{[pscustomobject]@{t=$_.CompletionText;l=$_.ListItemText;k=$_.ResultType.ToString()}})}
-      $json=$o|ConvertTo-Json -Compress -Depth 4
-    }else{$json='{"ri":0,"rl":0,"m":[]}'}
-  }catch{$json='{"ri":0,"rl":0,"m":[]}'}
-  [Console]::Out.WriteLine("OCTO`t$json")
-  [Console]::Out.Flush()
-}
-"#;
-
-/// A live completion subprocess and its piped stdio.
-struct EngineProc {
-    child: std::process::Child,
-    stdin: std::process::ChildStdin,
-    stdout: BufReader<std::process::ChildStdout>,
-}
-
-/// Owns the single warm pwsh completion process. Managed as Tauri state.
-#[derive(Default, Clone)]
-pub struct CompletionEngine {
-    inner: Arc<Mutex<Option<EngineProc>>>,
-}
-
-impl CompletionEngine {
-    fn spawn() -> Result<EngineProc, String> {
-        use std::process::{Command, Stdio};
-        let shell = if which("pwsh.exe") { "pwsh.exe" } else { "powershell.exe" };
-        let mut cmd = Command::new(shell);
-        cmd.args(["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", &encode_ps(COMPLETE_LOOP)])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null());
-
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            cmd.creation_flags(CREATE_NO_WINDOW);
-        }
-
-        let mut child = cmd.spawn().map_err(|e| e.to_string())?;
-        // The warm completion runspace lives for the whole session — tie it to
-        // the job so it dies with OctoShell instead of lingering.
-        crate::jobctl::add(child.id());
-        let stdin = child.stdin.take().ok_or("no stdin")?;
-        let stdout = BufReader::new(child.stdout.take().ok_or("no stdout")?);
-        Ok(EngineProc { child, stdin, stdout })
-    }
-
-    /// Pre-spawn the process AND prime PowerShell's command cache so the first
-    /// real Tab is instant. The first cmdlet completion in a fresh pwsh costs
-    /// ~700ms (it builds the command-name cache); a throwaway request here pays
-    /// that once, in the background, before the user ever presses Tab.
-    pub fn warm(&self) {
-        let mut g = self.inner.lock().unwrap();
-        if g.is_none() {
-            if let Ok(mut proc) = Self::spawn() {
-                let _ = Self::round_trip(&mut proc, "", "Get-", 4);
-                *g = Some(proc);
-            }
-        }
-    }
-
-    /// One request/response round-trip over the persistent pipe.
-    fn round_trip(proc: &mut EngineProc, cwd: &str, line: &str, cursor: usize) -> Result<String, String> {
-        let req = format!(
-            "{} {} {}\n",
-            STANDARD.encode(cwd),
-            STANDARD.encode(line),
-            cursor
-        );
-        proc.stdin.write_all(req.as_bytes()).map_err(|e| e.to_string())?;
-        proc.stdin.flush().map_err(|e| e.to_string())?;
-
-        // Read until our sentinel line (ignore any stray output).
-        let mut buf = String::new();
-        loop {
-            buf.clear();
-            let n = proc.stdout.read_line(&mut buf).map_err(|e| e.to_string())?;
-            if n == 0 {
-                return Err("completion engine closed".into());
-            }
-            if let Some(rest) = buf.trim_end().strip_prefix("OCTO\t") {
-                return Ok(rest.to_string());
-            }
-        }
-    }
-
-    fn complete(&self, cwd: &str, line: &str, cursor: usize) -> Result<String, String> {
-        let mut g = self.inner.lock().unwrap();
-        if g.is_none() {
-            *g = Some(Self::spawn()?);
-        }
-
-        // Try once; if the pipe is broken (process died) respawn and retry.
-        let first = Self::round_trip(g.as_mut().unwrap(), cwd, line, cursor);
-        let s = match first {
-            Ok(s) => s,
-            Err(_) => {
-                if let Some(mut old) = g.take() {
-                    let _ = old.child.kill();
-                }
-                *g = Some(Self::spawn()?);
-                Self::round_trip(g.as_mut().unwrap(), cwd, line, cursor)?
-            }
-        };
-        Ok(if s.is_empty() { EMPTY_COMPLETION.to_string() } else { s })
-    }
-}
-
-/// Tab completion via PowerShell's own engine (`TabExpansion2`), served by a
-/// persistent warm runspace ([`CompletionEngine`]).
-///
-/// We can't use pwsh's interactive completion because the input editor isn't a
-/// live terminal — so on Tab the frontend calls this with the current line and
-/// caret column, and the warm pwsh asks the real completion engine (cmdlets,
-/// paths, parameters, variables). The result is JSON:
-///   `{ "ri": <replacementIndex>, "rl": <replacementLength>,
-///      "m": [ { "t": completionText, "l": listItemText, "k": resultType } ] }`
+/// Tab completion for the input bar — see `completion.rs` for the engines and
+/// the JSON shape.
 #[tauri::command]
 pub fn shell_complete(
     engine: State<'_, CompletionEngine>,
@@ -826,19 +667,29 @@ pub fn open_editor(path: String) -> Result<(), String> {
         c.args(["/c", "code", &path]);
         c
     };
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    let mut cmd = {
+        // The `code` shim only exists once the user ran "Install 'code' command
+        // in PATH" from VS Code; the app bundle is there regardless, and
+        // Launch Services can open it by name.
+        if platform::which("code") {
+            let mut c = Command::new("code");
+            c.arg(&path);
+            c
+        } else {
+            let mut c = Command::new("open");
+            c.args(["-a", "Visual Studio Code", &path]);
+            c
+        }
+    };
+    #[cfg(all(unix, not(target_os = "macos")))]
     let mut cmd = {
         let mut c = Command::new("code");
         c.arg(&path);
         c
     };
 
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
+    platform::hide_console(&mut cmd);
 
     cmd.spawn()
         .map(|_| ())
@@ -874,50 +725,11 @@ pub fn open_in_file_manager(path: String) -> Result<(), String> {
         c
     };
 
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
+    platform::hide_console(&mut cmd);
 
     cmd.spawn()
         .map(|_| ())
         .map_err(|e| format!("could not open file manager: {e}"))
-}
-
-fn which(exe: &str) -> bool {
-    std::env::var_os("PATH")
-        .map(|paths| std::env::split_paths(&paths).any(|dir| dir.join(exe).is_file()))
-        .unwrap_or(false)
-}
-
-/// PATH lookup for a *command* by bare name, matching however it's actually
-/// installed. On Windows a CLI shipped via npm is a shim — `foo`, `foo.cmd`,
-/// `foo.ps1` — not `foo.exe`, so a plain `which("foo.exe")` misses it (this is
-/// exactly why the Gemini CLI showed up as "not found"). We try the bare name
-/// plus every extension in PATHEXT (falling back to the common shim set).
-fn which_cmd(name: &str) -> bool {
-    if which(name) {
-        return true;
-    }
-    #[cfg(windows)]
-    {
-        let exts = std::env::var("PATHEXT")
-            .unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD;.PS1".into());
-        for ext in exts.split(';').filter(|e| !e.is_empty()) {
-            // PATHEXT entries include the leading dot, e.g. ".CMD".
-            if which(&format!("{name}{}", ext.to_ascii_lowercase())) {
-                return true;
-            }
-        }
-        // .ps1 shims (npm) aren't in the default PATHEXT — check explicitly.
-        which(&format!("{name}.ps1"))
-    }
-    #[cfg(not(windows))]
-    {
-        false
-    }
 }
 
 /// First-launch health check: is each CLI OctoShell depends on actually on
@@ -933,18 +745,120 @@ pub struct HealthCheck {
     gemini: bool,
     node: bool,
     gh: bool,
+    /// PowerShell 7. Required on Windows (the core shell + completion engine);
+    /// merely one shell option elsewhere.
     pwsh: bool,
+    /// Whether the platform's core shell is present: pwsh on Windows, the
+    /// default integrated shell (zsh/bash) elsewhere. This is the "required
+    /// shell" row of the onboarding check.
+    shell_ok: bool,
+    /// Label for that row, e.g. "PowerShell 7" or "zsh".
+    shell_label: String,
+    /// "windows" | "macos" | "linux", so the UI can pick install hints.
+    platform: &'static str,
 }
 
 #[tauri::command]
 pub fn health_check() -> HealthCheck {
     // Bare names — `which_cmd` matches .exe, npm shims (.cmd/.ps1) and bare
     // scripts alike, so an npm-installed CLI (e.g. Gemini) is found too.
+    let pwsh = platform::which_cmd("pwsh");
+    let (shell_ok, shell_label) = if cfg!(windows) {
+        (pwsh, "PowerShell 7".to_string())
+    } else {
+        let id = shells::default_id();
+        let ok = shells::list().iter().any(|s| s.id == id && s.available);
+        (ok, id.to_string())
+    };
     HealthCheck {
-        claude: which_cmd("claude"),
-        gemini: which_cmd("gemini"),
-        node: which_cmd("node"),
-        gh: which_cmd("gh"),
-        pwsh: which_cmd("pwsh"),
+        claude: platform::which_cmd("claude"),
+        gemini: platform::which_cmd("gemini"),
+        node: platform::which_cmd("node"),
+        gh: platform::which_cmd("gh"),
+        pwsh,
+        shell_ok,
+        shell_label,
+        platform: platform::OS,
+    }
+}
+
+/// What the frontend needs to know about the OS it's running on, fetched once
+/// at startup (see `src/platform/platform.ts`): which shells the terminal can
+/// spawn and which is the default, plus the home directory.
+#[derive(serde::Serialize)]
+pub struct PlatformInfo {
+    os: &'static str,
+    #[serde(rename = "defaultShell")]
+    default_shell: &'static str,
+    shells: Vec<shells::ShellInfo>,
+    home: String,
+}
+
+#[tauri::command]
+pub fn platform_info() -> PlatformInfo {
+    PlatformInfo {
+        os: platform::OS,
+        default_shell: shells::default_id(),
+        shells: shells::list(),
+        home: platform::home_dir().map(|h| h.to_string_lossy().into_owned()).unwrap_or_default(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_the_cwd_report_for_this_platform() {
+        #[cfg(windows)]
+        assert_eq!(parse_cwd("file://PC/C:/Users/me/my%20app").as_deref(), Some(r"C:\Users\me\my app"));
+        #[cfg(not(windows))]
+        {
+            assert_eq!(parse_cwd("file://mac.local/Users/me/my%20app").as_deref(), Some("/Users/me/my app"));
+            assert_eq!(parse_cwd("file://localhost/tmp/100%25done").as_deref(), Some("/tmp/100%done"));
+            assert_eq!(parse_cwd("file:///no/host").as_deref(), Some("/no/host"));
+        }
+        assert_eq!(parse_cwd("not-a-url"), None);
+    }
+
+    #[test]
+    fn percent_decoding_leaves_malformed_input_alone() {
+        assert_eq!(percent_decode("a%2"), "a%2");
+        assert_eq!(percent_decode("%zz"), "%zz");
+        assert_eq!(percent_decode("%41%20"), "A ");
+    }
+
+    /// The parser is shared by every shell; feed it what zsh's integration
+    /// emits for one command and check the block boundaries come out right.
+    #[test]
+    fn semantic_parser_handles_a_zsh_command_cycle() {
+        let mut p = SemanticParser::new();
+        let mut events = Vec::new();
+        // First prompt: D (ignored, nothing running), cwd, A, prompt text, B.
+        events.extend(p.feed(b"\x1b]133;D;0\x07\x1b]7;file://h/Users/x\x07\x1b]133;A\x07% \x1b]133;B\x07"));
+        // The user's echoed command line, then C, output, then the next prompt.
+        events.extend(p.feed(b"ls\r\n\x1b]133;C\x07README.md\r\n\x1b]133;D;0\x07\x1b]7;file://h/Users/x\x07\x1b]133;A\x07% \x1b]133;B\x07"));
+        let mut cwds = 0;
+        let mut ends = Vec::new();
+        let mut readies = 0;
+        let mut output = Vec::new();
+        for ev in events {
+            match ev {
+                Sem::Output(b) => output.extend(b),
+                Sem::CommandEnd(c) => ends.push(c),
+                Sem::Cwd(c) => {
+                    cwds += 1;
+                    #[cfg(not(windows))]
+                    assert_eq!(c, "/Users/x");
+                    #[cfg(windows)]
+                    assert_eq!(c, r"Users\x");
+                }
+                Sem::Ready => readies += 1,
+            }
+        }
+        assert_eq!(String::from_utf8_lossy(&output), "README.md\r\n", "only output between C and D is forwarded");
+        assert_eq!(ends, vec![0]);
+        assert_eq!(cwds, 2);
+        assert_eq!(readies, 2);
     }
 }

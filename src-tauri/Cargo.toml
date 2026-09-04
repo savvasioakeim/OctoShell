@@ -57,6 +57,11 @@ agent-client-protocol = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "io-util", "process", "time"] }
 fastembed = "5"
 
+# Unix process groups: the counterpart of the Job Object below. Every child is a
+# group leader and `platform::kill_tree` signals the whole group (see jobctl.rs).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 # Win32 Job Object: tie every spawned shell/agent to OctoShell's lifetime so a
 # crash or hot-reload can't orphan pwsh/claude/gemini processes (see jobctl.rs).
 [target.'cfg(windows)'.dependencies]

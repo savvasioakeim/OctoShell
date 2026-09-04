@@ -8,19 +8,30 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { KEY, saveJSON } from "../util/persist";
+import { platform, type OS } from "../platform/platform";
 
 interface HealthCheck {
   claude: boolean;
   gemini: boolean;
   node: boolean;
   gh: boolean;
+  /** PowerShell 7 — the required shell on Windows, just an option elsewhere. */
   pwsh: boolean;
+  /** The platform's core shell is present (pwsh on Windows, zsh/bash elsewhere). */
+  shell_ok: boolean;
+  /** Label for that shell row, e.g. "PowerShell 7" / "zsh". */
+  shell_label: string;
+  platform: OS;
 }
+
+/** The keys a dependency row can be keyed by (the health flags, plus `shell`
+ *  for the platform's required shell). */
+type DepKey = "claude" | "gemini" | "node" | "gh" | "shell";
 
 type NodeState = "pass" | "fail" | "neutral";
 
 interface Dep {
-  key: keyof HealthCheck;
+  key: DepKey;
   label: string;
   why: string;
 }
@@ -47,7 +58,8 @@ const SEG_CLS: Record<NodeState, string> = {
 };
 
 // Per-dependency install hierarchy, in strict priority order:
-//   1. package-manager command (winget on Windows, or npm for the npm CLIs),
+//   1. package-manager command (winget on Windows, Homebrew on macOS, or npm
+//      for the npm CLIs),
 //   2. official GitHub repo/releases (fallback A),
 //   3. official homepage (fallback B — the least link-rot-prone).
 interface InstallGuide {
@@ -55,30 +67,45 @@ interface InstallGuide {
   repo?: { label: string; url: string };
   home?: { label: string; url: string };
 }
-const GUIDES: Record<keyof HealthCheck, InstallGuide> = {
-  claude: {
+
+/** The package-manager line per OS; Linux gets no single answer, so it falls
+ *  back to the links. */
+function pkgCmd(cmds: { windows: string; macos: string }): string | undefined {
+  const os = platform().os;
+  return os === "windows" ? cmds.windows : os === "macos" ? cmds.macos : undefined;
+}
+
+const GUIDES: Record<DepKey, () => InstallGuide> = {
+  claude: () => ({
     cmd: "npm install -g @anthropic-ai/claude-code",
     repo: { label: "anthropics/claude-code", url: "https://github.com/anthropics/claude-code" },
     home: { label: "claude.com/claude-code", url: "https://claude.com/claude-code" },
-  },
-  gemini: {
+  }),
+  gemini: () => ({
     cmd: "npm install -g @google/gemini-cli",
     repo: { label: "google-gemini/gemini-cli", url: "https://github.com/google-gemini/gemini-cli" },
     home: { label: "ai.google.dev", url: "https://ai.google.dev/gemini-api/docs" },
-  },
-  node: {
-    cmd: "winget install OpenJS.NodeJS",
+  }),
+  node: () => ({
+    cmd: pkgCmd({ windows: "winget install OpenJS.NodeJS", macos: "brew install node" }),
     home: { label: "nodejs.org", url: "https://nodejs.org" },
-  },
-  pwsh: {
-    cmd: "winget install Microsoft.PowerShell",
-    home: { label: "Microsoft Docs", url: "https://learn.microsoft.com/powershell/scripting/install/installing-powershell-on-windows" },
-  },
-  gh: {
-    cmd: "winget install GitHub.cli",
+  }),
+  shell: () =>
+    platform().os === "windows"
+      ? {
+          cmd: "winget install Microsoft.PowerShell",
+          home: { label: "Microsoft Docs", url: "https://learn.microsoft.com/powershell/scripting/install/installing-powershell-on-windows" },
+        }
+      : {
+          // zsh/bash ship with the OS; missing means a very unusual setup.
+          cmd: pkgCmd({ windows: "", macos: "brew install zsh" }),
+          home: { label: "zsh.sourceforge.io", url: "https://zsh.sourceforge.io/" },
+        },
+  gh: () => ({
+    cmd: pkgCmd({ windows: "winget install GitHub.cli", macos: "brew install gh" }),
     repo: { label: "cli/cli", url: "https://github.com/cli/cli" },
     home: { label: "cli.github.com", url: "https://cli.github.com" },
-  },
+  }),
 };
 
 const CopyIcon = () => (
@@ -122,8 +149,8 @@ function CopyButton({ text }: { text: string }) {
 
 /** The failed-node "Quick Action & Installation Guide": command → repo → home,
  *  in muted amber tones so it never competes with the primary CTA. */
-function InstallGuide({ k }: { k: keyof HealthCheck }) {
-  const g = GUIDES[k];
+function InstallGuide({ k }: { k: DepKey }) {
+  const g = GUIDES[k]?.();
   if (!g) return null;
   return (
     <div className="mt-2 space-y-1.5 rounded-lg border border-amber-500/20 bg-amber-500/[0.04] p-2">
@@ -225,7 +252,9 @@ export function OnboardingOverlay({ onDone }: { onDone: () => void }) {
         // user immediately sees which one to install.
         if (!(h.claude || h.gemini || h.node)) setDrawer(true);
       })
-      .catch(() => setHealth({ claude: true, gemini: true, node: true, gh: true, pwsh: true })); // fail open
+      .catch(() =>
+        setHealth({ claude: true, gemini: true, node: true, gh: true, pwsh: true, shell_ok: true, shell_label: "shell", platform: platform().os }),
+      ); // fail open
   }, []);
 
   const dismiss = () => {
@@ -233,9 +262,11 @@ export function OnboardingOverlay({ onDone }: { onDone: () => void }) {
     onDone();
   };
 
-  const hasAnyEngine = !!health && ENGINES.some((e) => health[e.key]);
-  const pwshOk = !!health && health.pwsh;
-  const missingRequired = !!health && (!hasAnyEngine || !pwshOk);
+  const hasAnyEngine = !!health && ENGINES.some((e) => health[e.key as keyof HealthCheck]);
+  // The platform's core shell: PowerShell 7 on Windows, zsh/bash elsewhere.
+  const shellOk = !!health && health.shell_ok;
+  const shellLabel = health?.shell_label ?? "shell";
+  const missingRequired = !!health && (!hasAnyEngine || !shellOk);
 
   // Engine sub-node: present → pass; absent but another engine present →
   // neutral (a valid alternative, not a failure); absent with none present →
@@ -295,7 +326,7 @@ export function OnboardingOverlay({ onDone }: { onDone: () => void }) {
                 <div className="overflow-hidden">
                   <div className="mt-2 pl-1">
                     {ENGINES.map((e, i) => {
-                      const st = engineState(health[e.key]);
+                      const st = engineState(health[e.key as keyof HealthCheck] as boolean);
                       return (
                         <TraceRow
                           key={e.key}
@@ -324,14 +355,18 @@ export function OnboardingOverlay({ onDone }: { onDone: () => void }) {
               </div>
             </TraceRow>
 
-            {/* PowerShell 7 — hard requirement. */}
+            {/* The core shell — hard requirement (PowerShell 7 on Windows; zsh/bash elsewhere). */}
             <TraceRow
-              state={pwshOk ? "pass" : "fail"}
-              title={pwshOk ? undefined : "Missing — see install options below."}
+              state={shellOk ? "pass" : "fail"}
+              title={shellOk ? undefined : "Missing — see install options below."}
             >
               <DepBody
-                dep={{ key: "pwsh", label: "PowerShell 7", why: "Core shell & tab-completion engine." }}
-                state={pwshOk ? "pass" : "fail"}
+                dep={{
+                  key: "shell",
+                  label: health.platform === "windows" ? "PowerShell 7" : shellLabel,
+                  why: health.platform === "windows" ? "Core shell & tab-completion engine." : "Core shell (command blocks & exit codes).",
+                }}
+                state={shellOk ? "pass" : "fail"}
                 badge={
                   <span className="rounded border border-edge bg-white/5 px-1.5 py-0.5 text-[10px] font-medium text-muted">
                     Required

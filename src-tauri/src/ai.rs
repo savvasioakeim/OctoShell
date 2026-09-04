@@ -16,6 +16,8 @@ use std::thread;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
+use crate::platform;
+
 const MODEL: &str = "claude-sonnet-5";
 const API_URL: &str = "https://api.anthropic.com/v1/messages";
 /// Output cap for the sidebar's API transport. 1024 silently truncated longer
@@ -45,6 +47,7 @@ pub struct AiManager {
 impl AiManager {
     pub fn cancel(&self, id: &str) {
         if let Some(mut child) = self.runs.lock().unwrap().remove(id) {
+            platform::kill_tree(child.id());
             let _ = child.kill();
         }
     }
@@ -125,14 +128,8 @@ fn claude_config_path(config_dir: Option<&str>) -> Option<std::path::PathBuf> {
     }
 }
 
-/// The user's home directory, without pulling in the `dirs` crate: `USERPROFILE`
-/// on Windows, `HOME` elsewhere.
 fn home_dir() -> Option<std::path::PathBuf> {
-    #[cfg(windows)]
-    let var = "USERPROFILE";
-    #[cfg(not(windows))]
-    let var = "HOME";
-    std::env::var_os(var).map(std::path::PathBuf::from)
+    platform::home_dir()
 }
 
 /// The `mcpServers` object from the resolved config, or empty if none/unreadable.
@@ -480,12 +477,9 @@ fn chat_via_cli(
         }
     }
 
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
+    // No console window; its own process group so a cancel ends the CLI's MCP
+    // servers with it.
+    platform::background(&mut cmd);
 
     let mut child = cmd.spawn().map_err(|e| {
         format!("could not launch the `{provider}` CLI (is it installed and on PATH?): {e}")

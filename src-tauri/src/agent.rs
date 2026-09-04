@@ -23,6 +23,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::approval::ApprovalBridge;
+use crate::platform;
 
 #[cfg(windows)]
 const CLAUDE_BIN: &str = "claude.exe";
@@ -186,13 +187,9 @@ impl AgentManager {
         cmd.stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            cmd.creation_flags(CREATE_NO_WINDOW);
-        }
+        // No console window; its own process group so `cancel` can end the
+        // agent together with its MCP sidecar and any Bash it spawned.
+        platform::background(&mut cmd);
 
         let mut child = cmd.spawn().map_err(|e| {
             format!("could not launch the `{provider}` agent CLI (installed & on PATH?): {e}")
@@ -267,24 +264,10 @@ impl AgentManager {
     }
 }
 
-/// Terminate a child process AND its descendants. On Windows the only reliable
-/// tree-kill without extra job plumbing is `taskkill /T`; elsewhere `child.kill`
-/// (called by the caller) is left to handle it.
+/// Terminate a child process AND its descendants (`taskkill /T` on Windows, a
+/// process-group signal elsewhere — see `platform::kill_tree`).
 fn kill_tree(child: &Child) {
-    #[cfg(windows)]
-    {
-        use std::process::Command;
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        let _ = Command::new("taskkill")
-            .args(["/T", "/F", "/PID", &child.id().to_string()])
-            .creation_flags(CREATE_NO_WINDOW)
-            .output();
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = child; // caller's child.kill() handles the single process
-    }
+    platform::kill_tree(child.id());
 }
 
 #[tauri::command]

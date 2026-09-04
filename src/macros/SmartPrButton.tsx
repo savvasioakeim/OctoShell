@@ -2,6 +2,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { ShellController } from "../shell/ShellController";
 import { KEY, loadJSON, saveJSON } from "../util/persist";
+import {
+  currentBranchScript,
+  prCommentsScript,
+  prCreateScript,
+  prViewJsonScript,
+  pushBranchScript,
+} from "../platform/shellScripts";
 
 /**
  * One stateful button that walks a branch through its PR lifecycle:
@@ -36,7 +43,7 @@ async function cap(cwd: string, command: string): Promise<string> {
 
 async function queryPr(cwd: string): Promise<GhPr | null> {
   try {
-    const out = await cap(cwd, "gh pr view --json number,state,reviewDecision,reviews,comments 2>$null");
+    const out = await cap(cwd, prViewJsonScript());
     if (!out) return null;
     const j = JSON.parse(out);
     return {
@@ -82,7 +89,7 @@ export function SmartPrButton({
     if (!cwd) { setBranch(""); return; }
     let b = "";
     try {
-      b = await cap(cwd, "git rev-parse --abbrev-ref HEAD 2>$null");
+      b = await cap(cwd, currentBranchScript());
     } catch {
       setBranch("");
       return;
@@ -130,9 +137,9 @@ export function SmartPrButton({
   };
 
   const doCreate = run(async () => {
-    await cap(cwd, `git push -u origin ${branch} 2>&1`);
+    await cap(cwd, pushBranchScript(branch, true));
     let pr = await queryPr(cwd);
-    if (!pr) { await cap(cwd, "gh pr create --fill 2>&1"); pr = await queryPr(cwd); }
+    if (!pr) { await cap(cwd, prCreateScript()); pr = await queryPr(cwd); }
     // seen=0 so any feedback already on the PR (e.g. when adopting an existing
     // one) shows up as actionable on the next Check.
     if (pr) { setEntry("check", pr.number, 0); flash(`PR #${pr.number} ready`); }
@@ -154,7 +161,7 @@ export function SmartPrButton({
   // but does NOT push — so you can review the changes before they go up.
   const doResolve = run(async () => {
     const n = entry!.pr;
-    const comments = await cap(cwd, `gh pr view ${n} --comments 2>&1`);
+    const comments = await cap(cwd, prCommentsScript(n));
     const pr = await queryPr(cwd);
     controller.runAgent(
       `Changes were requested on PR #${n}. Read the review comments below, ` +
@@ -169,7 +176,7 @@ export function SmartPrButton({
   // Update: push the agent's (reviewed) fixes, then back to Check.
   const doUpdate = run(async () => {
     const n = entry!.pr;
-    await cap(cwd, `git push origin ${branch} 2>&1`);
+    await cap(cwd, pushBranchScript(branch, false));
     setEntry("check", n);
     flash("Pushed → press Check");
   });

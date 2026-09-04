@@ -50,7 +50,9 @@ const HEALTHY_CONNECTIONS: u32 = 4;
 
 impl Drop for Running {
     fn drop(&mut self) {
-        // Best effort: the job object is the real guarantee, this is just tidy.
+        // Best effort: the job object / group registry is the real guarantee,
+        // this is just tidy.
+        crate::platform::kill_tree(self.child.id());
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
@@ -192,20 +194,15 @@ pub async fn tunnel_start(
             }
         }
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-        }
+        crate::platform::background(&mut cmd);
 
         let mut child = match cmd.spawn() {
             Ok(c) => c,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Err(
-                    "cloudflared isn't installed or isn't on PATH. Install it with \
-                     `winget install --id Cloudflare.cloudflared`, then try again."
-                        .to_string(),
-                )
+                return Err(format!(
+                    "cloudflared isn't installed or isn't on PATH. Install it with `{}`, then try again.",
+                    crate::platform::install_hint("cloudflared")
+                ))
             }
             Err(e) => return Err(format!("could not start cloudflared: {e}")),
         };

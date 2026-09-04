@@ -25,6 +25,7 @@ import type { StrategyRole } from "../strategy/roles";
 import { vacuumDb, type VacuumResult } from "../util/db";
 import { memoryStore, useMemoryStats } from "../memory/memoryStore";
 import { projectConfigStore, useProjectScripts } from "../projects/projectConfig";
+import { effectiveShell, isWindows, platform } from "../platform/platform";
 
 type TabId = "ai" | "local" | "roles" | "projects" | "workspace" | "appearance" | "system";
 const TABS: { id: TabId; label: string }[] = [
@@ -1111,19 +1112,20 @@ function WorkspaceTab() {
       <Section title="Terminal" desc="Which shell the native PTY spawns.">
         <Field label="Default shell">
           <Select
-            value={workspace.defaultShell}
+            value={effectiveShell(workspace.defaultShell).id}
             onChange={(v) => set({ defaultShell: v as DefaultShell })}
-            options={[
-              { label: "PowerShell (pwsh)", value: "powershell" },
-              { label: "CMD", value: "cmd" },
-              { label: "WSL / Ubuntu", value: "wsl" },
-            ]}
+            options={platform().shells.map((s) => ({
+              label: s.available ? s.label : `${s.label} (not installed)`,
+              value: s.id,
+            }))}
           />
         </Field>
-        {workspace.defaultShell !== "powershell" && (
+        {!effectiveShell(workspace.defaultShell).semantic && (
           <p className="mt-2 text-xs text-amber-300/80">
-            ⚠️ Per-command blocks & exit codes are built for PowerShell. On CMD/WSL the terminal works, but
-            without semantic command parsing. Applies to NEW terminals.
+            ⚠️ Per-command blocks & exit codes need a shell OctoShell integrates with (
+            {platform().shells.filter((s) => s.semantic).map((s) => s.label).join(", ")}). In{" "}
+            {effectiveShell(workspace.defaultShell).label} the terminal works, but without semantic
+            command parsing. Applies to NEW terminals.
           </p>
         )}
       </Section>
@@ -1261,7 +1263,7 @@ function SystemTab({ onSandboxLogin, onShowOnboarding }: { onSandboxLogin: () =>
 
       <Section
         title="First-launch health check"
-        desc="Checks that the CLIs OctoShell drives (agent CLIs, PowerShell 7, GitHub CLI) are on PATH. Shown once automatically on first launch."
+        desc={`Checks that the CLIs OctoShell drives (agent CLIs, ${isWindows() ? "PowerShell 7" : "your shell"}, GitHub CLI) are on PATH. Shown once automatically on first launch.`}
       >
         <button
           onClick={onShowOnboarding}
@@ -1826,7 +1828,7 @@ function MobileSharingSection() {
                   </button>
                   <TunnelQr url={`http://${m.lanAddress}:${m.port}`} />
                   <p className="mt-1 text-xs text-muted">
-                    Nothing in between, so no one outside your network sees this. Windows may ask
+                    Nothing in between, so no one outside your network sees this. {isWindows() ? "Windows" : "Your firewall"} may ask
                     to allow OctoShell on private networks the first time — say yes, or the phone
                     just times out.
                   </p>

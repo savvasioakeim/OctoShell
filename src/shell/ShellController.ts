@@ -267,6 +267,12 @@ export class ShellController {
   private rowHeightPx = 17;
   private resizeQueued = false;
   private unlisteners: UnlistenFn[] = [];
+  /** Set by dispose(): a `pty://exit` that follows our own close_tab must not
+   *  restart the shell. */
+  private disposed = false;
+  /** Timestamps of recent automatic shell restarts, to stop a shell that dies
+   *  on startup (a broken rc file, say) from being respawned forever. */
+  private respawns: number[] = [];
   private saveTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Height is monotonic within a command (high-water mark) so an interactive TUI
@@ -452,6 +458,31 @@ export class ShellController {
     // renders, and an empty cwd reaches the ACP adapter as "." — which claude/codex
     // reject ("cwd must be an absolute path"), killing the turn before it starts.
     if (cwd) this.cwd = cwd;
+
+    this.unlisteners.push(
+      await listen<{ id: string; data: string }>("agent://event", (e) => {
+        if (e.payload.id === this.sessionId) this.onAgentEvent(e.payload.data);
+      }),
+      await listen<{ id: string; code: number; error?: string }>("agent://done", (e) => {
+        if (e.payload.id === this.sessionId) this.onAgentDone(e.payload.error, e.payload.code);
+      }),
+      await listen<{ id: string; requestId: string; toolName: string; input: unknown; toolUseId: string }>(
+        "approval://request",
+        (e) => {
+          if (e.payload.id === this.sessionId) this.onApprovalRequest(e.payload);
+        },
+      ),
+      await listen<{ id: string }>("pty://exit", (e) => {
+        if (e.payload.id === this.sessionId) void this.onShellExit();
+      }),
+    );
+    await this.spawnShell(cwd);
+    this.hydrate();
+  }
+
+  /** Open this session's PTY and wire its event stream. Called once from
+   *  `init`, and again by `onShellExit` when the shell ends. */
+  private async spawnShell(cwd: string): Promise<void> {
     // One channel carries everything for this session, IN ORDER: raw output
     // bytes (ArrayBuffer) on the hot path — no base64 — and the control markers
     // (JSON objects) that delimit commands. Routing them together means a
@@ -471,33 +502,81 @@ export class ShellController {
           this.emit();
           break;
         case "ready":
-          this.busy = false;
-          this.emit();
+          // The shell is idle — but if the previous block is still being frozen
+          // (see finishCurrent), hold `busy` until that lands, so the next
+          // command can't start on top of an unfrozen block.
+          if (this.freezing) {
+            this.readyPending = true;
+          } else {
+            this.busy = false;
+            this.emit();
+          }
           break;
       }
     };
-
-    this.unlisteners.push(
-      await listen<{ id: string; data: string }>("agent://event", (e) => {
-        if (e.payload.id === this.sessionId) this.onAgentEvent(e.payload.data);
-      }),
-      await listen<{ id: string; code: number; error?: string }>("agent://done", (e) => {
-        if (e.payload.id === this.sessionId) this.onAgentDone(e.payload.error, e.payload.code);
-      }),
-      await listen<{ id: string; requestId: string; toolName: string; input: unknown; toolUseId: string }>(
-        "approval://request",
-        (e) => {
-          if (e.payload.id === this.sessionId) this.onApprovalRequest(e.payload);
-        },
-      ),
-    );
     await invoke("open_new_tab", {
       id: this.sessionId,
       cwd,
       shell: settingsStore.getSnapshot().workspace.defaultShell,
       onOutput: stream,
     });
-    this.hydrate();
+  }
+
+  /** The shell process ended (`exit`, a crash, `kill`). Before this, the tab
+   *  just sat "running" forever with a dead PTY behind it. Now: settle whatever
+   *  block was running, then start a fresh shell in the same directory — the
+   *  way a terminal app reopens its prompt — unless the shell keeps dying on
+   *  startup, in which case stop and say so instead of looping. */
+  private async onShellExit(): Promise<void> {
+    if (this.disposed) return;
+    if (this.current) {
+      const block = this.current;
+      // The shell died before sending the end marker, so there is no exit code.
+      this.finishCurrent(0);
+      // The freeze is queued behind xterm's write queue; queue the note after it
+      // (xterm runs write callbacks in order) so the freeze doesn't overwrite it.
+      this.liveTerm.write("", () => {
+        block.outputText = `${block.outputText}\n[shell exited]`.trim();
+        this.emit();
+      });
+    }
+    this.freezing = false;
+    this.readyPending = false;
+    this.busy = true; // until the new shell's first prompt reports `ready`
+
+    const now = Date.now();
+    this.respawns = this.respawns.filter((t) => now - t < 10_000);
+    this.respawns.push(now);
+    if (this.respawns.length > 3) {
+      this.busy = false;
+      this.blocks.push({
+        id: crypto.randomUUID(),
+        kind: "command",
+        command: "shell",
+        status: "error",
+        cwd: this.cwd,
+        outputText: "The shell keeps exiting right after it starts. Check its startup files, then close and reopen this project.",
+        startedAt: now,
+      });
+      this.emit();
+      return;
+    }
+    this.emit();
+    try {
+      await this.spawnShell(this.cwd);
+    } catch (e) {
+      this.busy = false;
+      this.blocks.push({
+        id: crypto.randomUUID(),
+        kind: "command",
+        command: "shell",
+        status: "error",
+        cwd: this.cwd,
+        outputText: `Could not restart the shell: ${e}`,
+        startedAt: Date.now(),
+      });
+      this.emit();
+    }
   }
 
   /** Restore persisted agent prefs (sync, small) + history (async, from SQLite).
@@ -760,24 +839,56 @@ export class ShellController {
     this.scheduleResize();
   }
 
+  /** True between a command's end marker and the moment its output is frozen
+   *  into the block (an async hop through xterm's write queue). */
+  private freezing = false;
+  /** A `ready` that arrived mid-freeze; applied once the freeze lands. */
+  private readyPending = false;
+
   private finishCurrent(code: number): void {
     const block = this.current;
     if (!block) return;
+    this.freezing = true;
 
-    const ansi = this.serializer.serialize({ scrollback: MAX_ROWS * 50 });
-    block.frozenHtml = ansiToHtml(ansi);
-    block.outputText = stripAnsi(ansi).replace(/\s+$/, "");
-    block.status = code === 0 ? "success" : "error";
-    block.exitCode = code;
+    // xterm parses `write()` data asynchronously, so the bytes of a command that
+    // finished a moment ago may not be in the buffer yet — and a fast command
+    // (`ls` on macOS) delivers its output and its end marker in the SAME frame.
+    // Serializing here, synchronously, froze an empty block. An empty write with
+    // a callback is xterm's "everything before this has been processed" hook, so
+    // the freeze waits for exactly that and nothing more. PowerShell's prompt
+    // latency hid this race on Windows; it was there all along.
+    this.liveTerm.write("", () => {
+      this.freezing = false;
+      const releaseReady = () => {
+        if (this.readyPending) {
+          this.readyPending = false;
+          this.busy = false;
+        }
+      };
+      // `ready` is held back while freezing, so this can't be another block —
+      // but never freeze the wrong one regardless.
+      if (this.current !== block) {
+        releaseReady();
+        this.emit();
+        return;
+      }
 
-    // Reclaim the live terminal for the next command.
-    this.liveHost.appendChild(this.liveTerm.element!);
-    this.liveTerm.clear();
-    this.liveTerm.blur(); // let the InputBar take focus back
-    this.current = null;
-    this.altScreen = false;
-    this.lockedCols = 0; // free the width again until the next command starts
-    this.emit();
+      const ansi = this.serializer.serialize({ scrollback: MAX_ROWS * 50 });
+      block.frozenHtml = ansiToHtml(ansi);
+      block.outputText = stripAnsi(ansi).replace(/\s+$/, "");
+      block.status = code === 0 ? "success" : "error";
+      block.exitCode = code;
+
+      // Reclaim the live terminal for the next command.
+      this.liveHost.appendChild(this.liveTerm.element!);
+      this.liveTerm.clear();
+      this.liveTerm.blur(); // let the InputBar take focus back
+      this.current = null;
+      this.altScreen = false;
+      this.lockedCols = 0; // free the width again until the next command starts
+      releaseReady();
+      this.emit();
+    });
   }
 
   // ---- auto-height (grow the live term to its content, capped) ----
@@ -995,7 +1106,7 @@ export class ShellController {
           // 🛡 Approve = prompt per tool; ⚡ Auto = approve without prompting.
           autoApprove: !this.agentApproval,
         }).catch((err) => {
-          this.onAgentDone(String(err));
+          this.onAgentDone(String(err), 1);
         });
       });
       return;
@@ -1011,7 +1122,9 @@ export class ShellController {
       approval: this.agentApproval,
       configDir: this.agentConfigDir,
     }).catch((err) => {
-      this.onAgentDone(String(err));
+      // A spawn failure (CLI not on PATH, bad cwd) is a failed turn: report it
+      // with a non-zero code so the error block actually renders.
+      this.onAgentDone(String(err), 1);
     });
   }
 
@@ -1262,6 +1375,7 @@ export class ShellController {
   }
 
   dispose(): void {
+    this.disposed = true;
     if (this.saveTimer) clearTimeout(this.saveTimer);
     this.unlisteners.forEach((u) => u());
     invoke("close_tab", { id: this.sessionId }).catch(() => {});

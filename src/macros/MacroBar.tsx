@@ -5,6 +5,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { AiClient } from "../ai/AiClient";
 import type { ShellController } from "../shell/ShellController";
 import { SmartPrButton } from "./SmartPrButton";
+import { shellLabel } from "../platform/platform";
+import { gitStatusAndDiffScript } from "../platform/shellScripts";
 
 const client = new AiClient();
 
@@ -42,7 +44,7 @@ const MACROS: Macro[] = [
       if (!status.trim()) {
         status = await invoke<string>("run_capture", {
           cwd: controller.getCwd(),
-          command: "git status --porcelain=v1; git diff --stat HEAD",
+          command: gitStatusAndDiffScript(),
         });
       }
       if (!status.trim()) {
@@ -50,7 +52,7 @@ const MACROS: Macro[] = [
         return;
       }
       const system =
-        "You are a CLI agent. Reply with ONE PowerShell command line and nothing else (no markdown).";
+        `You are a CLI agent. Reply with ONE ${shellLabel()} command line and nothing else (no markdown).`;
       const prompt =
         `Working dir: ${controller.getCwd()}\nGit status:\n${status}\n\n` +
         "Produce a command that stages all changes, commits with a concise " +

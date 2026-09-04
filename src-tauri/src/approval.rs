@@ -197,7 +197,7 @@ struct WireReq {
 impl ApprovalBridge {
     /// Write the sidecar to disk and bind the localhost listener. Call once.
     pub fn start(&self, app: AppHandle) {
-        let dir = std::env::temp_dir().join("octoshell");
+        let dir = crate::platform::scratch_dir();
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("permission-mcp.cjs");
         if std::fs::write(&path, SIDECAR_JS).is_ok() {

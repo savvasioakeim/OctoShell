@@ -83,9 +83,9 @@ const INPUT_MAX_PX = 308;
  *
  * In **shell** mode Enter submits a command; while one is running, Enter pipes
  * the line to its stdin. In **agent** mode Enter sends the prompt to the local
- * `claude` agent. **Tab** runs PowerShell's completion engine (cmdlets, paths,
- * parameters): a unique/common-prefix match is inserted inline, otherwise a
- * candidate menu opens. Shift+Enter inserts a newline, Ctrl+C interrupts, ↑/↓
+ * `claude` agent. **Tab** asks the backend's completion engine (PowerShell's on
+ * Windows; commands + paths natively elsewhere): a unique/common-prefix match is
+ * inserted inline, otherwise a candidate menu opens. Shift+Enter inserts a newline, Ctrl+C interrupts, ↑/↓
  * navigate history (or the completion menu when open).
  */
 export function InputBar({ controller, cwd, busy, value, altScreen, interacting, mode, agentBusy, agentModel, agentProvider, agentConfigDir, agentTokens, agentContext, agentSessionId, agentApiKey, agentRateReset, agentApproval }: Props) {
