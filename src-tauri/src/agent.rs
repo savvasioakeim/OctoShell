@@ -64,6 +64,7 @@ impl AgentManager {
         approval_script: Option<String>,
         approval_token: String,
         config_dir: Option<String>,
+        effort: Option<String>,
     ) -> Result<(), String> {
         // One active turn per session: replace any in-flight run.
         if let Some(mut old) = self.runs.lock().unwrap().remove(&id) {
@@ -130,6 +131,10 @@ impl AgentManager {
             }
             if let Some(r) = &resume { args.push("--resume".into()); args.push(r.clone()); }
             if let Some(m) = &model { args.push("--model".into()); args.push(m.clone()); }
+            // How hard the model is asked to think. The CLI ignores an unknown
+            // value with a warning rather than failing, but we still only ever
+            // send one it accepts (see EFFORT_LEVELS on the TypeScript side).
+            if let Some(e) = &effort { args.push("--effort".into()); args.push(e.clone()); }
         }
 
         // Sandboxed: `docker run … node:22 npx claude-code <args>` — every arg is
@@ -300,10 +305,12 @@ pub fn agent_send(
     provider: Option<String>,
     approval: Option<bool>,
     config_dir: Option<String>,
+    effort: Option<String>,
 ) -> Result<(), String> {
     manager.send(
         app, id, prompt, cwd, resume, model, provider,
         approval.unwrap_or(false), bridge.port(), bridge.script_path(), bridge.token(), config_dir,
+        effort,
     )
 }
 

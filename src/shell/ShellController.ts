@@ -9,7 +9,7 @@ import { KEY, loadJSON, removeKey, saveJSON } from "../util/persist";
 import { deleteBlocksDb, loadBlocksDb, saveBlocksDb } from "../util/db";
 import { notify } from "../util/notify";
 import { playSfx } from "../util/sfx";
-import { acpCommandFor, acpSandboxCommandFor, isAcp, normalizeProvider, parseAgentLine, prepareOpencodeConfig, type AgentProvider, type AgentStep } from "../agents/providers";
+import { acpCommandFor, acpSandboxCommandFor, isAcp, normalizeProvider, parseAgentLine, prepareOpencodeConfig, supportsEffort, type AgentProvider, type AgentStep } from "../agents/providers";
 import { settingsStore } from "../settings/settingsStore";
 import { ReviewAgentController, buildReviewPrompt, fetchReviewOverview } from "../review/ReviewAgentController";
 
@@ -132,6 +132,14 @@ export interface ShellSnapshot {
   agentOrchestrated: boolean;
   /** Selected agent model (null = CLI default), applied from the next turn. */
   agentModel: string | null;
+  /** How hard the agent is asked to think. null = leave the CLI's own default
+   *  alone rather than pinning it. */
+  agentEffort: string | null;
+  /** The agent's reasoning for the CURRENT turn, when the provider streams it.
+   *  Cleared at the start of every turn: it is working-out for the task in
+   *  hand, and keeping the last turn's reasoning on screen next to a new one
+   *  would be worse than showing none. */
+  agentThought: string;
   /** Which agent CLI drives this project. */
   agentProvider: AgentProvider;
   /** Selected Claude Code profile dir for this agent (null = home default). */
@@ -231,6 +239,8 @@ export class ShellController {
   /** Selected model for this project's agent (null = CLI default). Applies from
    *  the NEXT turn — `claude --model` can't change a turn already in flight. */
   private agentModel: string | null = null;
+  private agentEffort: string | null = null;
+  private agentThought = "";
   /** Which agent CLI drives this project (claude / gemini). */
   private agentProvider: AgentProvider = "claude";
   /** Claude Code profile (CLAUDE_CONFIG_DIR) for this project's agent; null = home. */
@@ -298,6 +308,8 @@ export class ShellController {
     agentBusy: false,
     agentOrchestrated: false,
     agentModel: null,
+    agentEffort: null,
+    agentThought: "",
     agentProvider: "claude",
     agentConfigDir: null,
     agentApproval: false,
@@ -430,6 +442,8 @@ export class ShellController {
       agentBusy: this.agentBusy,
       agentOrchestrated: this.agentOrchestrated,
       agentModel: this.agentModel,
+      agentEffort: this.agentEffort,
+      agentThought: this.agentThought,
       agentProvider: this.agentProvider,
       agentConfigDir: this.agentConfigDir,
       agentApproval: this.agentApproval,
@@ -507,6 +521,7 @@ export class ShellController {
     const d = settingsStore.getSnapshot().agent;
     this.agentSessionId = loadJSON<string | null>(KEY.agent(this.sessionId), null);
     this.agentModel = loadJSON<string | null>(KEY.model(this.sessionId), d.model);
+    this.agentEffort = loadJSON<string | null>(KEY.effort(this.sessionId), null);
     // normalizeProvider migrates the legacy "acp" id and guards against any
     // stale/unknown persisted value (which would otherwise crash the picker).
     this.agentProvider = normalizeProvider(loadJSON(KEY.provider(this.sessionId), d.provider));
@@ -563,6 +578,7 @@ export class ShellController {
     void saveBlocksDb(this.sessionId, JSON.stringify(this.settledBlocks()), Date.now());
     saveJSON(KEY.agent(this.sessionId), this.agentSessionId);
     saveJSON(KEY.model(this.sessionId), this.agentModel);
+    saveJSON(KEY.effort(this.sessionId), this.agentEffort);
     saveJSON(KEY.provider(this.sessionId), this.agentProvider);
     saveJSON(KEY.agentCfgDir(this.sessionId), this.agentConfigDir);
     saveJSON(KEY.approval(this.sessionId), this.agentApproval);
@@ -605,6 +621,16 @@ export class ShellController {
       block.status = allow ? "approved" : "denied";
     }
     invoke("approval_respond", { requestId, allow }).catch(console.error);
+    this.emit();
+  }
+
+  /** How hard this project's agent should think (null = don't pass --effort).
+   *
+   *  Unlike the model, this needs no ACP teardown: it is only ever sent on the
+   *  native path, where every turn spawns a fresh process anyway. */
+  setAgentEffort(effort: string | null): void {
+    this.agentEffort = effort;
+    saveJSON(KEY.effort(this.sessionId), effort);
     this.emit();
   }
 
@@ -932,6 +958,8 @@ export class ShellController {
       via: opts?.via,
     });
     this.agentBusy = true;
+    // A new turn starts with no reasoning of its own.
+    this.agentThought = "";
     this.agentOrchestrated = !!opts?.orchestrated;
     this.inputValue = "";
     this.lastAgentPrompt = text;
@@ -1010,6 +1038,7 @@ export class ShellController {
       provider: this.agentProvider,
       approval: this.agentApproval,
       configDir: this.agentConfigDir,
+      effort: supportsEffort(this.agentProvider) ? this.agentEffort : null,
     }).catch((err) => {
       this.onAgentDone(String(err));
     });
@@ -1041,6 +1070,12 @@ export class ShellController {
     for (const e of events) {
       if (e.session) {
         this.agentSessionId = e.session;
+      } else if (e.thought !== undefined) {
+        // Reasoning never becomes a feed block: it is not something the agent
+        // said, and a wrong turn in its working-out should not sit in the
+        // transcript looking like a claim. It accumulates for the live view and
+        // dies with the turn.
+        this.agentThought += e.thought;
       } else if (e.text !== undefined) {
         const open = this.blocks.find((b) => b.id === this.streamingTextId);
         if (e.delta && open && open.kind === "agentText") {

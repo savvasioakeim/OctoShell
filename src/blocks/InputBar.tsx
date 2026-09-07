@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { Mode, ShellController } from "../shell/ShellController";
 import { kindLabel, longestCommonPrefix, requestCompletion, type CMatch } from "../shell/completion";
-import { PROVIDERS, modelsFor, supportsProfile, isAcp, type AgentProvider } from "../agents/providers";
+import { PROVIDERS, EFFORT_LEVELS, modelsFor, supportsProfile, supportsEffort, isAcp, type AgentProvider } from "../agents/providers";
 import { useOllamaModels, ollamaModelOptions } from "../agents/ollamaModels";
 import { isServerCommand } from "../projects/stacks";
 import { serviceStore } from "../services/serviceStore";
@@ -31,6 +31,8 @@ interface Props {
   agentOrchestrated: boolean;
   /** Selected agent model (null = CLI default). */
   agentModel: string | null;
+  agentEffort: string | null;
+  agentThought: string;
   /** Which agent CLI drives this project. */
   agentProvider: AgentProvider;
   /** Selected Claude Code profile dir for this agent (null = home default). */
@@ -88,7 +90,7 @@ const INPUT_MAX_PX = 308;
  * candidate menu opens. Shift+Enter inserts a newline, Ctrl+C interrupts, ↑/↓
  * navigate history (or the completion menu when open).
  */
-export function InputBar({ controller, cwd, busy, value, altScreen, interacting, mode, agentBusy, agentModel, agentProvider, agentConfigDir, agentTokens, agentContext, agentSessionId, agentApiKey, agentRateReset, agentApproval }: Props) {
+export function InputBar({ controller, cwd, busy, value, altScreen, interacting, mode, agentBusy, agentModel, agentEffort, agentThought, agentProvider, agentConfigDir, agentTokens, agentContext, agentSessionId, agentApiKey, agentRateReset, agentApproval }: Props) {
   const ref = useRef<HTMLTextAreaElement>(null);
   const selectedRef = useRef<HTMLLIElement>(null);
   const pendingCursor = useRef<number | null>(null);
@@ -96,6 +98,8 @@ export function InputBar({ controller, cwd, busy, value, altScreen, interacting,
   const [histIdx, setHistIdx] = useState<number>(-1);
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [modelMenu, setModelMenu] = useState(false);
+  const [effortMenu, setEffortMenu] = useState(false);
+  const [thoughtOpen, setThoughtOpen] = useState(false);
   const [providerMenu, setProviderMenu] = useState(false);
   const [profileMenu, setProfileMenu] = useState(false);
   const settings = useSettings();
@@ -211,6 +215,7 @@ export function InputBar({ controller, cwd, busy, value, altScreen, interacting,
       ? ollamaModelOptions(ollama.models)
       : modelsFor(agentProvider);
   const modelLabel = models.find((m) => m.value === agentModel)?.label ?? "Default";
+  const effortLabel = EFFORT_LEVELS.find((e) => e.value === agentEffort)?.label ?? "Default";
 
   // Keep focus in the input as state changes — except while the keyboard belongs
   // to the embedded terminal (full-screen app, or the user clicked in).
@@ -413,6 +418,15 @@ export function InputBar({ controller, cwd, busy, value, altScreen, interacting,
       }`}
     >
       {/* Controls: Shell/Agent switch · attach · TTS · agent options · path · status. */}
+      {/* The agent's live reasoning, opened from the "thinking" toggle in the
+          status row below. Above the row rather than below it so it grows away
+          from the composer instead of shoving it down the screen mid-sentence. */}
+      {agent && agentBusy && thoughtOpen && agentThought && (
+        <div className="mb-1 max-h-48 overflow-y-auto whitespace-pre-wrap break-words rounded border border-edge/70 bg-card px-2 py-1.5 text-[11px] leading-relaxed text-muted">
+          {agentThought}
+        </div>
+      )}
+
       <div className="mb-1 flex flex-wrap items-center gap-2 text-[11px] text-muted">
         {/* Shell ⇄ Agent switch — tinted to the active mode (blue / purple). */}
         <div
@@ -530,6 +544,38 @@ export function InputBar({ controller, cwd, busy, value, altScreen, interacting,
                     >
                       {m.label}
                       {m.value === agentModel && <span>✓</span>}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+
+        {agent && supportsEffort(agentProvider) && (
+          <div className="relative">
+            <button
+              onClick={() => setEffortMenu((o) => !o)}
+              title="How hard the agent thinks (applies from the next turn)"
+              className="flex items-center gap-1 rounded border border-edge px-1.5 py-0.5 text-[11px] text-muted hover:bg-edge hover:text-gray-200"
+            >
+              ◐ {effortLabel}
+            </button>
+            {effortMenu && (
+              <ul
+                className="absolute bottom-full left-0 z-30 mb-1 overflow-hidden rounded-lg border border-edge bg-panel shadow-lg"
+                style={{ minWidth: "8rem" }}
+              >
+                {EFFORT_LEVELS.map((e) => (
+                  <li key={e.label}>
+                    <button
+                      onClick={() => { controller.setAgentEffort(e.value); setEffortMenu(false); }}
+                      className={`flex w-full items-center justify-between px-2 py-1 text-left text-xs hover:bg-edge ${
+                        e.value === agentEffort ? "text-accent" : "text-gray-200"
+                      }`}
+                    >
+                      {e.label}
+                      {e.value === agentEffort && <span>✓</span>}
                     </button>
                   </li>
                 ))}
@@ -660,6 +706,19 @@ export function InputBar({ controller, cwd, busy, value, altScreen, interacting,
           agentBusy && (
             <span className="flex shrink-0 items-center gap-2">
               <span className="text-accent">● {prov.label} is thinking…</span>
+              {/* The reasoning itself, when the provider streams it. Folded away
+                  by default: it is long, it arrives faster than anyone reads,
+                  and it is working-out rather than an answer — useful when you
+                  want to know WHY the agent went somewhere, noise otherwise. */}
+              {agentThought && (
+                <button
+                  onClick={() => setThoughtOpen((o) => !o)}
+                  title="Show what the agent is reasoning about"
+                  className="rounded border border-edge px-1.5 py-0.5 text-[11px] text-muted hover:bg-edge hover:text-gray-200"
+                >
+                  {thoughtOpen ? "▾" : "▸"} thinking
+                </button>
+              )}
               <button
                 onClick={() => controller.stop()}
                 title="Stop the agent (also releases the orchestrator's live-watch hold)"

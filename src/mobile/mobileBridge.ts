@@ -14,6 +14,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import type { Block, ShellController } from "../shell/ShellController";
 import { settingsStore } from "../settings/settingsStore";
+import { orchestratorControl, sendPlanToOrchestrator } from "../strategy/orchestratorBridge";
 
 /** What the server sends us. */
 interface AskEvent {
@@ -112,6 +113,9 @@ export function startMobileBridge(getProjects: () => BridgeProject[]): () => voi
             // matters is the one in the "dispatch" branch: a client can be
             // modified, a server-side refusal cannot.
             canDispatch: settingsStore.getSnapshot().mobile.allowDispatch,
+            // Glanceable on the list, so you can see the orchestrator is mid-turn
+            // without opening it.
+            orchestratorThinking: orchestratorControl()?.view().thinking ?? false,
             projects: projects.map((p) => {
               const s = p.controller.getSnapshot();
               const last = s.blocks[s.blocks.length - 1];
@@ -230,6 +234,106 @@ export function startMobileBridge(getProjects: () => BridgeProject[]): () => voi
         target.controller.setMode("agent");
         const ok = target.controller.runAgent(prompt, { via: "phone" });
         answer(e.id, ok ? { ok: true, project: target.name } : { error: "the agent refused the task" });
+        return;
+      }
+
+      if (e.kind === "orchestrator") {
+        const view = orchestratorControl()?.view();
+        if (!view) {
+          answer(e.id, { error: "the orchestrator isn't open on the desktop" });
+          return;
+        }
+        // Live-watch breadcrumbs are machine pings the orchestrator sends itself
+        // while following an agent. On the desktop they are visible context; on a
+        // phone they would bury the actual conversation, so they stay behind.
+        const visible = view.messages.filter((m) => !(m.role === "user" && m.content.startsWith("👁")));
+        // Only the tail: an orchestrator chat runs for hours, and a phone wants
+        // the end of it, not a full transcript over a tunnel.
+        const TAIL = 30;
+        answer(e.id, {
+          messages: visible.slice(-TAIL),
+          truncated: visible.length > TAIL,
+          thinking: view.thinking,
+          chats: view.chats,
+          canSend: settingsStore.getSnapshot().mobile.allowDispatch,
+        });
+        return;
+      }
+
+      if (e.kind === "orchestratorSend") {
+        // Same switch as dispatching to an agent, and for a stronger reason: the
+        // orchestrator can dispatch work to EVERY project at once.
+        if (!settingsStore.getSnapshot().mobile.allowDispatch) {
+          answer(e.id, { error: "Sending tasks from a phone is turned off in OctoShell." });
+          return;
+        }
+        const text = String(e.params.text ?? "").trim();
+        if (!text) {
+          answer(e.id, { error: "empty message" });
+          return;
+        }
+        const view = orchestratorControl()?.view();
+        if (!view) {
+          answer(e.id, { error: "the orchestrator isn't open on the desktop" });
+          return;
+        }
+        // Refuse rather than interrupt, exactly as project dispatch does: a turn
+        // cut short from a phone is work you never saw start.
+        if (view.thinking) {
+          answer(e.id, { error: "the orchestrator is thinking — wait for it to finish" });
+          return;
+        }
+        // Appended to the CURRENT chat, never a fresh one. Starting a new chat
+        // from a phone would silently drop the context the person at the desk is
+        // working in.
+        const ok = sendPlanToOrchestrator({ text, newChat: false });
+        answer(e.id, ok ? { ok: true } : { error: "the orchestrator isn't listening" });
+        return;
+      }
+
+      if (e.kind === "orchestratorChat") {
+        // Switching and starting chats is steering, not reading, so it sits
+        // behind the same switch as sending. Picking a different conversation
+        // changes what the person at the desk sees too.
+        if (!settingsStore.getSnapshot().mobile.allowDispatch) {
+          answer(e.id, { error: "Sending tasks from a phone is turned off in OctoShell." });
+          return;
+        }
+        const control = orchestratorControl();
+        if (!control) {
+          answer(e.id, { error: "the orchestrator isn't open on the desktop" });
+          return;
+        }
+        // Never mid-turn: switching away would leave the reply landing in a
+        // conversation nobody is looking at.
+        if (control.view().thinking) {
+          answer(e.id, { error: "the orchestrator is thinking — wait for it to finish" });
+          return;
+        }
+        if (e.params.fresh === true) {
+          control.newChat();
+          answer(e.id, { ok: true });
+          return;
+        }
+        const chatId = String(e.params.chatId ?? "");
+        answer(e.id, control.switchChat(chatId) ? { ok: true } : { error: "that chat no longer exists" });
+        return;
+      }
+
+      if (e.kind === "orchestratorStop") {
+        if (!settingsStore.getSnapshot().mobile.allowDispatch) {
+          answer(e.id, { error: "Sending tasks from a phone is turned off in OctoShell." });
+          return;
+        }
+        const control = orchestratorControl();
+        if (!control) {
+          answer(e.id, { error: "the orchestrator isn't open on the desktop" });
+          return;
+        }
+        // Only the orchestrator's own turn. The agents it already dispatched
+        // keep running — stopping those is a desktop decision.
+        control.stop();
+        answer(e.id, { ok: true });
         return;
       }
 

@@ -67,6 +67,7 @@ export const KEY = {
   blocks: (id: string) => `octoshell.blocks.${id}`,
   agent: (id: string) => `octoshell.agent.${id}`,
   model: (id: string) => `octoshell.model.${id}`,
+  effort: (id: string) => `octoshell.effort.${id}`,
   provider: (id: string) => `octoshell.provider.${id}`,
   approval: (id: string) => `octoshell.approval.${id}`,
   pr: (id: string) => `octoshell.pr.${id}`,

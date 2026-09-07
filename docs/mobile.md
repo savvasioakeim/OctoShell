@@ -203,6 +203,31 @@ Three things constrain it:
   phone's, so a task sent over the network never looks like one typed at the
   keyboard.
 
+## Talking to the orchestrator
+
+The **Orchestrator** sits above the projects on the phone's list, because from a
+phone "say what you want" is nearly always the move and picking the right project
+yourself is the fallback. It is the same conversation you see on the desktop, not
+a separate one.
+
+Reading it needs only the access code. **Speaking to it, switching conversations
+and stopping a turn are behind the same switch as sending tasks** ("Let the phone
+send tasks to agents") — and it earns that switch more than a single project
+does, because the orchestrator can hand work to every open project at once.
+
+- **Messages append to the current chat, never a new one.** Starting a fresh chat
+  by accident from a phone would silently drop the context the person at the desk
+  is working in. Starting one deliberately is a button.
+- **It refuses to interrupt.** While a turn is in flight the composer locks, the
+  same way project dispatch refuses a busy agent.
+- **"Stop this turn" stops only the orchestrator's turn.** The agents it already
+  dispatched keep running. The desktop's emergency stop — which cancels every
+  agent in the workspace — is deliberately *not* exposed to the phone; that is far
+  too much to sit one mis-tap away on a small screen.
+- **Live-watch breadcrumbs are hidden** and only the **last 30 messages** are sent.
+  An orchestrator chat runs for hours, and there is no reason to push all of it
+  through a tunnel.
+
 ## Known limits
 
 - **The live terminal isn't streamed.** Finished command output is there; the
