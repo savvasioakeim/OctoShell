@@ -182,10 +182,14 @@ export function removeWorktreeScript(wtPath: string): string {
 // ───────────────────────────── GitHub (gh) ─────────────────────────────
 
 /** The state (OPEN/MERGED/CLOSED) of the current branch's PR, or nothing. */
-export function branchPrStateScript(): string {
+/** One capture per repository for the auto-clean poll: every worktree's branch,
+ *  then a marker, then every PR's branch + state. `parseMergedWorktrees`
+ *  (projects/worktreePrs.ts) reads the two halves. */
+export function worktreePrPollScript(split: string): string {
+  const prs = "gh pr list --state all --limit 100 --json headRefName,state";
   return pick(
-    "$b=git branch --show-current; if($b){gh pr view $b --json state -q .state 2>$null}",
-    `b=$(git branch --show-current 2>/dev/null); [ -n "$b" ] && gh pr view "$b" --json state -q .state 2>/dev/null; true`,
+    `git worktree list --porcelain; Write-Output '${split}'; ${prs} -q '.[] | .headRefName + " " + .state' 2>$null`,
+    `git worktree list --porcelain; printf '%s\\n' ${shq(split)}; ${prs} -q '.[] | .headRefName + " " + .state' 2>/dev/null; true`,
   );
 }
 

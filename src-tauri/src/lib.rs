@@ -17,6 +17,7 @@ mod push;
 mod pty;
 mod service;
 mod shells;
+mod timezone;
 mod tunnel;
 
 use acp::AcpManager;
@@ -166,6 +167,15 @@ pub fn run() {
             // spawned, so every shell/agent we launch can be tied to our lifetime
             // and can't be orphaned on a crash or hot-reload.
             jobctl::init();
+            // Tell every child what timezone we are in, BEFORE any of them
+            // spawn. Without TZ, `gh` shells out to tzutil.exe, and tzutil
+            // occasionally ends up allocating its own console -- which, with
+            // Windows Terminal as the default terminal application, opens a real
+            // terminal window over whatever the user is doing. See timezone.rs.
+            let tz_dir = app.path().app_config_dir().ok();
+            if let Some(tz) = timezone::apply_with_cache(tz_dir) {
+                eprintln!("[octoshell] TZ={tz} (so children never shell out to tzutil)");
+            }
             // Pre-warm the Tab-completion engine so the first Tab is instant.
             let engine = app.state::<CompletionEngine>().inner().clone();
             std::thread::spawn(move || engine.warm());

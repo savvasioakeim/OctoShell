@@ -250,6 +250,7 @@ class StrategyStore {
       participants,
       messages: [],
       round: 0,
+      moderatorNotes: [],
       phase: "setup",
       report: null,
       busy: false,
@@ -444,6 +445,19 @@ class StrategyStore {
           content: `Round ${r + 1} — the other participants proposed:\n\n${byName}\n\nNow critique these and refine your own proposal.`,
         });
       }
+      // The moderator's steer for that round, as its own turn so it reads
+      // as direction rather than as one more opinion to weigh.
+      const note = s.moderatorNotes.find((n) => n.round === r);
+      if (note) {
+        messages.push({
+          role: "user",
+          content: `The human moderator responded to round ${r + 1}:
+
+${note.text}
+
+Treat this as direction, not as another participant’s opinion: it outranks the other proposals.`,
+        });
+      }
     }
     return { system, messages };
   }
@@ -527,8 +541,35 @@ class StrategyStore {
         );
         if (m && m.content.trim()) out.push(`## ${this.labelFor(p, s.participants)}\n${m.content}`);
       }
+      // The moderator's steer belongs in the report's source material too, or
+      // the synthesis would quietly ignore the human's own direction.
+      const note = s.moderatorNotes.find((n) => n.round === r);
+      if (note) out.push(`## Moderator (human)
+${note.text}`);
     }
     return out.join("\n\n");
+  }
+
+  /** Say something to the participants before the next round.
+   *
+   *  Attached to the round that just finished, so it lands in the transcript
+   *  directly after the proposals it responds to. One note per round: a second
+   *  call replaces the first, which is what editing a note you have not sent to
+   *  a round yet should do. An empty note removes it rather than injecting a
+   *  blank moderator turn. */
+  setModeratorNote(text: string): void {
+    const s = this.state.session;
+    if (!s || s.busy || s.round === 0) return;
+    const round = s.round - 1;
+    const rest = s.moderatorNotes.filter((n) => n.round !== round);
+    const trimmed = text.trim();
+    const notes = trimmed ? [...rest, { round, text: trimmed, at: Date.now() }] : rest;
+    this.emit({ session: { ...s, moderatorNotes: notes.sort((a, b) => a.round - b.round) } });
+  }
+
+  /** The moderator's note on a completed round, if any. */
+  moderatorNote(round: number): string {
+    return this.state.session?.moderatorNotes.find((n) => n.round === round)?.text ?? "";
   }
 
   /** Let the report be hand-edited before saving/executing. */

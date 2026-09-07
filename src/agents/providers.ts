@@ -242,6 +242,31 @@ export function supportsProfile(provider: AgentProvider): boolean {
   return configDirEnvFor(provider) !== null;
 }
 
+/** How hard the agent is asked to think, for the providers that accept it.
+ *
+ *  These are the Claude CLI's own levels, taken from `claude --help`: it rejects
+ *  anything else with a warning and silently falls back to its default, so the
+ *  list is not ours to invent. `null` means "don't pass --effort at all", which
+ *  is not the same as passing the CLI's default explicitly — it leaves whatever
+ *  the user configured in their own settings alone. */
+export const EFFORT_LEVELS: { value: string | null; label: string }[] = [
+  { value: null, label: "Default" },
+  { value: "low", label: "Low" },
+  { value: "medium", label: "Medium" },
+  { value: "high", label: "High" },
+  { value: "xhigh", label: "Extra high" },
+  { value: "max", label: "Max" },
+];
+
+/** True if an effort picker means anything for this provider.
+ *
+ *  Only native `claude`: `--effort` is a claude-code CLI flag, and the ACP
+ *  adapters take their own arguments that we do not control. Showing the picker
+ *  anywhere else would be a control that quietly does nothing. */
+export function supportsEffort(provider: AgentProvider): boolean {
+  return provider === "claude";
+}
+
 /** The model list for a provider.
  *
  *  ACP entries get their "no explicit model" option relabelled to "Agent
@@ -368,6 +393,11 @@ export interface NormEvent {
    *  complete message (claude). */
   text?: string;
   delta?: boolean;
+  /** The model's own reasoning, when the provider streams it. Kept separate from
+   *  `text` because it is NOT the answer: it is working-out, it can be wrong or
+   *  contradict the final reply, and showing it inline would read as if the agent
+   *  had said it. Always a streaming chunk to append. */
+  thought?: string;
   /** A tool invocation. */
   tool?: { id: string; name: string; input: string };
   /** The agent's full plan (ACP `plan` update): the ordered steps with status,
@@ -426,8 +456,12 @@ function parseAcp(ev: any): NormEvent[] {
     // Streaming assistant text. `content` is a ContentBlock; render text parts.
     const text = acpText(ev.content);
     if (text) out.push({ text, delta: true });
-    // agent_thought_chunk (internal reasoning) and user_message_chunk (our own
-    // prompt echo) are intentionally ignored.
+    // user_message_chunk is our own prompt echoed back; nothing to show.
+  } else if (kind === "agent_thought_chunk") {
+    // The agent's internal reasoning. Surfaced separately so the UI can keep it
+    // folded away by default.
+    const thought = acpText(ev.content);
+    if (thought) out.push({ thought });
   } else if (kind === "tool_call") {
     // A new tool invocation. `title` is the human label; input is best-effort
     // from rawInput (shape is agent-specific).
@@ -532,6 +566,8 @@ function parseClaude(ev: any): NormEvent[] {
     const se = ev.event;
     if (se?.type === "content_block_delta" && se.delta?.type === "text_delta" && se.delta.text) {
       out.push({ text: se.delta.text, delta: true });
+    } else if (se?.type === "content_block_delta" && se.delta?.type === "thinking_delta" && se.delta.thinking) {
+      out.push({ thought: se.delta.thinking });
     } else if (se?.type === "message_start" && se.message?.usage) {
       // THE context reading. Each message_start carries the prompt size of THAT
       // single API request, so the last one in a turn is the live occupancy.
@@ -544,7 +580,7 @@ function parseClaude(ev: any): NormEvent[] {
         (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0);
       if (used > 0) out.push({ context: { used } });
     }
-    // message_stop, content_block_start/stop, thinking deltas → ignore.
+    // message_stop and content_block_start/stop → ignore.
   } else if (ev?.type === "assistant") {
     // The CLI reports its OWN failures ("Not logged in · Please run /login",
     // rate limits) as an assistant message from a `<synthetic>` model, on stdout,

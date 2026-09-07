@@ -37,6 +37,10 @@
     min-height: 44px; cursor: pointer;
   }
   button.primary { background: var(--accent); border-color: var(--accent); font-weight: 600; }
+  /* A disabled button that still looks pressable is a trap: you tap it, nothing
+     happens, and you cannot tell whether the tap or the app is broken. */
+  button:disabled { opacity: .45; cursor: default; }
+  textarea:disabled { opacity: .6; }
   button.ok { background: rgba(52,211,153,.15); border-color: rgba(52,211,153,.5); color: var(--ok); }
   button.bad { background: rgba(248,113,113,.15); border-color: rgba(248,113,113,.5); color: var(--bad); }
   input {
@@ -61,17 +65,34 @@
   .err { color: var(--bad); font-size: 13px; margin-top: 10px; }
   .center { text-align: center; }
   .stack > * + * { margin-top: 10px; }
+  /* A flex child will not shrink below its content unless told to, which is how
+     a long repo name pushes the timestamp off a 390px screen. */
+  .grow { flex: 1; min-width: 0; }
+  .clip { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* The overflow menu. Three labelled buttons never fit beside the title on a
+     phone, and shrinking them makes them unreadable AND untappable. */
+  .menu {
+    position: absolute; top: 100%; right: 10px; z-index: 6;
+    background: var(--panel); border: 1px solid var(--edge); border-radius: 12px;
+    padding: 6px; display: flex; flex-direction: column; gap: 4px; min-width: 170px;
+    box-shadow: 0 12px 28px #0007;
+  }
+  .menu button { width: 100%; text-align: left; border: none; background: none; border-radius: 8px; }
+  .chip {
+    font-size: 12px; padding: 6px 12px; border-radius: 999px; min-height: 0;
+    border: 1px solid var(--edge); background: var(--panel); color: var(--muted);
+  }
+  .chip.on { border-color: var(--accent); color: var(--text); background: rgba(126,87,194,.18); }
+  .bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 </style>
 </head>
 <body>
 <header>
+  <button id="back" style="display:none;padding:6px 11px;min-height:36px">←</button>
   <span style="font-size:18px">🐙</span>
-  <h1>OctoShell</h1>
+  <h1 class="clip">OctoShell</h1>
   <span class="sp"></span>
-  <button id="back" style="display:none;padding:6px 12px;min-height:36px">← Back</button>
-  <button id="notify" style="display:none;padding:6px 12px;min-height:36px">🔔 Alerts</button>
-  <button id="install" style="display:none;padding:6px 12px;min-height:36px">Install</button>
-  <button id="signout" style="display:none;padding:6px 12px;min-height:36px">Sign out</button>
+  <button id="more" style="display:none;padding:6px 12px;min-height:36px">⋯</button>
 </header>
 <main id="app"></main>
 
@@ -80,9 +101,6 @@
   "use strict";
   const app = document.getElementById("app");
   const backBtn = document.getElementById("back");
-  const outBtn = document.getElementById("signout");
-  const installBtn = document.getElementById("install");
-  const notifyBtn = document.getElementById("notify");
   const KEY = "octoshell.mobile.token";
 
   let token = null;
@@ -98,6 +116,27 @@
     for (const k of kids.flat()) n.append(k?.nodeType ? k : document.createTextNode(String(k)));
     return n;
   };
+  const moreBtn = document.getElementById("more");
+  // Alerts, Install and Sign out are all rare, and all three lost their fight
+  // with the title in the header: "Sign out" wrapped onto two lines at 390px.
+  // They live in an overflow menu now and keep their full labels.
+  const outBtn = el("button", {}, "Sign out");
+  const installBtn = el("button", { style: "display:none" }, "Install");
+  const notifyBtn = el("button", { style: "display:none" }, "🔔 Alerts");
+  const menu = el("div", { className: "menu", style: "display:none" }, notifyBtn, installBtn, outBtn);
+  const closeMenu = () => { menu.style.display = "none"; };
+  const menuHasAnything = () =>
+    [notifyBtn, installBtn, outBtn].some((b) => b.style.display !== "none");
+  document.querySelector("header").append(menu);
+  moreBtn.onclick = (e) => {
+    e.stopPropagation();
+    menu.style.display = menu.style.display === "none" ? "flex" : "none";
+  };
+  // Tapping anywhere else dismisses it, which is how every menu on a phone is
+  // expected to behave.
+  document.addEventListener("click", closeMenu);
+  menu.addEventListener("click", closeMenu);
+
   const ago = (ms) => {
     if (!ms) return "";
     const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
@@ -176,30 +215,56 @@
     try {
       // Approvals first, always: a blocked agent is the only thing here that is
       // costing time right now.
-      const [ap, pr] = await Promise.all([api("/api/approvals"), api("/api/projects")]);
+      const [ap, pr, st] = await Promise.all([
+        api("/api/approvals"),
+        api("/api/projects"),
+        // Cheap, and it is the only warning you get before the share simply
+        // stops working mid-task.
+        api("/api/status").catch(() => null),
+      ]);
       // Only what is actually rendered. Block counts and busy flags change
       // constantly while an agent works; including anything finer would put us
       // straight back to redrawing every few seconds.
       const signature = JSON.stringify([
         (ap.approvals || []).map((a) => a.requestId),
         (pr.projects || []).map((p) => [p.id, p.name, p.agentBusy, p.blocks]),
+        pr.orchestratorThinking,
+        expiryLabel(st),
       ]);
       canDispatch = pr.canDispatch === true;
       if (ap.approvals?.length) {
         wrap.append(el("p", { className: "tiny" }, "Waiting for you"));
         for (const a of ap.approvals) wrap.append(approvalCard(a));
       }
+      // Above the projects, because it is the thing that COMMANDS them: from a
+      // phone, "tell the orchestrator what you want" is almost always the move,
+      // and picking the right project yourself is the fallback.
+      const orch = el("div", { className: "card" },
+        el("div", { className: "row" },
+          el("strong", { className: "grow clip" }, "🧠 Orchestrator"),
+          el("span", { className: "muted" }, pr.orchestratorThinking ? "thinking" : "")),
+        el("p", { className: "muted", style: "margin:6px 0 0" }, "Talk to the one that runs the others."));
+      orch.onclick = () => { view = { name: "orchestrator" }; render(); };
+      wrap.append(el("p", { className: "tiny", style: "margin-top:18px" }, "Command"));
+      wrap.append(orch);
       wrap.append(el("p", { className: "tiny", style: "margin-top:18px" }, "Projects"));
       if (!pr.projects?.length) wrap.append(el("p", { className: "muted" }, "No projects open."));
       for (const p of pr.projects || []) {
         const card = el("div", { className: "card" },
           el("div", { className: "row" },
             el("span", { className: "dot" + (p.agentBusy ? " busy" : "") }),
-            el("strong", {}, p.name),
-            el("span", { className: "sp muted", style: "margin-left:auto" }, p.agentBusy ? "working" : ago(p.lastAt))),
+            el("strong", { className: "grow clip" }, p.name),
+            el("span", { className: "muted", style: "flex:none" }, p.agentBusy ? "working" : ago(p.lastAt))),
           el("p", { className: "muted", style: "margin:6px 0 0" }, p.blocks + " entries"));
         card.onclick = () => { view = { name: "feed", id: p.id, name2: p.name }; render(); };
         wrap.append(card);
+      }
+      const expiry = expiryLabel(st);
+      if (expiry) {
+        wrap.append(el("p", {
+          className: expiry.soon ? "err" : "muted",
+          style: "margin-top:18px;text-align:center",
+        }, expiry.text));
       }
       // Nothing changed: leave the DOM, the scroll position and any half-pressed
       // button exactly as they are.
@@ -215,6 +280,22 @@
       // for gets to show an error in place of content.
       if (!silent) app.replaceChildren(el("p", { className: "err" }, String(e.message || e)));
     }
+  }
+
+  /** How long this share has left, or null when the server did not say.
+   *
+   *  Worth showing because the failure it predicts is confusing: the share ends
+   *  on a timer, and without warning the phone just starts refusing everything
+   *  in the middle of whatever you were doing. */
+  function expiryLabel(st) {
+    const at = st && st.expiresAt;
+    if (!at) return null;
+    const left = at - Date.now();
+    if (left <= 0) return { text: "Access has expired.", soon: true };
+    const mins = Math.ceil(left / 60000);
+    if (mins <= 5) return { text: "Access ends in " + mins + " min", soon: true };
+    if (mins < 60) return { text: "Access ends in " + mins + " min", soon: false };
+    return { text: "Access ends in " + Math.round(mins / 60) + "h", soon: false };
   }
 
   function approvalCard(a) {
@@ -288,6 +369,151 @@
     return box;
   }
 
+  // A signature for the orchestrator chat, same reasoning as the project list:
+  // a poll that found nothing new must not touch the DOM.
+  let orchSignature = null;
+  // Whether the chat picker is expanded. Collapsed by default so the messages,
+  // which are why you opened the screen, stay at the top.
+  let chatsOpen = false;
+
+  async function orchestratorScreen(opts = {}) {
+    const silent = opts.silent === true;
+    if (!silent) app.replaceChildren(el("p", { className: "muted" }, "Loading…"));
+    try {
+      const d = await api("/api/orchestrator");
+      const signature = JSON.stringify([d.messages, d.thinking, d.canSend, d.chats, chatsOpen]);
+      if (silent && signature === orchSignature) return;
+      orchSignature = signature;
+
+      const wrap = el("div", { className: "stack" });
+      wrap.append(chatBar(d));
+      if (d.truncated) {
+        wrap.append(el("p", { className: "muted tiny" }, "Showing the latest messages only."));
+      }
+      for (const m of d.messages || []) {
+        wrap.append(el("div", { className: "card" },
+          el("span", { className: "tiny" }, m.role === "user" ? "You" : "Orchestrator"),
+          el("div", { style: "margin-top:6px;white-space:pre-wrap" }, m.content)));
+      }
+      if (!d.messages?.length) wrap.append(el("p", { className: "muted" }, "Nothing said yet."));
+      // Shown while a turn is in flight so a silent reply never looks like a
+      // dropped message — the one question a phone cannot answer by looking.
+      if (d.thinking) {
+        const stop = el("button", { className: "bad", style: "width:100%" }, "Stop this turn");
+        stop.onclick = async () => {
+          stop.disabled = true;
+          stop.textContent = "Stopping…";
+          try { await api("/api/orchestrator/stop", { method: "POST", body: "{}" }); }
+          catch (e) { stop.textContent = String(e.message || e); return; }
+          orchSignature = null;
+          void orchestratorScreen();
+        };
+        wrap.append(el("div", { className: "card" },
+          el("p", { className: "muted", style: "margin:0 0 8px" }, "Thinking…"),
+          d.canSend ? stop : ""));
+      }
+      if (d.canSend) wrap.append(orchBox(d.thinking));
+
+      const y = window.scrollY;
+      app.replaceChildren(wrap);
+      // A fresh screen belongs at the newest message; a poll must leave you
+      // where you were reading.
+      if (silent) window.scrollTo(0, y);
+      else window.scrollTo(0, document.body.scrollHeight);
+    } catch (e) {
+      if (!silent) app.replaceChildren(el("p", { className: "err" }, String(e.message || e)));
+    }
+  }
+
+  /** Which conversation you are in, and how to change it.
+   *
+   *  Collapsed to one line until tapped: the orchestrator keeps every chat it
+   *  has ever had, and a phone screen full of old titles buries the one thing
+   *  you came for. */
+  function chatBar(d) {
+    const chats = d.chats || [];
+    const active = chats.find((c) => c.active);
+    // Normal case, not the uppercase .tiny label style: this is the name of the
+    // conversation you are reading, not a section heading, and a title shouted
+    // in capitals is harder to scan than the messages under it.
+    const head = el("div", { className: "row" },
+      el("span", { className: "muted grow clip" }, active ? active.title : "Orchestrator"));
+    const box = el("div", { className: "card" }, head);
+    if (!d.canSend) return box;
+
+    const toggle = el("button", { className: "chip" }, chatsOpen ? "Close" : "Chats");
+    toggle.onclick = (e) => {
+      e.stopPropagation();
+      chatsOpen = !chatsOpen;
+      orchSignature = null;
+      void orchestratorScreen();
+    };
+    head.append(toggle);
+
+    if (!chatsOpen) return box;
+
+    const list = el("div", { className: "bar", style: "margin-top:10px" });
+    for (const c of chats) {
+      const chip = el("button", { className: "chip" + (c.active ? " on" : "") }, c.title || "Untitled");
+      chip.onclick = async () => {
+        if (c.active) { chatsOpen = false; orchSignature = null; return void orchestratorScreen(); }
+        chip.disabled = true;
+        try { await api("/api/orchestrator/chat", { method: "POST", body: JSON.stringify({ chatId: c.id }) }); }
+        catch (e) { chip.disabled = false; return void box.append(el("p", { className: "err" }, String(e.message || e))); }
+        chatsOpen = false;
+        orchSignature = null;
+        void orchestratorScreen();
+      };
+      list.append(chip);
+    }
+    const fresh = el("button", { className: "chip" }, "+ New chat");
+    fresh.onclick = async () => {
+      fresh.disabled = true;
+      try { await api("/api/orchestrator/chat", { method: "POST", body: JSON.stringify({ fresh: true }) }); }
+      catch (e) { fresh.disabled = false; return void box.append(el("p", { className: "err" }, String(e.message || e))); }
+      chatsOpen = false;
+      orchSignature = null;
+      void orchestratorScreen();
+    };
+    list.append(fresh);
+    box.append(list);
+    return box;
+  }
+
+  /** The composer for the orchestrator chat. */
+  function orchBox(thinking) {
+    const input = el("textarea", {
+      rows: 3,
+      placeholder: thinking ? "Waiting for the current turn…" : "Tell the orchestrator what you want…",
+      disabled: thinking,
+      style:
+        "width:100%;font:inherit;letter-spacing:normal;text-align:left;text-transform:none;" +
+        "background:var(--panel);border:1px solid var(--edge);border-radius:10px;color:var(--text);padding:10px",
+    });
+    const send = el("button", { className: "primary", style: "width:100%;margin-top:8px" }, "Send");
+    send.disabled = thinking;
+    const box = el("div", { className: "card" }, input, send);
+    send.onclick = async () => {
+      const text = input.value.trim();
+      if (!text) return;
+      send.disabled = true;
+      send.textContent = "Sending…";
+      try {
+        await api("/api/orchestrator/send", { method: "POST", body: JSON.stringify({ text }) });
+        input.value = "";
+        // Force a redraw: the reply lands seconds later, and the signature from
+        // before the send would otherwise suppress the first poll that sees it.
+        orchSignature = null;
+        void orchestratorScreen();
+      } catch (e) {
+        send.disabled = false;
+        send.textContent = "Send";
+        box.append(el("p", { className: "err" }, String(e.message || e)));
+      }
+    };
+    return box;
+  }
+
   function blockCard(b) {
     if (b.kind === "command") {
       return el("div", { className: "card" },
@@ -316,14 +542,30 @@
 
   function render(loginError) {
     stopPolling();
-    listSignature = null; // a screen you asked for always draws
+    // A screen you asked for always draws, whatever the last poll cached.
+    listSignature = null;
+    orchSignature = null;
+    closeMenu();
     const authed = !!token;
-    backBtn.style.display = authed && view.name === "feed" ? "" : "none";
+    backBtn.style.display = authed && view.name !== "projects" ? "" : "none";
     if (!authed) installBtn.style.display = "none";
     void refreshAlertButton();
     outBtn.style.display = authed ? "" : "none";
+    // No menu button when the menu would be empty (signed out, nothing to show).
+    moreBtn.style.display = authed && menuHasAnything() ? "" : "none";
     if (!authed) return loginScreen(loginError);
     if (view.name === "feed") return feedScreen(view.id, view.name2, null);
+    if (view.name === "orchestrator") {
+      void orchestratorScreen();
+      // This one DOES poll while open, unlike a project feed: you are waiting on
+      // a reply here, and the reply is the entire point of the screen.
+      poll = setInterval(() => {
+        if (view.name === "orchestrator" && document.visibilityState === "visible") {
+          void orchestratorScreen({ silent: true });
+        }
+      }, 5000);
+      return;
+    }
     projectsScreen();
     // Only the list polls. A feed you are reading must not reshuffle under your
     // thumb; you pull back to the list to refresh it.
@@ -337,9 +579,9 @@
   backBtn.onclick = () => { view = { name: "projects" }; render(); };
   outBtn.onclick = signOut;
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible" && token && view.name === "projects") {
-      void projectsScreen({ silent: true });
-    }
+    if (document.visibilityState !== "visible" || !token) return;
+    if (view.name === "projects") void projectsScreen({ silent: true });
+    if (view.name === "orchestrator") void orchestratorScreen({ silent: true });
   });
 
   // ---------- notifications ----------
@@ -394,6 +636,9 @@
     // and a button that always errors is worse than no button.
     const possible = "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
     notifyBtn.style.display = possible ? "" : "none";
+    // The check is async, so the button may become available after render()
+    // already decided whether the menu was worth showing.
+    moreBtn.style.display = token && menuHasAnything() ? "" : "none";
     if (!possible) return;
     try {
       const reg = await navigator.serviceWorker.ready;

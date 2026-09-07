@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { ShellController } from "../shell/ShellController";
 import { Markdown } from "../blocks/Markdown";
@@ -442,6 +442,11 @@ function DiscussionView({
         ))}
       </div>
 
+      {/* The moderator's own turn. The system prompt has always told the
+          participants a human moderator runs the discussion; this is where the
+          moderator finally gets to say something. */}
+      {round > 0 && <ModeratorNote round={round} busy={session.busy} />}
+
       {/* Round controls. */}
       <div className="flex flex-wrap items-center gap-2 rounded-lg border border-edge bg-card px-3 py-2">
         <button
@@ -492,6 +497,90 @@ function DiscussionView({
       </div>
 
       {session.report != null && <ReportView session={session} />}
+    </div>
+  );
+}
+
+/** The moderator's reply to the round that just finished.
+ *
+ *  Kept as a draft you explicitly save rather than something that fires on
+ *  every keystroke: it changes what every participant is told next, and a note
+ *  half-typed when you hit "Next round" would steer the discussion with a
+ *  sentence you had not finished writing.
+ *
+ *  It attaches to the completed round, so re-reading the transcript later shows
+ *  the steer exactly where it happened. */
+function ModeratorNote({ round, busy }: { round: number; busy: boolean }) {
+  const saved = strategyStore.moderatorNote(round - 1);
+  const [draft, setDraft] = useState(saved);
+  const [open, setOpen] = useState(false);
+  // A different round is a different note; reset the draft when it changes.
+  useEffect(() => {
+    setDraft(strategyStore.moderatorNote(round - 1));
+  }, [round]);
+
+  const dirty = draft.trim() !== saved.trim();
+
+  if (!open && !saved) {
+    return (
+      <button
+        onClick={() => setOpen(true)}
+        disabled={busy}
+        className={`self-start rounded border border-dashed border-edge px-3 py-1.5 text-[11px] ${
+          busy ? "cursor-not-allowed text-muted/50" : "text-muted hover:border-accent/50 hover:text-gray-200"
+        }`}
+        title="Reply to what the participants just said; it is injected before the next round"
+      >
+        ✎ Reply to this round
+      </button>
+    );
+  }
+
+  return (
+    <div className="rounded-lg border border-accent/40 bg-card px-3 py-2">
+      <div className="mb-1.5 flex items-center gap-2 text-[11px] text-muted">
+        <span className="font-semibold text-gray-200">Moderator note on round {round}</span>
+        <span>{"·"} every participant sees this before the next round</span>
+        {saved && !dirty && <span className="ml-auto text-accent">saved</span>}
+      </div>
+      <textarea
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        disabled={busy}
+        rows={3}
+        placeholder="e.g. Drop the queue idea; assume we cannot add a service. Focus round 3 on migration risk."
+        className="w-full resize-y rounded-lg border border-edge bg-panel px-3 py-2 text-sm text-gray-100 outline-none placeholder:text-muted/50 focus:border-accent disabled:opacity-60"
+      />
+      <div className="mt-1.5 flex items-center gap-2">
+        <button
+          onClick={() => strategyStore.setModeratorNote(draft)}
+          disabled={busy || !dirty}
+          className={`rounded px-3 py-1 text-[11px] font-semibold ${
+            busy || !dirty
+              ? "cursor-not-allowed border border-edge text-muted/50"
+              : "bg-accent text-white hover:bg-accent/80"
+          }`}
+        >
+          Save note
+        </button>
+        {saved && (
+          <button
+            onClick={() => { strategyStore.setModeratorNote(""); setDraft(""); setOpen(false); }}
+            disabled={busy}
+            className="rounded px-2 py-1 text-[11px] text-muted hover:text-red-300 disabled:opacity-50"
+          >
+            Remove
+          </button>
+        )}
+        {!saved && (
+          <button
+            onClick={() => { setDraft(""); setOpen(false); }}
+            className="rounded px-2 py-1 text-[11px] text-muted hover:text-gray-200"
+          >
+            Cancel
+          </button>
+        )}
+      </div>
     </div>
   );
 }

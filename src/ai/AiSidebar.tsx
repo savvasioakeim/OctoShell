@@ -14,7 +14,7 @@ import { serviceStore } from "../services/serviceStore";
 import { projectConfigStore } from "../projects/projectConfig";
 import { supportsProfile } from "../agents/providers";
 import { modStore } from "../mods/modStore";
-import { registerOrchestrator } from "../strategy/orchestratorBridge";
+import { registerOrchestrator, registerOrchestratorControl } from "../strategy/orchestratorBridge";
 import { useSettings } from "../settings/settingsStore";
 import { dragHasFiles, filesFromDrop, saveDroppedFile } from "../util/drop";
 import { memoryStore, type Recalled } from "../memory/memoryStore";
@@ -693,6 +693,64 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
         setPendingPlan(text);
       }),
     [newChat],
+  );
+
+  /** Cancel just the orchestrator's in-flight turn, leaving every agent alone.
+   *
+   *  Split out from the emergency stop so the phone has something safe to
+   *  press: stopping a turn you started is undoing your own action, while
+   *  stopping every agent in the workspace is not, and the two should not share
+   *  a button on a small screen. */
+  const stopTurn = useCallback(() => {
+    const id = currentReqRef.current;
+    if (id) {
+      cancelledReqRef.current.add(id);
+      void client.cancel(id);
+      currentReqRef.current = null;
+    }
+    setThinking(false);
+  }, []);
+
+  // Let outside drivers (the phone) read and steer this conversation. Refs, not
+  // the state values: the control object is registered once, so closing over
+  // `messages` would publish the empty array this component mounted with,
+  // forever. Same for the callbacks, which are rebuilt on most renders.
+  const messagesRef = useRef(messages);
+  messagesRef.current = messages;
+  const thinkingRef = useRef(thinking);
+  thinkingRef.current = thinking;
+  const sessionsRef = useRef(sessions);
+  sessionsRef.current = sessions;
+  const chatIdRef = useRef(chatId);
+  chatIdRef.current = chatId;
+  const switchChatRef = useRef(switchChat);
+  switchChatRef.current = switchChat;
+  const newChatRef = useRef(newChat);
+  newChatRef.current = newChat;
+  const stopTurnRef = useRef(stopTurn);
+  stopTurnRef.current = stopTurn;
+  useEffect(
+    () =>
+      registerOrchestratorControl({
+        view: () => ({
+          messages: messagesRef.current.map((m) => ({ role: m.role, content: m.content })),
+          thinking: thinkingRef.current,
+          chats: sessionsRef.current.map((c) => ({
+            id: c.id,
+            title: c.title,
+            updatedAt: c.updatedAt,
+            active: c.id === chatIdRef.current,
+          })),
+        }),
+        switchChat: (id) => {
+          if (!sessionsRef.current.some((c) => c.id === id)) return false;
+          switchChatRef.current(id);
+          return true;
+        },
+        newChat: () => newChatRef.current(),
+        stop: () => stopTurnRef.current(),
+      }),
+    [],
   );
   useEffect(() => {
     if (pendingPlan == null) return;
