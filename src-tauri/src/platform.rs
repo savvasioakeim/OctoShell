@@ -237,58 +237,85 @@ pub fn which_cmd(name: &str) -> bool {
     }
 }
 
-/// Give a GUI-launched OctoShell the PATH the user's terminal has.
+/// Variables that describe the probe shell's own process, not the user's setup.
+/// Adopting them would tell OctoShell it lives in a directory it doesn't, at a
+/// shell nesting level it isn't, on a terminal it hasn't got.
+#[cfg(unix)]
+const PROCESS_SCOPED_VARS: &[&str] = &["PATH", "PWD", "OLDPWD", "SHLVL", "_", "TERM"];
+
+/// Give a GUI-launched OctoShell the environment the user's terminal has.
 ///
 /// On macOS an app opened from Finder, the Dock or Spotlight inherits launchd's
-/// PATH — `/usr/bin:/bin:/usr/sbin:/sbin` — and nothing the user set up in their
-/// shell: no Homebrew, no nvm/fnm Node, no `~/.local/bin`. Every CLI OctoShell
-/// drives (`claude`, `node`, `gh`, `git` from Homebrew) would then be "not
-/// found" even though it works fine in Terminal. So, before anything is spawned,
-/// ask the user's login shell what PATH it ends up with and adopt it. This is
-/// what VS Code and other editors do. A no-op on Windows and when launched from
-/// a terminal that already has a real PATH.
-pub fn adopt_login_shell_path() {
+/// environment — PATH is `/usr/bin:/bin:/usr/sbin:/sbin` and nothing else the
+/// user set up in their shell survives. Two things break as a result. Every CLI
+/// OctoShell drives (`claude`, `node`, `gh`, `git` from Homebrew) is "not found"
+/// even though it works fine in Terminal. And anything configured through an
+/// exported variable — an MCP server that reads its token from `env`, an API key
+/// — starts up unconfigured and dies, which reads as "the server is down".
+///
+/// So, before anything is spawned, ask the user's login shell what it ends up
+/// with and adopt it: PATH as a union (never lose an entry a launcher added),
+/// everything else only where we have no value of our own, so an explicitly-set
+/// variable always beats the dotfiles. Process-scoped variables are skipped
+/// (see [`PROCESS_SCOPED_VARS`]). This is what VS Code and other editors do. A
+/// no-op on Windows and when launched from a terminal that already has one.
+pub fn adopt_login_shell_env() {
     #[cfg(unix)]
     {
-        let Some(path) = login_shell_path() else { return };
-        // Union: the login PATH first, then anything we already had that it lacks
-        // (never lose an entry a launcher deliberately added).
-        let mut entries: Vec<PathBuf> = std::env::split_paths(&path).collect();
-        if let Some(cur) = std::env::var_os("PATH") {
-            for p in std::env::split_paths(&cur) {
-                if !entries.contains(&p) {
-                    entries.push(p);
-                }
+        let Some(vars) = login_shell_env() else { return };
+        for (key, value) in &vars {
+            if key == "PATH" {
+                adopt_path(value);
+            } else if !PROCESS_SCOPED_VARS.contains(&key.as_str()) && std::env::var_os(key).is_none() {
+                std::env::set_var(key, value);
             }
-        }
-        if let Ok(joined) = std::env::join_paths(entries) {
-            std::env::set_var("PATH", joined);
         }
     }
 }
 
-/// Ask the user's login shell for its PATH. `-l` runs the login files (where
-/// PATH is usually set), `-i` the rc file (nvm/fnm hooks live there); the
-/// sentinel isolates PATH from any banner the rc files print. None when the
-/// shell can't be run, hangs, or prints nothing usable.
+/// Union the login shell's PATH with ours: its entries first, then anything we
+/// already had that it lacks (never lose an entry a launcher deliberately added).
 #[cfg(unix)]
-fn login_shell_path() -> Option<String> {
+fn adopt_path(path: &str) {
+    let mut entries: Vec<PathBuf> = std::env::split_paths(path).collect();
+    if let Some(cur) = std::env::var_os("PATH") {
+        for p in std::env::split_paths(&cur) {
+            if !entries.contains(&p) {
+                entries.push(p);
+            }
+        }
+    }
+    if let Ok(joined) = std::env::join_paths(entries) {
+        std::env::set_var("PATH", joined);
+    }
+}
+
+/// Ask the user's login shell for its whole environment. `-l` runs the login
+/// files (where PATH is usually set), `-i` the rc file (nvm/fnm hooks and most
+/// `export`s live there). `env -0` NUL-separates the entries so a value
+/// containing newlines can't be read as two variables, and the sentinel isolates
+/// the block from any banner the rc files print. None when the shell can't be
+/// run, hangs, or prints nothing usable.
+#[cfg(unix)]
+fn login_shell_env() -> Option<Vec<(String, String)>> {
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
     let mut cmd = Command::new(&shell);
-    cmd.args(["-lic", "printf '__OCTO_PATH__%s__OCTO_PATH__' \"$PATH\""])
+    cmd.args(["-lic", "printf '__OCTO_ENV__'; env -0; printf '__OCTO_ENV__'"])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null());
     own_process_group(&mut cmd);
     let out = run_with_timeout(cmd, std::time::Duration::from_secs(4))?;
-    let start = out.find("__OCTO_PATH__")?;
-    let rest = &out[start + "__OCTO_PATH__".len()..];
-    let end = rest.find("__OCTO_PATH__")?;
-    let path = rest[..end].trim();
-    if path.is_empty() {
-        return None;
-    }
-    Some(path.to_string())
+    let start = out.find("__OCTO_ENV__")?;
+    let rest = &out[start + "__OCTO_ENV__".len()..];
+    let end = rest.find("__OCTO_ENV__")?;
+    let vars: Vec<(String, String)> = rest[..end]
+        .split('\0')
+        .filter_map(|entry| entry.split_once('='))
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .filter(|(k, _)| !k.is_empty())
+        .collect();
+    (!vars.is_empty()).then_some(vars)
 }
 
 /// Run `cmd` to completion, returning its stdout — or None if it didn't finish
@@ -390,25 +417,48 @@ mod tests {
         }
     }
 
+    /// One test for the whole adoption, not three: every case here mutates the
+    /// process environment, and cargo runs tests in the same process on parallel
+    /// threads — split up, they would race each other's `set_var`.
     #[cfg(unix)]
     #[test]
-    fn adopting_the_login_path_never_loses_entries() {
+    fn adopting_the_login_env() {
+        let probe = login_shell_env().expect("the login shell should answer");
+        assert!(probe.iter().any(|(k, _)| k == "HOME"), "probe returned no HOME");
+
+        // Our own value wins over the dotfiles: a launcher that set one
+        // deliberately must not be silently overruled.
+        let ours = "OCTOSHELL_ENV_ADOPTION_PROBE";
+        std::env::set_var(ours, "ours");
+
         let before: Vec<PathBuf> = std::env::split_paths(&std::env::var_os("PATH").unwrap()).collect();
-        adopt_login_shell_path();
+        adopt_login_shell_env();
         let after: Vec<PathBuf> = std::env::split_paths(&std::env::var_os("PATH").unwrap()).collect();
+
+        assert_eq!(std::env::var(ours).unwrap(), "ours");
+        std::env::remove_var(ours);
+
         eprintln!("PATH before: {} entries, after: {} entries", before.len(), after.len());
         for p in before {
             assert!(after.contains(&p), "{} was dropped from PATH", p.display());
         }
-        // What the login shell reports must be in there too (this is the point).
-        // Version managers such as fnm mint a fresh per-shell directory on every
-        // start, so those entries legitimately differ between two probes.
-        let probe = login_shell_path().expect("the login shell should answer");
-        for p in std::env::split_paths(&probe) {
-            if p.to_string_lossy().contains("multishells") {
-                continue;
+        for (key, value) in probe {
+            if key == "PATH" {
+                // What the login shell reports must be in there too (this is the
+                // point). Version managers such as fnm mint a fresh per-shell
+                // directory on every start, so those entries legitimately differ
+                // between two probes.
+                for p in std::env::split_paths(&value) {
+                    if p.to_string_lossy().contains("multishells") {
+                        continue;
+                    }
+                    assert!(after.contains(&p), "{} from the login shell was not adopted", p.display());
+                }
+            } else if !PROCESS_SCOPED_VARS.contains(&key.as_str()) && !value.is_empty() {
+                // The whole point of widening the probe past PATH: a token the
+                // user exports in their shell has to reach what we spawn.
+                assert!(std::env::var_os(&key).is_some(), "{key} from the login shell was not adopted");
             }
-            assert!(after.contains(&p), "{} from the login shell was not adopted", p.display());
         }
     }
 }

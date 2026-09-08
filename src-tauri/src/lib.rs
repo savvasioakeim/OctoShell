@@ -133,7 +133,7 @@ pub fn run() {
     // FIRST, before any thread or child exists: a GUI-launched app on macOS has
     // a bare PATH, so adopt the user's login-shell PATH or every CLI we drive
     // (claude, node, gh…) is "not found". No-op on Windows.
-    platform::adopt_login_shell_path();
+    platform::adopt_login_shell_env();
 
     let builder = tauri::Builder::default();
     // macOS needs an explicit menu (Edit for ⌘C/⌘V, and no ⌘W on the window).
