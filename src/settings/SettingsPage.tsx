@@ -113,7 +113,7 @@ export function SettingsPage({
         {/* Content — one panel; sections are nested cards inside it. */}
         <div className="flex-1 overflow-y-auto rounded-xl border border-edge bg-panel p-4">
           <div className="mx-auto max-w-2xl space-y-3">
-            {tab === "ai" && <AiTab />}
+            {tab === "ai" && <AiTab projects={projects} />}
             {tab === "local" && <LocalLlmTab />}
             {tab === "roles" && <StrategyRolesTab />}
             {tab === "projects" && <ProjectScriptsTab projects={projects} focusCwd={focusProjectCwd} />}
@@ -130,7 +130,7 @@ export function SettingsPage({
 // ---------------------------------------------------------------------------
 // Tab 1 — Profiles & AI
 // ---------------------------------------------------------------------------
-function AiTab() {
+function AiTab({ projects }: { projects: SettingsProject[] }) {
   const { profiles, agent, orchestrator, globalRules, spendLimitUsd, reviewAgent, orchestratorReadonly } = useSettings();
 
   const addProfile = async () => {
@@ -251,7 +251,7 @@ function AiTab() {
         </div>
       </Section>
 
-      <OrchestratorMcpSection />
+      <OrchestratorMcpSection cwds={projects.map((p) => p.cwd)} />
 
       <MemorySection />
 
@@ -343,8 +343,10 @@ interface McpServer {
 
 /** Lists the MCP servers from the orchestrator's Claude config and lets the user
  *  tick which ones it may use. Only the ticked servers' tools are pre-approved;
- *  file/Bash tools are never granted, and nothing selected = pure planner. */
-function OrchestratorMcpSection() {
+ *  file/Bash tools are never granted, and nothing selected = pure planner.
+ *  `cwds` (the open projects) surfaces project-scoped servers too — the backend
+ *  resolves them the way the CLI does, nearest directory first. */
+function OrchestratorMcpSection({ cwds }: { cwds: string[] }) {
   const { profiles, orchestrator, orchestratorMcp } = useSettings();
   const configDir = profiles.find((p) => p.id === orchestrator.profileId)?.configDir ?? null;
   const [servers, setServers] = useState<McpServer[] | null>(null);
@@ -361,13 +363,15 @@ function OrchestratorMcpSection() {
     let live = true;
     setServers(null);
     setErr(null);
-    invoke<McpServer[]>("list_mcp_servers", { configDir })
+    invoke<McpServer[]>("list_mcp_servers", { configDir, cwds })
       .then((s) => live && setServers(s))
       .catch((e) => live && setErr(String(e)));
     return () => {
       live = false;
     };
-  }, [configDir]);
+    // `cwds` is rebuilt on every render of the parent; key the effect on its
+    // content so a new array with the same projects doesn't refetch forever.
+  }, [configDir, cwds.join("\u0000")]);
 
   return (
     <Section

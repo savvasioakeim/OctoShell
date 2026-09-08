@@ -662,6 +662,11 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
           temperature: aiProvider === "acp-ollama" ? settings.ollama.temperature : null,
           // MCP servers the user allowed the orchestrator to use (Settings → MCP).
           allowedMcp: settings.orchestratorMcp,
+          // Where those servers get resolved from. The authenticated definition
+          // of a server (auth header, tokens in `env`) normally sits in the
+          // project-scoped part of the Claude config rather than the user-level
+          // one, so the backend needs the open projects' dirs to find it.
+          cwds: tabs.map((p) => p.controller.getSnapshot().cwd).filter(Boolean),
           modMcp: modStore.mcpServers(),
           // Read-only inspection tools (verify instead of guess; never write code).
           readonly: settings.orchestratorReadonly,
