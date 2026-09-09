@@ -109,26 +109,48 @@ impl AgentManager {
                 // task plan via TodoWrite — which drives our trace progress bar.
                 "--tools".into(), "default".into(),
             ]);
+            // The MCP servers this agent should see, resolved the same
+            // ancestor-aware way the orchestrator resolves them (ai.rs).
+            //
+            // The CLI keys project-scoped servers by EXACT cwd, and an agent runs
+            // in a worktree — a directory that has no entry of its own. So it fell
+            // back to the bare user-level definition and got a DCR 404 from a
+            // server that only ever worked because of the Authorization header
+            // configured on the workspace folder above it. Passing the resolved
+            // set in fixes that, and an inline definition also wins over the
+            // config file's copy of the same name.
+            //
+            // Sandboxed runs get nothing: these are host definitions (local stdio
+            // commands, host paths), and the container can reach neither them nor
+            // the approval sidecar.
+            let mut servers = if sandboxed {
+                serde_json::Map::new()
+            } else {
+                crate::ai::mcp_servers_map(config_dir.as_deref(), std::slice::from_ref(&cwd))
+            };
             // Approval mode: route sensitive tools to our permission MCP sidecar
             // (which asks the user). Otherwise run fully autonomously.
             if approval && approval_script.is_some() {
                 let script = approval_script.unwrap();
-                let mcp = serde_json::json!({
-                    "mcpServers": { "octo": {
+                servers.insert(
+                    "octo".into(),
+                    serde_json::json!({
                         "command": "node",
                         "args": [script],
                         "env": { "OCTO_PORT": approval_port.to_string(), "OCTO_SESSION": id.clone(), "OCTO_TOKEN": approval_token.clone() }
-                    } }
-                })
-                .to_string();
+                    }),
+                );
                 args.extend([
                     "--permission-mode".into(), "default".into(),
                     "--permission-prompt-tool".into(), "mcp__octo__approve".into(),
-                    "--mcp-config".into(), mcp,
                     "--settings".into(), crate::approval::ASK_TOOLS.into(),
                 ]);
             } else {
                 args.push("--dangerously-skip-permissions".into());
+            }
+            if !servers.is_empty() {
+                args.push("--mcp-config".into());
+                args.push(serde_json::json!({ "mcpServers": servers }).to_string());
             }
             if let Some(r) = &resume { args.push("--resume".into()); args.push(r.clone()); }
             if let Some(m) = &model { args.push("--model".into()); args.push(m.clone()); }

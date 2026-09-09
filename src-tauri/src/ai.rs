@@ -177,7 +177,7 @@ fn project_scoped_servers(cfg: &serde_json::Value, cwd: &str) -> Vec<serde_json:
 /// orchestrator spans all of them — and on a name collision between two of them
 /// the later tab wins; two open projects defining the same server name
 /// differently isn't a case worth more machinery than that.
-fn mcp_servers_map(config_dir: Option<&str>, cwds: &[String]) -> serde_json::Map<String, serde_json::Value> {
+pub(crate) fn mcp_servers_map(config_dir: Option<&str>, cwds: &[String]) -> serde_json::Map<String, serde_json::Value> {
     claude_config(config_dir)
         .map(|cfg| merge_servers(&cfg, cwds))
         .unwrap_or_default()
