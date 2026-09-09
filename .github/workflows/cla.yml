@@ -42,7 +42,12 @@ jobs:
     steps:
       - name: CLA Assistant
         if: (github.event.comment.body == 'I have read the CLA Document and I hereby sign the CLA') || github.event_name == 'pull_request_target'
-        uses: contributor-assistant/github-action@v2.6.1
+        # Pinned to the COMMIT behind v2.6.1, not the tag. A tag is a movable
+        # pointer: whoever can push to that repository can repoint it at other
+        # code, which would then run here with the token below (Contents: write
+        # on THIS repo). A commit SHA cannot be repointed. Re-pin deliberately
+        # when upgrading, and read the diff first.
+        uses: contributor-assistant/github-action@ca4a40a7d1004f18d9960b404b97e5f30a505a08 # v2.6.1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PERSONAL_ACCESS_TOKEN: ${{ secrets.CLA_SIGNATURES_TOKEN }}
