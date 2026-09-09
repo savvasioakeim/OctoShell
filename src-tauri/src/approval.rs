@@ -149,25 +149,19 @@ impl ApprovalBridge {
     }
 }
 
-/// Generate an unpredictable token for the approval bridge. Uses the OS-seeded
-/// `RandomState` as the entropy source (no extra crate) — enough to stop a local
-/// process from guessing it and spoofing approval prompts.
+/// Generate an unpredictable token for the approval bridge.
+///
+/// Straight from OS entropy. It used to be built from `RandomState` plus the
+/// clock, to avoid a dependency — but `RandomState` is a hash seed, not a CSPRNG,
+/// and its guarantee is collision resistance, not unpredictability. This token is
+/// the only thing standing between a local process and a spoofed approval prompt
+/// on a machine where agents may run with `--dangerously-skip-permissions`, so it
+/// should not rest on "probably hard to guess". `getrandom` is already a
+/// dependency (the mobile server's access code uses it), so this costs nothing.
 fn random_token() -> String {
-    use std::collections::hash_map::RandomState;
-    use std::hash::{BuildHasher, Hasher};
-    let mut out = String::with_capacity(32);
-    for i in 0..2u8 {
-        let mut h = RandomState::new().build_hasher();
-        h.write_u8(i);
-        h.write_u128(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0),
-        );
-        out.push_str(&format!("{:016x}", h.finish()));
-    }
-    out
+    let mut buf = [0u8; 16];
+    getrandom::fill(&mut buf).expect("OS entropy unavailable");
+    buf.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 #[derive(Clone, Serialize)]
