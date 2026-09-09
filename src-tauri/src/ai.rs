@@ -588,7 +588,13 @@ fn chat_via_cli(
                 }
                 let cfg = serde_json::json!({ "mcpServers": chosen }).to_string();
                 cmd.arg("--mcp-config").arg(cfg);
-                cmd.env("MCP_TIMEOUT", "8000"); // server startup budget (ms)
+                // Server startup budget (ms). 8s was too tight to distinguish a
+                // hung server from a slow one: a stdio server launched through
+                // `npx` cold-starts well past that on a machine under load, and
+                // every time it did, the turn reported the server as simply down.
+                // 20s still bounds a genuinely stuck server (the CLI's own default
+                // is 30s) without turning load into a false outage.
+                cmd.env("MCP_TIMEOUT", "20000");
                 cmd.env("MCP_TOOL_TIMEOUT", "60000"); // per-tool-call budget (ms)
             }
         }
