@@ -28,7 +28,13 @@ import {
 } from "../shell/agentStatus";
 
 /** Per-action lifecycle once the model proposed it (keyed `msgIndex:actionIndex`). */
-type ActionState = "done" | "dismissed" | "error";
+/** `running` is the in-flight state. Worktree dispatch awaits `git worktree add`
+ *  plus a dependency copy — seconds, and far longer on a loaded machine. Without a
+ *  state to occupy that window the card kept offering Confirm and "Run all" kept
+ *  counting the action as pending, so every impatient re-click started ANOTHER
+ *  dispatch. It is deliberately NOT persisted (see the session-sync effect): a
+ *  reload must never resurrect a card stuck mid-flight. */
+type ActionState = "running" | "done" | "dismissed" | "error";
 
 /** A Claude Code profile = a named `CLAUDE_CONFIG_DIR` (its own logged-in account). */
 /** One saved assistant conversation. The active session's content is the live
@@ -295,6 +301,12 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
   const prevBusyRef = useRef<Map<string, boolean>>(new Map());
   // Action keys already auto-run, so the auto-run effect fires each once.
   const autoRanRef = useRef<Set<string>>(new Set());
+  // Action keys currently executing. This ref, not the `running` state, is the
+  // real double-fire guard: setState only lands on the next render, so two clicks
+  // inside one tick (a double-click, or "Run all" pressed twice) both read the
+  // stale map and both pass. A ref is written and read synchronously, so the
+  // second caller sees the first immediately.
+  const inFlightRef = useRef<Set<string>>(new Set());
   // Auto-continuation steps since the last manual message — a runaway backstop.
   const autoStepsRef = useRef(0);
   // True between firing a watch continuation and consuming its reply (so a reply
@@ -395,9 +407,14 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
   // Sync the live messages/actionState into the active session and persist the
   // whole session list (replaces the old single-chat persistence).
   useEffect(() => {
+    // Drop in-flight marks on the way to storage: a dispatch cannot survive a
+    // reload, so a persisted "running" would be a card frozen forever.
+    const settled = Object.fromEntries(Object.entries(actionState).filter(([, v]) => v !== "running"));
     setSessions((prev) => {
       const next = prev.map((s) =>
-        s.id === chatId ? { ...s, messages, actionState, updatedAt: Date.now(), title: chatTitle(messages) } : s,
+        s.id === chatId
+          ? { ...s, messages, actionState: settled, updatedAt: Date.now(), title: chatTitle(messages) }
+          : s,
       );
       saveJSON(KEY.assistantSessions, next);
       return next;
@@ -825,6 +842,27 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
     [tabs],
   );
 
+  /** EVERY open tab an action could mean, in the same match order as the single
+   *  resolvers above. A cancel has to reach all of them: when several tabs sat on
+   *  one worktree, `.find()` stopped exactly one agent of many and the card still
+   *  reported success, so "stop the duplicates" looked like it did nothing. */
+  const findAllTabs = useCallback(
+    (project: string, branch?: string | null): ProjectRef[] => {
+      const proj = project.toLowerCase().trim();
+      const b = branch ? norm(branch) : "";
+      if (b) {
+        return tabs.filter((p) => {
+          const cwd = p.controller.getCwd().toLowerCase();
+          const n = norm(p.name);
+          return (n === b || n.includes(b)) && isWorktreeCwd(cwd) && cwd.includes(proj);
+        });
+      }
+      const exact = tabs.filter((p) => p.name.toLowerCase().trim() === proj);
+      return exact.length ? exact : tabs.filter((p) => p.name.toLowerCase().includes(proj));
+    },
+    [tabs],
+  );
+
   /** Start watching a freshly-dispatched agent in live watch (follow to finish). */
   const watchDispatched = useCallback(
     (id: string) => {
@@ -836,8 +874,9 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
     [saveWatch],
   );
 
-  /** Execute a confirmed action against the resolved project's controller. */
-  const runAction = useCallback(
+  /** Execute a confirmed action against the resolved project's controller. Never
+   *  call this directly — `runAction` wraps it with the in-flight guard. */
+  const execAction = useCallback(
     async (key: string, a: OrchestratorAction) => {
       // Spend brake: refuse NEW agent work once the session cost limit is hit
       // (cancels still go through).
@@ -938,12 +977,42 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
         // Fire the independent built-in review agent on this project's diff.
         void p.controller.requestReview();
       } else {
-        p.controller.cancelAgent();
+        // Stop every agent the action names. Cancelling is idempotent, so hitting
+        // an already-idle tab costs nothing, and a partial stop is the worse
+        // failure by far: it reads as "cancelled" while the work keeps running.
+        const targets = findAllTabs(a.project, a.branch);
+        for (const t of targets.length ? targets : [p]) t.controller.cancelAgent();
       }
       onSelect(p.id);
       setActionState((s) => ({ ...s, [key]: "done" }));
     },
-    [resolveProject, findWorktreeTab, onSelect, onCreateWorktree, watchDispatched],
+    [resolveProject, findWorktreeTab, findAllTabs, onSelect, onCreateWorktree, watchDispatched],
+  );
+
+  /** Run a confirmed action exactly once. The guard is the whole point: worktree
+   *  dispatch is async, so between the click and the result there is a window in
+   *  which the card still looks unconfirmed. Re-clicking it (or "Run all") used to
+   *  start a second, third, … dispatch of the same task — each one adopting the
+   *  same worktree as a fresh tab with its own agent, so eight agents ended up
+   *  editing one directory. */
+  const runAction = useCallback(
+    async (key: string, a: OrchestratorAction) => {
+      if (inFlightRef.current.has(key)) return;
+      inFlightRef.current.add(key);
+      setActionState((s) => ({ ...s, [key]: "running" }));
+      try {
+        await execAction(key, a);
+      } catch (e) {
+        setActionErr((prev) => ({ ...prev, [key]: String(e) }));
+        setActionState((s) => ({ ...s, [key]: "error" }));
+      } finally {
+        inFlightRef.current.delete(key);
+        // Belt and braces: an exec path that returned without settling would
+        // otherwise leave the card spinning with no way back.
+        setActionState((s) => (s[key] === "running" ? { ...s, [key]: "error" } : s));
+      }
+    },
+    [execAction],
   );
 
   const dismissAction = useCallback((key: string) => {
@@ -1843,6 +1912,18 @@ function ActionCard({
   const verbLabel = isDispatch ? "Send task to" : isReview ? "Start review on" : "Stop the agent in";
   const verbIcon = isDispatch ? "🚀" : isReview ? "🔍" : "🛑";
 
+  // In flight. Worktree dispatch can sit here for seconds (git + dependency copy),
+  // and silence is what made people click Confirm again, so say so plainly.
+  if (state === "running") {
+    return (
+      <div className="flex items-center gap-1.5 rounded border border-accent/30 bg-accent/10 px-2 py-1.5 text-xs text-accent">
+        <span className="animate-pulse">●</span>
+        <span>
+          {isDispatch ? "Dispatching to" : isReview ? "Starting review on" : "Stopping"} <b>{target}</b>…
+        </span>
+      </div>
+    );
+  }
   if (state === "done") {
     return (
       <div className="rounded border border-emerald-500/30 bg-emerald-500/10 px-2 py-1.5 text-xs text-emerald-300">

@@ -424,7 +424,21 @@ export function App({ initial }: { initial: ShellController }) {
   /** Keep an unexpected blob of shell output readable in an error toast. */
   const truncateForError = (t: string) => (t.length > 120 ? `${t.slice(0, 119)}…` : t);
 
-  const createWorktree = async (srcId: string, branch: string): Promise<Tab | { error: string }> => {
+  /** Creations currently in flight, keyed by repo + branch. Two callers asking for
+   *  the same worktree at the same time share one result instead of each running
+   *  the git script and adopting the outcome separately — the state store can't
+   *  help here, since nothing has been added to it yet while the first call runs. */
+  const creatingRef = useRef<Map<string, Promise<Tab | { error: string }>>>(new Map());
+
+  const createWorktree = (srcId: string, branch: string): Promise<Tab | { error: string }> => {
+    const inFlight = creatingRef.current.get(`${srcId}::${branch.trim()}`);
+    if (inFlight) return inFlight;
+    const run = createWorktreeOnce(srcId, branch);
+    creatingRef.current.set(`${srcId}::${branch.trim()}`, run);
+    return run.finally(() => creatingRef.current.delete(`${srcId}::${branch.trim()}`));
+  };
+
+  const createWorktreeOnce = async (srcId: string, branch: string): Promise<Tab | { error: string }> => {
     const src = tabs.find((t) => t.id === srcId);
     if (!src?.cwd) return { error: "not a git project (home is not a repo)" };
     const branchName = branch.trim().replace(/[^A-Za-z0-9._/-]/g, "-").replace(/^-+|-+$/g, "");
@@ -501,6 +515,16 @@ export function App({ initial }: { initial: ShellController }) {
     repoRoot: string,
     parentId: string,
   ): Promise<Tab> => {
+    // One tab per directory, always. `createWorktreeScript` deliberately REUSES a
+    // worktree that is already registered, so a repeated create succeeds and hands
+    // back the same path — which used to become a second tab with its own agent on
+    // the same files. Two agents editing one checkout corrupt each other's edits
+    // ("File has been modified since read"), so the duplicate is refused here, at
+    // the one place every caller goes through.
+    const existing = tabsRef.current.find(
+      (t) => t.cwd.replace(/\\/g, "/").toLowerCase() === wtPath.replace(/\\/g, "/").toLowerCase(),
+    );
+    if (existing) return existing;
     const controller = new ShellController(crypto.randomUUID());
     await controller.init(wtPath);
     const tab: Tab = {
@@ -607,7 +631,14 @@ export function App({ initial }: { initial: ShellController }) {
     tab?.controller.dispose();
     // Isolated worktree → remove it from git AND sweep the folder (best-effort,
     // off the UI thread) — see removeWorktreeScript for why both.
-    if (tab?.worktree) {
+    // Never sweep a directory another tab is still sitting in. Removal is
+    // `--force` plus `rm -rf`, so closing one of several tabs that share a
+    // worktree would delete the checkout out from under the others, taking any
+    // uncommitted work with it. Duplicate tabs can no longer be created, but ones
+    // made before that fix are restored from storage, so the check has to stay.
+    const sharedByOther =
+      !!tab && tabs.some((t) => t.id !== tab.id && t.cwd.toLowerCase() === tab.cwd.toLowerCase());
+    if (tab?.worktree && !sharedByOther) {
       capture(tab.worktree.repoRoot, removeWorktreeScript(tab.cwd)).catch(() => {});
     }
     setTabs((prev) => {
