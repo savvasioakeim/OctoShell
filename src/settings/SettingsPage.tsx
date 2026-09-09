@@ -1198,6 +1198,69 @@ function AppearanceTab() {
 // ---------------------------------------------------------------------------
 // Tab 4 — System & Database
 // ---------------------------------------------------------------------------
+/** Names of extra environment variables to take from the login shell.
+ *
+ *  A GUI-launched app gets none of the user's shell environment, so OctoShell
+ *  probes the login shell at startup — but it adopts only infrastructure (PATH,
+ *  Homebrew, fnm, proxies, SSH_AUTH_SOCK). Credentials are deliberately excluded,
+ *  because everything adopted here is inherited by every agent and MCP server the
+ *  app spawns. This is where a token one of them needs gets opted in by name. */
+function EnvVarsSection() {
+  const { envVars } = useSettings();
+  const [text, setText] = useState(envVars.join("\n"));
+  const [applied, setApplied] = useState<string[] | null>(null);
+
+  const save = async () => {
+    const names = text.split(/[\s,]+/).map((n) => n.trim()).filter(Boolean);
+    settingsStore.setEnvVars(names);
+    try {
+      setApplied(await invoke<string[]>("adopt_env_vars", { names }));
+    } catch {
+      setApplied(null);
+    }
+  };
+
+  const names = text.split(/[\s,]+/).map((n) => n.trim()).filter(Boolean);
+  const missing = applied === null ? [] : names.filter((n) => !applied.includes(n));
+
+  return (
+    <Section
+      title="Environment variables from your shell"
+      desc="OctoShell takes PATH and toolchain settings (Homebrew, fnm, proxies, SSH agent) from your login shell automatically. It does NOT take secrets: anything adopted here is visible to every agent and MCP server it runs. Name a variable below only when something needs it — an MCP server's token, for example. Names only, one per line; values stay in your shell."
+    >
+      <textarea
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        spellCheck={false}
+        placeholder={"SLACK_MCP_XOXC_TOKEN\nSLACK_MCP_XOXD_TOKEN"}
+        className="min-h-[90px] w-full resize-y rounded border border-edge bg-well px-2 py-1.5 font-mono text-xs leading-relaxed text-gray-100 outline-none focus:border-accent"
+      />
+      <div className="mt-2 flex items-center gap-2">
+        <button
+          onClick={() => void save()}
+          className="cursor-pointer rounded border border-edge px-2 py-1 text-xs text-gray-200 hover:bg-edge"
+        >
+          Apply
+        </button>
+        {applied !== null && (
+          <span className="text-xs text-muted">
+            {applied.length} adopted
+            {missing.length > 0 && (
+              <span className="text-amber-300">
+                {" "}· not set in your login shell: {missing.join(", ")}
+              </span>
+            )}
+          </span>
+        )}
+      </div>
+      <p className="mt-2 text-[11px] leading-relaxed text-muted">
+        Removing a name stops it being adopted from the next launch. A variable already in
+        this process can't be taken back from the children it was passed to.
+      </p>
+    </Section>
+  );
+}
+
 function SystemTab({ onSandboxLogin, onShowOnboarding }: { onSandboxLogin: () => void; onShowOnboarding: () => void }) {
   const { system } = useSettings();
   const [busy, setBusy] = useState(false);
@@ -1217,6 +1280,8 @@ function SystemTab({ onSandboxLogin, onShowOnboarding }: { onSandboxLogin: () =>
 
   return (
     <>
+      <EnvVarsSection />
+
       <Section title="Scrollback buffer" desc="How many lines of terminal output each terminal keeps in memory (bigger = more history, a bit more RAM). Applies to new terminals.">
         <div className="flex items-center gap-2">
           <input

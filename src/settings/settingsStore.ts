@@ -158,6 +158,10 @@ export interface SettingsState {
   memory: MemorySettings;
   /** Phone companion exposure. */
   mobile: MobileSettings;
+  /** Extra environment variable NAMES to take from the login shell, beyond the
+   *  built-in infrastructure allowlist. Names only; the values never leave the
+   *  shell. This is how a token an MCP server needs gets in, as a decision. */
+  envVars: string[];
 }
 
 export interface MemorySettings {
@@ -237,14 +241,24 @@ class SettingsStore {
       orchestratorReadonly: loadJSON<boolean>(KEY.orchestratorReadonly, true),
       memory: { ...DEFAULT_MEMORY, ...loadJSON<Partial<MemorySettings>>(KEY.memorySettings, {}) },
       mobile: { ...DEFAULT_MOBILE, ...loadJSON<Partial<MobileSettings>>(KEY.mobileSettings, {}) },
+      envVars: loadJSON<string[]>(KEY.envVars, []),
     };
     // Push the persisted sandbox flag to the backend once at startup so the ACP
     // terminal routing matches the UI from the first turn (fire-and-forget).
     this.pushSandbox();
+    this.pushEnvVars();
   }
 
   /** Mirror the global sandbox flag to the Rust `SandboxConfig` so acp.rs routes
    *  terminal commands accordingly. Fire-and-forget (harmless before Tauri is up). */
+  /** Ask the backend to take these named variables from the login shell. Startup
+   *  adoption only covers the built-in allowlist (no credentials), so this runs
+   *  as soon as settings load — still long before anything is spawned. */
+  private pushEnvVars(): void {
+    if (!this.state.envVars.length) return;
+    invoke("adopt_env_vars", { names: this.state.envVars }).catch(() => {});
+  }
+
   private pushSandbox(): void {
     invoke("set_sandbox_enabled", { enabled: this.state.system.sandboxAgentCommands }).catch(() => {});
   }
@@ -257,6 +271,7 @@ class SettingsStore {
 
   private commit(next: SettingsState): void {
     this.state = next;
+    saveJSON(KEY.envVars, next.envVars);
     saveJSON(KEY.aiProfiles, next.profiles);
     saveJSON(KEY.agentDefaults, next.agent);
     saveJSON(KEY.orchestratorDefaults, next.orchestrator);
@@ -281,6 +296,15 @@ class SettingsStore {
 
   setMobile(patch: Partial<MobileSettings>): void {
     this.commit({ ...this.state, mobile: { ...this.state.mobile, ...patch } });
+  }
+
+  /** Replace the opt-in variable list. Adoption is additive within a run: a name
+   *  removed here stops being taken at the NEXT launch, because a variable
+   *  already in this process cannot be un-inherited by the children it spawned. */
+  setEnvVars(names: string[]): void {
+    const clean = [...new Set(names.map((n) => n.trim()).filter(Boolean))];
+    this.commit({ ...this.state, envVars: clean });
+    this.pushEnvVars();
   }
 
   setMemory(patch: Partial<MemorySettings>): void {

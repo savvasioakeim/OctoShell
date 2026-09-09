@@ -237,39 +237,120 @@ pub fn which_cmd(name: &str) -> bool {
     }
 }
 
-/// Variables that describe the probe shell's own process, not the user's setup.
-/// Adopting them would tell OctoShell it lives in a directory it doesn't, at a
-/// shell nesting level it isn't, on a terminal it hasn't got.
+/// Variables adopted from the login shell by default.
+///
+/// An allowlist, not "everything the shell has". The broad version worked, but
+/// it also carried every exported secret into OctoShell and into every child it
+/// spawns — an MCP server that only needed PATH could read the user's Slack
+/// tokens out of its own environment. What is here is infrastructure: where
+/// tools live, which toolchain to use, how to reach the network, and the agent
+/// that answers for SSH keys. Nothing here is a credential.
+///
+/// Anything else is opt-in by name (Settings → Environment, see
+/// [`adopt_env_vars`]), so carrying a token into the app is a decision someone
+/// made rather than a side effect.
 #[cfg(unix)]
-const PROCESS_SCOPED_VARS: &[&str] = &["PATH", "PWD", "OLDPWD", "SHLVL", "_", "TERM"];
+const ADOPTED_PREFIXES: &[&str] = &[
+    // Toolchain and version managers: where node/python/ruby/go/rust live.
+    "FNM_", "NVM_", "VOLTA_", "ASDF_", "PYENV_", "RBENV_", "NODENV_", "SDKMAN_",
+    "HOMEBREW_", "CARGO_", "RUSTUP_", "GOPATH", "GOROOT", "GOBIN", "JAVA_HOME",
+    "BUN_INSTALL", "PNPM_HOME", "DENO_INSTALL", "COREPACK_",
+    // Locale: without it, tools that print non-ASCII mangle it.
+    "LANG", "LC_",
+    // Proxies: on a corporate network, nothing reaches the internet without them.
+    "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY",
+    "http_proxy", "https_proxy", "no_proxy", "all_proxy",
+];
 
-/// Give a GUI-launched OctoShell the environment the user's terminal has.
+/// Exact names adopted by default, where a prefix would be too broad.
+#[cfg(unix)]
+const ADOPTED_EXACT: &[&str] = &[
+    // git push over SSH needs the agent; without it every push prompts or fails.
+    "SSH_AUTH_SOCK",
+    "EDITOR", "VISUAL", "PAGER",
+];
+
+/// True when the default allowlist covers `key`.
+#[cfg(unix)]
+fn is_adopted_by_default(key: &str) -> bool {
+    ADOPTED_EXACT.contains(&key) || ADOPTED_PREFIXES.iter().any(|p| key.starts_with(p))
+}
+
+/// The login shell's environment, probed at most once per run.
+#[cfg(unix)]
+static LOGIN_ENV: std::sync::OnceLock<Vec<(String, String)>> = std::sync::OnceLock::new();
+
+#[cfg(unix)]
+fn login_env() -> &'static [(String, String)] {
+    LOGIN_ENV.get_or_init(|| login_shell_env().unwrap_or_default())
+}
+
+/// Set `key` from the login shell, but never over a value we already have — a
+/// launcher that set one deliberately must win over the dotfiles.
+#[cfg(unix)]
+fn adopt_one(key: &str, value: &str) {
+    if std::env::var_os(key).is_none() {
+        std::env::set_var(key, value);
+    }
+}
+
+/// Give a GUI-launched OctoShell the parts of the user's terminal environment it
+/// needs to run their tools.
 ///
 /// On macOS an app opened from Finder, the Dock or Spotlight inherits launchd's
 /// environment — PATH is `/usr/bin:/bin:/usr/sbin:/sbin` and nothing else the
 /// user set up in their shell survives. Two things break as a result. Every CLI
 /// OctoShell drives (`claude`, `node`, `gh`, `git` from Homebrew) is "not found"
 /// even though it works fine in Terminal. And anything configured through an
-/// exported variable — an MCP server that reads its token from `env`, an API key
-/// — starts up unconfigured and dies, which reads as "the server is down".
+/// exported variable starts up unconfigured and dies, which reads as "the server
+/// is down" rather than "a variable is missing".
 ///
 /// So, before anything is spawned, ask the user's login shell what it ends up
-/// with and adopt it: PATH as a union (never lose an entry a launcher added),
-/// everything else only where we have no value of our own, so an explicitly-set
-/// variable always beats the dotfiles. Process-scoped variables are skipped
-/// (see [`PROCESS_SCOPED_VARS`]). This is what VS Code and other editors do. A
-/// no-op on Windows and when launched from a terminal that already has one.
+/// with and adopt PATH (as a union, never losing an entry a launcher added) plus
+/// the allowlist above. This is what VS Code and other editors do, minus the
+/// part where they take the secrets too. A no-op on Windows and when launched
+/// from a terminal that already has a real environment.
 pub fn adopt_login_shell_env() {
     #[cfg(unix)]
     {
-        let Some(vars) = login_shell_env() else { return };
-        for (key, value) in &vars {
+        for (key, value) in login_env() {
             if key == "PATH" {
                 adopt_path(value);
-            } else if !PROCESS_SCOPED_VARS.contains(&key.as_str()) && std::env::var_os(key).is_none() {
-                std::env::set_var(key, value);
+            } else if is_adopted_by_default(key) {
+                adopt_one(key, value);
             }
         }
+    }
+}
+
+/// Adopt named variables the user has opted into (Settings → Environment).
+///
+/// Called once the webview has loaded its settings, which is after startup but
+/// long before anything is spawned. Names are matched exactly: a prefix rule
+/// here would quietly re-admit the whole class of secrets the allowlist exists
+/// to keep out. Returns the names that were actually found and set, so the UI
+/// can show which ones the login shell does not define (a typo in a variable
+/// name is otherwise invisible).
+#[tauri::command]
+pub fn adopt_env_vars(names: Vec<String>) -> Vec<String> {
+    #[cfg(unix)]
+    {
+        let mut applied = Vec::new();
+        for name in names {
+            if name.trim().is_empty() || name == "PATH" {
+                continue;
+            }
+            if let Some((k, v)) = login_env().iter().find(|(k, _)| *k == name) {
+                adopt_one(k, v);
+                applied.push(k.clone());
+            }
+        }
+        applied
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = names;
+        Vec::new()
     }
 }
 
@@ -448,7 +529,7 @@ mod tests {
         }
     }
 
-    /// One test for the whole adoption, not three: every case here mutates the
+    /// One test for the whole adoption, not several: every case here mutates the
     /// process environment, and cargo runs tests in the same process on parallel
     /// threads — split up, they would race each other's `set_var`.
     #[cfg(unix)]
@@ -485,11 +566,37 @@ mod tests {
                     }
                     assert!(after.contains(&p), "{} from the login shell was not adopted", p.display());
                 }
-            } else if !PROCESS_SCOPED_VARS.contains(&key.as_str()) && !value.is_empty() {
-                // The whole point of widening the probe past PATH: a token the
-                // user exports in their shell has to reach what we spawn.
-                assert!(std::env::var_os(&key).is_some(), "{key} from the login shell was not adopted");
+            } else if is_adopted_by_default(&key) && !value.is_empty() {
+                assert!(std::env::var_os(&key).is_some(), "allowlisted {key} was not adopted");
             }
         }
+    }
+
+    /// The allowlist has to actually withhold things, or it is decoration. A
+    /// variable the login shell exports but the list does not name must NOT
+    /// arrive in the process just because the shell had it.
+    #[cfg(unix)]
+    #[test]
+    fn the_allowlist_withholds_what_it_does_not_name() {
+        assert!(is_adopted_by_default("HOMEBREW_PREFIX"));
+        assert!(is_adopted_by_default("SSH_AUTH_SOCK"));
+        assert!(is_adopted_by_default("LC_ALL"));
+        // The class this exists for: credentials.
+        assert!(!is_adopted_by_default("SLACK_MCP_XOXC_TOKEN"));
+        assert!(!is_adopted_by_default("ANTHROPIC_API_KEY"));
+        assert!(!is_adopted_by_default("AWS_SECRET_ACCESS_KEY"));
+        assert!(!is_adopted_by_default("GITHUB_TOKEN"));
+    }
+
+    /// Opting a name in is exact, never a prefix: `adopt_env_vars(["FOO"])` must
+    /// not also admit `FOO_TOKEN`.
+    #[cfg(unix)]
+    #[test]
+    fn opting_in_is_by_exact_name() {
+        // PATH is managed as a union and must never be settable this way.
+        assert!(adopt_env_vars(vec!["PATH".into()]).is_empty());
+        // A name the login shell does not define is reported as not applied,
+        // rather than silently succeeding.
+        assert!(adopt_env_vars(vec!["OCTOSHELL_DEFINITELY_NOT_SET_XYZ".into()]).is_empty());
     }
 }
