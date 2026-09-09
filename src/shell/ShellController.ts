@@ -247,6 +247,9 @@ export class ShellController {
   private agentConfigDir: string | null = null;
   /** Per-tool approval mode (Claude only). */
   private agentApproval = false;
+  /** Whether the stored session state has been read back yet. Until it has,
+   *  saving would persist this object's field defaults over it (see `persist`). */
+  private hydrated = false;
   /** Running token total for this session's agent (null = none reported yet). */
   private agentTokens: { input: number; output: number; costUsd: number } | null = null;
   /** Latest context-window occupancy reported by the agent. */
@@ -612,6 +615,15 @@ export class ShellController {
 
   /** Load settled history from SQLite, migrating any old localStorage history. */
   private async hydrateBlocks(): Promise<void> {
+    try {
+      await this.loadBlocks();
+    } finally {
+      // Only now is it safe to write: see `persist`.
+      this.hydrated = true;
+    }
+  }
+
+  private async loadBlocks(): Promise<void> {
     let saved: Block[] | null = null;
     const data = await loadBlocksDb(this.sessionId);
     if (data) {
@@ -653,6 +665,15 @@ export class ShellController {
   }
 
   private persist(): void {
+    // Never write before the stored values have been read back. A save is on a
+    // 400ms debounce and the first shell output can trigger one while `init` is
+    // still awaiting the PTY, i.e. before `hydrate` runs — which wrote this
+    // session's untouched field defaults over its saved prefs. `agentConfigDir`
+    // is the one that hurt: its default is null, null is also the legitimate
+    // value for "Default (home)", so hydrate then read it back as a deliberate
+    // choice and pinned the tab to an account that was never logged in. Every
+    // turn in that tab answered "Not logged in · Please run /login".
+    if (!this.hydrated) return;
     // Blocks → SQLite (async, off the UI thread). Prefs → localStorage.
     void saveBlocksDb(this.sessionId, JSON.stringify(this.settledBlocks()), Date.now());
     saveJSON(KEY.agent(this.sessionId), this.agentSessionId);
