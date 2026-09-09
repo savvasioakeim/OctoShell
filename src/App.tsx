@@ -30,6 +30,7 @@ import {
   listWorktreesScript,
   removeWorktreeScript,
 } from "./platform/shellScripts";
+import { capture, captureOut, type Captured } from "./util/capture";
 
 interface Tab {
   id: string;
@@ -111,7 +112,7 @@ function useGitStats(tabs: Tab[], activeId: string): Map<string, GitStat> {
       which.map(async (t): Promise<[string, GitStat | null]> => {
         if (!t.cwd) return [t.id, null];
         try {
-          const out = await invoke<string>("run_capture", { cwd: t.cwd, command: gitProbeScript() });
+          const out = await captureOut(t.cwd, gitProbeScript());
           return [t.id, parseGitStat(out)];
         } catch {
           return [t.id, null];
@@ -420,6 +421,9 @@ export function App({ initial }: { initial: ShellController }) {
    *  by the sidebar "New worktree" button and the orchestrator's worktree-dispatch
    *  — both go through here so an orchestrator-made worktree is a first-class
    *  session (shows in the bar, gets its own agent), not an invisible on-disk dir. */
+  /** Keep an unexpected blob of shell output readable in an error toast. */
+  const truncateForError = (t: string) => (t.length > 120 ? `${t.slice(0, 119)}…` : t);
+
   const createWorktree = async (srcId: string, branch: string): Promise<Tab | { error: string }> => {
     const src = tabs.find((t) => t.id === srcId);
     if (!src?.cwd) return { error: "not a git project (home is not a repo)" };
@@ -433,15 +437,28 @@ export function App({ initial }: { initial: ShellController }) {
     // worktree + branch, and print its path (or ERR:…). One script round-trip;
     // the script itself lives in shellScripts.ts (PowerShell + sh).
     const script = createWorktreeScript({ dirName, branchName, baseBranch });
-    let out = "";
+    let res: Captured;
     try {
-      out = (await invoke<string>("run_capture", { cwd: src.cwd, command: script })).trim();
+      res = await capture(src.cwd, script);
     } catch (e) {
-      out = "ERR:" + e;
+      return { error: String(e) };
     }
-    const last = out.split(/\r?\n/).pop()?.trim() ?? "";
+    const last = res.stdout.trim().split(/\r?\n/).pop()?.trim() ?? "";
     if (!last || last.startsWith("ERR:")) {
-      return { error: last.replace(/^ERR:/, "") || "unknown" };
+      // stderr is the only place a shell-level failure (a permission error, a
+      // missing git) leaves a reason, so it is what the user gets to see.
+      const why = last.replace(/^ERR:/, "").trim() || res.stderr.trim().split(/\r?\n/).pop()?.trim();
+      return { error: why || "unknown" };
+    }
+    // The script's contract is "print the path". Trust nothing until the path is
+    // one: a non-directory here becomes a tab whose every command dies with an
+    // error naming the wrong culprit (see `Captured` in pty.rs).
+    if (!(await invoke<boolean>("dir_exists", { path: last }))) {
+      return {
+        error: `git printed something that is not a directory: ${truncateForError(last)}${
+          res.stderr.trim() ? ` (stderr: ${truncateForError(res.stderr.trim())})` : ""
+        }`,
+      };
     }
     const wtPath = last;
     const repoRoot = wtPath.split("/.octoshell/")[0];
@@ -452,7 +469,7 @@ export function App({ initial }: { initial: ShellController }) {
     // the Settings → Workspace "auto-copy .env*" toggle.
     if (settingsStore.getSnapshot().workspace.copyEnv) {
       try {
-        await invoke<string>("run_capture", { cwd: repoRoot, command: copyEnvFilesScript(wtPath) });
+        await capture(repoRoot, copyEnvFilesScript(wtPath));
       } catch {
         /* missing .env / copy failure is non-fatal */
       }
@@ -467,7 +484,7 @@ export function App({ initial }: { initial: ShellController }) {
     // install guard (service.rs) covers it. Gated by Settings → Workspace.
     if (settingsStore.getSnapshot().workspace.copyDeps) {
       try {
-        await invoke<string>("run_capture", { cwd: repoRoot, command: copyDependencyDirsScript(wtPath) });
+        await capture(repoRoot, copyDependencyDirsScript(wtPath));
       } catch {
         /* missing deps / copy failure is non-fatal — the install guard covers it */
       }
@@ -520,7 +537,7 @@ export function App({ initial }: { initial: ShellController }) {
       for (const root of roots) {
         let out = "";
         try {
-          out = await invoke<string>("run_capture", { cwd: root.cwd, command: listWorktreesScript() });
+          out = await captureOut(root.cwd, listWorktreesScript());
         } catch {
           continue; // not a repo (or git unavailable) — nothing to surface
         }
@@ -591,7 +608,7 @@ export function App({ initial }: { initial: ShellController }) {
     // Isolated worktree → remove it from git AND sweep the folder (best-effort,
     // off the UI thread) — see removeWorktreeScript for why both.
     if (tab?.worktree) {
-      invoke("run_capture", { cwd: tab.worktree.repoRoot, command: removeWorktreeScript(tab.cwd) }).catch(() => {});
+      capture(tab.worktree.repoRoot, removeWorktreeScript(tab.cwd)).catch(() => {});
     }
     setTabs((prev) => {
       if (prev.length <= 1) return prev;
@@ -647,7 +664,7 @@ export function App({ initial }: { initial: ShellController }) {
       for (const [root, group] of byRepo) {
         let out = "";
         try {
-          out = await invoke<string>("run_capture", { cwd: root, command: pollCommand() });
+          out = await captureOut(root, pollCommand());
         } catch {
           continue; // gh missing / not authed / no remote — skip silently
         }
@@ -716,7 +733,7 @@ export function App({ initial }: { initial: ShellController }) {
             setActiveId(tab.id);
           }}
           onRemoveWorktree={(w) => {
-            void invoke("run_capture", { cwd: w.repoRoot, command: removeWorktreeScript(w.path) }).catch(() => {});
+            void capture(w.repoRoot, removeWorktreeScript(w.path)).catch(() => {});
             setUnopened((u) => ({
               ...u,
               [w.parentId]: (u[w.parentId] ?? []).filter((x) => x.path !== w.path),

@@ -612,6 +612,35 @@ pub fn close_tab(manager: State<'_, PtyManager>, id: String) -> Result<(), Strin
     manager.close(&id)
 }
 
+/// What a one-shot script produced. The two streams stay APART.
+///
+/// They used to be concatenated, stderr after stdout, and every caller that
+/// reads "the last line" as its answer silently inherited whatever a tool wrote
+/// to stderr last. That is not hypothetical: a macOS permission error from the
+/// shell itself (`getcwd: cannot access parent directories`) became the last
+/// line of `git worktree add`'s output, was accepted as the new worktree's path,
+/// and every process later spawned there failed with a "CLI not found" error
+/// that had nothing to do with the CLI. A warning must never be able to
+/// impersonate a result.
+#[derive(serde::Serialize)]
+pub struct Captured {
+    pub stdout: String,
+    pub stderr: String,
+    /// The child's exit status, or None if it was killed by a signal.
+    pub code: Option<i32>,
+}
+
+/// True when `path` names a directory that exists and can be read.
+///
+/// Used to check a path a SCRIPT produced before anything is built on it. A
+/// shell can hand back a warning where a path was expected, and a string that
+/// isn't a directory becomes an unusable working directory whose failure
+/// surfaces far away from the cause.
+#[tauri::command]
+pub fn dir_exists(path: String) -> bool {
+    !path.is_empty() && std::path::Path::new(&path).is_dir()
+}
+
 /// One-shot captured subprocess (e.g. `git status`) for macros — not a PTY.
 /// The script runs through the platform's script shell (PowerShell on Windows,
 /// `sh` elsewhere); the frontend writes each script for both.
@@ -621,7 +650,7 @@ pub fn close_tab(manager: State<'_, PtyManager>, id: String) -> Result<(), Strin
 /// remove` blocking on a locked file) would freeze the whole app. Off-loading to
 /// a blocking worker keeps the UI responsive no matter how long the child takes.
 #[tauri::command]
-pub async fn run_capture(cwd: String, command: String) -> Result<String, String> {
+pub async fn run_capture(cwd: String, command: String) -> Result<Captured, String> {
     tokio::task::spawn_blocking(move || {
         let mut cmd = platform::script_command(&command);
         if !cwd.is_empty() {
@@ -630,11 +659,11 @@ pub async fn run_capture(cwd: String, command: String) -> Result<String, String>
         platform::hide_console(&mut cmd);
 
         let out = cmd.output().map_err(|e| e.to_string())?;
-        let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
-        if !out.stderr.is_empty() {
-            s.push_str(&String::from_utf8_lossy(&out.stderr));
-        }
-        Ok(s)
+        Ok(Captured {
+            stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+            code: out.status.code(),
+        })
     })
     .await
     .map_err(|e| e.to_string())?

@@ -615,7 +615,7 @@ fn chat_via_cli(
     platform::background(&mut cmd);
 
     let mut child = cmd.spawn().map_err(|e| {
-        format!("could not launch the `{provider}` CLI (is it installed and on PATH?): {e}")
+        crate::platform::spawn_error(&provider, None, &e)
     })?;
     // Tie the assistant CLI to OctoShell's lifetime so it can't be orphaned.
     crate::jobctl::add(child.id());

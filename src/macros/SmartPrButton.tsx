@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import type { ShellController } from "../shell/ShellController";
 import { KEY, loadJSON, saveJSON } from "../util/persist";
 import {
@@ -9,6 +8,7 @@ import {
   prViewJsonScript,
   pushBranchScript,
 } from "../platform/shellScripts";
+import { captureOut } from "../util/capture";
 
 /**
  * One stateful button that walks a branch through its PR lifecycle:
@@ -38,7 +38,7 @@ interface GhPr {
 }
 
 async function cap(cwd: string, command: string): Promise<string> {
-  return (await invoke<string>("run_capture", { cwd, command })).trim();
+  return await captureOut(cwd, command);
 }
 
 async function queryPr(cwd: string): Promise<GhPr | null> {

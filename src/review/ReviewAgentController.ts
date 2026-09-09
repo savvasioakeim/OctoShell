@@ -22,6 +22,7 @@ import {
 import { settingsStore } from "../settings/settingsStore";
 import { reviewOverviewScript } from "../platform/shellScripts";
 import type { Block } from "../shell/ShellController";
+import { captureOut } from "../util/capture";
 
 /** A tiny pointer to where the change lives — just the branch and the latest
  *  commit (hash + subject). NOT a diff: the review agent runs git itself, so
@@ -29,7 +30,7 @@ import type { Block } from "../shell/ShellController";
  *  `run_capture` — no backend change. Best-effort: "" on failure. */
 export async function fetchReviewOverview(cwd: string): Promise<string> {
   try {
-    return (await invoke<string>("run_capture", { cwd, command: reviewOverviewScript() })).trim();
+    return await captureOut(cwd, reviewOverviewScript());
   } catch {
     return "";
   }

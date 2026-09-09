@@ -194,6 +194,7 @@ pub fn run() {
             pty::close_tab,
             pty::kill_foreground,
             pty::run_capture,
+            pty::dir_exists,
             pty::shell_complete,
             pty::open_editor,
             pty::open_in_file_manager,

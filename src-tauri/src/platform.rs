@@ -349,6 +349,37 @@ fn run_with_timeout(mut cmd: Command, timeout: std::time::Duration) -> Option<St
     reader.join().ok()
 }
 
+/// Explain why spawning `program` failed, naming the RIGHT culprit.
+///
+/// `std::process::Command::spawn` reports a missing program and an unusable
+/// working directory with the same `NotFound`, so "could not launch the CLI (is
+/// it installed and on PATH?)" was printed for both. It sent at least one person
+/// hunting a PATH problem that did not exist while the real cause was a working
+/// directory that was never created. Check the directory first: it is the claim
+/// we can actually test.
+pub fn spawn_error(program: &str, cwd: Option<&str>, e: &std::io::Error) -> String {
+    if let Some(dir) = cwd.filter(|d| !d.is_empty()) {
+        let path = std::path::Path::new(dir);
+        if !path.exists() {
+            return format!("working directory does not exist: {dir}");
+        }
+        if !path.is_dir() {
+            return format!("working directory is not a directory: {dir}");
+        }
+        if std::fs::read_dir(path).is_err() {
+            return format!(
+                "working directory cannot be read: {dir} \
+                 (on macOS this is usually the app missing permission for that folder \
+                 — System Settings → Privacy & Security → Files and Folders)"
+            );
+        }
+    }
+    if e.kind() == std::io::ErrorKind::NotFound {
+        return format!("could not launch `{program}` — is it installed and on PATH? ({e})");
+    }
+    format!("could not launch `{program}`: {e}")
+}
+
 // ───────────────────────────── script shell ─────────────────────────────
 
 /// The shell one-shot scripts run through (`run_capture`): PowerShell on

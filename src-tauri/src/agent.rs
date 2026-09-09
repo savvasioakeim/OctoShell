@@ -197,7 +197,7 @@ impl AgentManager {
         platform::background(&mut cmd);
 
         let mut child = cmd.spawn().map_err(|e| {
-            format!("could not launch the `{provider}` agent CLI (installed & on PATH?): {e}")
+            platform::spawn_error(if provider == "gemini" { "gemini" } else { CLAUDE_BIN }, Some(&cwd), &e)
         })?;
         // Tie the agent (and its MCP sidecar / sub-processes, which inherit job
         // membership) to OctoShell's lifetime so it can't outlive a crash.
