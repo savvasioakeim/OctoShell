@@ -146,6 +146,14 @@ export interface SettingsState {
    *  config). Empty = planner-only (no MCP loaded). Ticked per server in Settings
    *  → MCP access; only their tools are pre-approved, never file/Bash tools. */
   orchestratorMcp: string[];
+  /** Skill names the user has switched OFF for agents. Sent as `skillOverrides`
+   *  in the CLI's `--settings`, which stops a skill being offered to the model
+   *  without uninstalling it. Empty = every installed skill is available. */
+  skillsOff: string[];
+  /** Look for a new release on launch and once a day. The prompt's "Don't ask
+   *  again" turns this off; Settings is where it comes back, along with a manual
+   *  check — so declining once is never a one-way door. */
+  autoUpdateCheck: boolean;
   /** Give the orchestrator READ-ONLY inspection tools (Read/Grep/Glob + a git/gh/ls
    *  read-only Bash allowlist) so it can verify state instead of guessing. Never
    *  Edit/Write or unrestricted Bash — code is written only by dispatched agents. */
@@ -230,6 +238,8 @@ class SettingsStore {
       reviewAgent: { ...DEFAULT_REVIEW_AGENT, ...loadJSON<Partial<ReviewAgentSettings>>(KEY.reviewAgent, {}) },
       ollama: { ...DEFAULT_OLLAMA, ...loadJSON<Partial<OllamaSettings>>(KEY.ollamaSettings, {}) },
       orchestratorMcp: loadJSON<string[]>(KEY.orchestratorMcp, []),
+      skillsOff: loadJSON<string[]>(KEY.skillsOff, []),
+      autoUpdateCheck: loadJSON<boolean>(KEY.autoUpdateCheck, true),
       orchestratorReadonly: loadJSON<boolean>(KEY.orchestratorReadonly, true),
       memory: { ...DEFAULT_MEMORY, ...loadJSON<Partial<MemorySettings>>(KEY.memorySettings, {}) },
       mobile: { ...DEFAULT_MOBILE, ...loadJSON<Partial<MobileSettings>>(KEY.mobileSettings, {}) },
@@ -265,6 +275,8 @@ class SettingsStore {
     saveJSON(KEY.reviewAgent, next.reviewAgent);
     saveJSON(KEY.ollamaSettings, next.ollama);
     saveJSON(KEY.orchestratorMcp, next.orchestratorMcp);
+    saveJSON(KEY.skillsOff, next.skillsOff);
+    saveJSON(KEY.autoUpdateCheck, next.autoUpdateCheck);
     saveJSON(KEY.orchestratorReadonly, next.orchestratorReadonly);
     saveJSON(KEY.memorySettings, next.memory);
     saveJSON(KEY.mobileSettings, next.mobile);
@@ -336,6 +348,19 @@ class SettingsStore {
     if (allowed) set.add(name);
     else set.delete(name);
     this.commit({ ...this.state, orchestratorMcp: [...set] });
+  }
+
+  /** Turn one skill on or off for agents. Off is what we store, so a skill
+   *  installed later is available by default rather than silently missing. */
+  setSkillEnabled(name: string, enabled: boolean): void {
+    const set = new Set(this.state.skillsOff);
+    if (enabled) set.delete(name);
+    else set.add(name);
+    this.commit({ ...this.state, skillsOff: [...set] });
+  }
+
+  setAutoUpdateCheck(on: boolean): void {
+    this.commit({ ...this.state, autoUpdateCheck: on });
   }
 
   /** Resolve a profile id to its config dir (null = home default). */

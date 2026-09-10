@@ -14,6 +14,7 @@ import { ProjectSidebar } from "./projects/ProjectSidebar";
 import { Titlebar } from "./chrome/Titlebar";
 import { serviceStore } from "./services/serviceStore";
 import { SettingsPage } from "./settings/SettingsPage";
+import { UpdatePrompt } from "./updates/UpdatePrompt";
 import { StrategyPanel } from "./strategy/StrategyPanel";
 import { startMobileBridge } from "./mobile/mobileBridge";
 import { modStore } from "./mods/modStore";
@@ -862,6 +863,7 @@ export function App({ initial }: { initial: ShellController }) {
             />
           </div>
         )}
+        <UpdatePrompt />
       </div>
     </div>
   );
