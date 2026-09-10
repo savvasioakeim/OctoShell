@@ -9,6 +9,8 @@
     "core:default",
     "dialog:default",
     "notification:default",
+    "updater:default",
+    "process:allow-restart",
     "sql:default",
     "sql:allow-execute",
     "sql:allow-select",

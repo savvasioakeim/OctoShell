@@ -33,6 +33,12 @@ jobs:
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Signs the installer and emits latest.json, which the in-app updater
+          # reads. Without these secrets the build still succeeds -- it just
+          # ships nothing the updater will accept, which is the intended
+          # failure mode: no signature, no automatic install.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "OctoShell ${{ github.ref_name }}"

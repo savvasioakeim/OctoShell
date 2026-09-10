@@ -127,7 +127,7 @@ fn claude_config_path(config_dir: Option<&str>) -> Option<std::path::PathBuf> {
 
 /// The user's home directory, without pulling in the `dirs` crate: `USERPROFILE`
 /// on Windows, `HOME` elsewhere.
-fn home_dir() -> Option<std::path::PathBuf> {
+pub fn home_dir() -> Option<std::path::PathBuf> {
     #[cfg(windows)]
     let var = "USERPROFILE";
     #[cfg(not(windows))]

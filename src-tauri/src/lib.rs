@@ -12,6 +12,8 @@ mod ollama;
 mod push;
 mod pty;
 mod service;
+mod skills;
+mod sysstats;
 mod timezone;
 mod tunnel;
 
@@ -128,6 +130,8 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .plugin(
             tauri_plugin_sql::Builder::default()
                 .add_migrations("sqlite:octoshell.db", db_migrations())
@@ -186,6 +190,8 @@ pub fn run() {
             ai::ai_chat,
             ai::ai_cancel,
             ai::list_mcp_servers,
+            skills::list_skills,
+            sysstats::system_stats,
             agent::agent_send,
             agent::agent_cancel,
             approval::approval_respond,
