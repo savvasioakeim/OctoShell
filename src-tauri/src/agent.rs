@@ -66,6 +66,7 @@ impl AgentManager {
         approval_token: String,
         config_dir: Option<String>,
         effort: Option<String>,
+        skills_off: Vec<String>,
     ) -> Result<(), String> {
         // One active turn per session: replace any in-flight run.
         if let Some(mut old) = self.runs.lock().unwrap().remove(&id) {
@@ -130,6 +131,19 @@ impl AgentManager {
             };
             // Approval mode: route sensitive tools to our permission MCP sidecar
             // (which asks the user). Otherwise run fully autonomously.
+            // `--settings` carries two unrelated things, so it is assembled once:
+            // the approval allow-list, and the skills the user switched off in
+            // Settings (`skillOverrides` is a per-skill listing override, so "off"
+            // keeps the skill installed but stops it being offered to the model).
+            let mut settings = serde_json::Map::new();
+            if !skills_off.is_empty() {
+                settings.insert(
+                    "skillOverrides".into(),
+                    serde_json::Value::Object(
+                        skills_off.iter().map(|n| (n.clone(), serde_json::json!("off"))).collect(),
+                    ),
+                );
+            }
             if approval && approval_script.is_some() {
                 let script = approval_script.unwrap();
                 servers.insert(
@@ -143,14 +157,22 @@ impl AgentManager {
                 args.extend([
                     "--permission-mode".into(), "default".into(),
                     "--permission-prompt-tool".into(), "mcp__octo__approve".into(),
-                    "--settings".into(), crate::approval::ASK_TOOLS.into(),
                 ]);
+                if let Ok(serde_json::Value::Object(ask)) =
+                    serde_json::from_str::<serde_json::Value>(crate::approval::ASK_TOOLS)
+                {
+                    settings.extend(ask);
+                }
             } else {
                 args.push("--dangerously-skip-permissions".into());
             }
             if !servers.is_empty() {
                 args.push("--mcp-config".into());
                 args.push(serde_json::json!({ "mcpServers": servers }).to_string());
+            }
+            if !settings.is_empty() {
+                args.push("--settings".into());
+                args.push(serde_json::Value::Object(settings).to_string());
             }
             if let Some(r) = &resume { args.push("--resume".into()); args.push(r.clone()); }
             if let Some(m) = &model { args.push("--model".into()); args.push(m.clone()); }
@@ -311,11 +333,12 @@ pub fn agent_send(
     approval: Option<bool>,
     config_dir: Option<String>,
     effort: Option<String>,
+    skills_off: Option<Vec<String>>,
 ) -> Result<(), String> {
     manager.send(
         app, id, prompt, cwd, resume, model, provider,
         approval.unwrap_or(false), bridge.port(), bridge.script_path(), bridge.token(), config_dir,
-        effort,
+        effort, skills_off.unwrap_or_default(),
     )
 }
 

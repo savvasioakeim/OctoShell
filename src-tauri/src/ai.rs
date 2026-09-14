@@ -132,7 +132,7 @@ fn claude_config_path(config_dir: Option<&str>) -> Option<std::path::PathBuf> {
     }
 }
 
-fn home_dir() -> Option<std::path::PathBuf> {
+pub fn home_dir() -> Option<std::path::PathBuf> {
     platform::home_dir()
 }
 

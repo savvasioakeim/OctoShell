@@ -26,12 +26,14 @@ import { vacuumDb, type VacuumResult } from "../util/db";
 import { memoryStore, useMemoryStats } from "../memory/memoryStore";
 import { projectConfigStore, useProjectScripts } from "../projects/projectConfig";
 import { effectiveShell, isWindows, platform } from "../platform/platform";
+import { updateStore, useUpdate } from "../updates/updateStore";
 
-type TabId = "ai" | "local" | "roles" | "projects" | "workspace" | "appearance" | "system";
+type TabId = "ai" | "local" | "roles" | "skills" | "projects" | "workspace" | "appearance" | "system";
 const TABS: { id: TabId; label: string }[] = [
   { id: "ai", label: "Profiles & AI" },
   { id: "local", label: "Local LLM" },
   { id: "roles", label: "Strategy Roles" },
+  { id: "skills", label: "Agent Skills" },
   { id: "projects", label: "Project Scripts" },
   { id: "workspace", label: "Workspace & Git" },
   { id: "appearance", label: "Appearance" },
@@ -116,6 +118,7 @@ export function SettingsPage({
             {tab === "ai" && <AiTab projects={projects} />}
             {tab === "local" && <LocalLlmTab />}
             {tab === "roles" && <StrategyRolesTab />}
+            {tab === "skills" && <SkillsTab projects={projects} />}
             {tab === "projects" && <ProjectScriptsTab projects={projects} focusCwd={focusProjectCwd} />}
             {tab === "workspace" && <WorkspaceTab />}
             {tab === "appearance" && <AppearanceTab />}
@@ -1261,6 +1264,59 @@ function EnvVarsSection() {
   );
 }
 
+/**
+ * Updates: the switch the prompt's "Don't ask again" flips, and a way to look
+ * right now. Both live here so declining the prompt is never a decision you
+ * cannot walk back — which is the only thing that makes "don't ask again" a
+ * reasonable thing to offer at all.
+ */
+function UpdatesSection() {
+  const { autoUpdateCheck } = useSettings();
+  const u = useUpdate();
+  const checking = u.phase === "checking";
+
+  return (
+    <Section
+      title="Updates"
+      desc="OctoShell checks GitHub for a new release and offers to install it. Downloads are verified against a signing key built into the app, and your projects, history and settings live outside the install folder — an update never touches them."
+    >
+      <label className="flex cursor-pointer items-center gap-2 text-sm">
+        <input
+          type="checkbox"
+          checked={autoUpdateCheck}
+          onChange={(e) => settingsStore.setAutoUpdateCheck(e.target.checked)}
+          className="accent-accent"
+        />
+        Check for updates on launch and once a day
+      </label>
+
+      <div className="mt-3 flex items-center gap-2">
+        <button
+          onClick={() => void updateStore.check(true)}
+          disabled={checking}
+          className="rounded border border-edge px-2 py-1 text-xs hover:border-accent disabled:opacity-50"
+        >
+          {checking ? "Checking…" : "Check now"}
+        </button>
+        <span className="text-xs text-muted">
+          {u.current && `Version ${u.current}`}
+          {u.phase === "none" && " — up to date"}
+          {u.phase === "available" && ` — ${u.version} is available`}
+        </span>
+      </div>
+
+      {u.phase === "error" && u.error && (
+        <p className="mt-2 text-xs text-red-300">Couldn't check: {u.error}</p>
+      )}
+      {u.lastCheck > 0 && (
+        <p className="mt-2 text-[11px] text-muted/80">
+          Last checked {new Date(u.lastCheck).toLocaleString()}.
+        </p>
+      )}
+    </Section>
+  );
+}
+
 function SystemTab({ onSandboxLogin, onShowOnboarding }: { onSandboxLogin: () => void; onShowOnboarding: () => void }) {
   const { system } = useSettings();
   const [busy, setBusy] = useState(false);
@@ -1280,6 +1336,7 @@ function SystemTab({ onSandboxLogin, onShowOnboarding }: { onSandboxLogin: () =>
 
   return (
     <>
+      <UpdatesSection />
       <EnvVarsSection />
 
       <Section title="Scrollback buffer" desc="How many lines of terminal output each terminal keeps in memory (bigger = more history, a bit more RAM). Applies to new terminals.">
@@ -1370,6 +1427,118 @@ function SystemTab({ onSandboxLogin, onShowOnboarding }: { onSandboxLogin: () =>
 // ---------------------------------------------------------------------------
 // Tab — Project Scripts (per-project dev/test command overrides)
 // ---------------------------------------------------------------------------
+/** One skill on disk, as `list_skills` reports it. */
+interface SkillInfo {
+  name: string;
+  description: string;
+  /** "project" | "personal" | "plugin" */
+  source: string;
+  path: string;
+}
+
+const SOURCE_LABEL: Record<string, string> = {
+  project: "project",
+  personal: "personal",
+  plugin: "plugin",
+};
+
+/**
+ * What skills an agent can actually reach, and which of them you have switched
+ * off — the same shape as the MCP checklist, for the same reason: the useful
+ * answer to "why can't it see my skill?" is a list with its source next to it.
+ *
+ * The catch this page exists to expose is that project skills are read from the
+ * agent's WORKING directory. A dispatched agent works in a worktree, so a skill
+ * that is untracked in the main checkout is not there — which is why the project
+ * picker lists worktrees separately rather than collapsing them into their repo.
+ */
+function SkillsTab({ projects }: { projects: SettingsProject[] }) {
+  const { profiles, agent, skillsOff } = useSettings();
+  const configDir = profiles.find((p) => p.id === agent.profileId)?.configDir ?? null;
+  const [cwd, setCwd] = useState<string>(projects[0]?.cwd ?? "");
+  const [skills, setSkills] = useState<SkillInfo[] | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    setSkills(null);
+    setErr(null);
+    invoke<SkillInfo[]>("list_skills", { configDir, cwd: cwd || null })
+      .then((s) => live && setSkills(s))
+      .catch((e) => live && setErr(String(e)));
+    return () => {
+      live = false;
+    };
+  }, [configDir, cwd]);
+
+  return (
+    <div className="space-y-4">
+      <Section
+        title="Agent Skills"
+        desc="Every skill the agent can load, and where it comes from. Unticking one sends skillOverrides: off to the CLI — the skill stays installed, it just stops being offered to the model. Skills bundled inside the Claude binary are always available and are not listed here."
+      >
+        <div className="mb-3 space-y-1">
+          <label className="text-xs text-muted">Project (supplies the .claude/skills read from its working directory)</label>
+          <select
+            value={cwd}
+            onChange={(e) => setCwd(e.target.value)}
+            className="w-full rounded border border-edge bg-well px-2 py-1.5 text-sm"
+          >
+            <option value="">— none (personal and plugin skills only) —</option>
+            {projects.map((p) => (
+              <option key={p.id} value={p.cwd}>
+                {p.parentId ? `${p.name} (worktree)` : p.name} — {p.cwd}
+              </option>
+            ))}
+          </select>
+          <p className="text-[11px] text-muted/80">
+            Reading personal and plugin skills from {configDir ? configDir : "~/.claude"}.
+          </p>
+        </div>
+
+        {err && <p className="text-xs text-red-300">Couldn't read skills: {err}</p>}
+        {!err && skills === null && <p className="text-xs text-muted">Looking for skills…</p>}
+        {!err && skills?.length === 0 && (
+          <p className="text-xs text-muted">
+            No skills on disk for this combination. A skill is a folder with a SKILL.md in it, under
+            .claude/skills in the project, {configDir ? configDir : "~/.claude"}/skills, or an installed plugin.
+          </p>
+        )}
+        {skills && skills.length > 0 && (
+          <div className="space-y-1">
+            {skills.map((s) => {
+              const enabled = !skillsOff.includes(s.name);
+              return (
+                <label
+                  key={`${s.source}:${s.path}`}
+                  title={s.path}
+                  className="flex cursor-pointer items-start gap-2 rounded border border-edge px-2 py-1.5 text-sm hover:border-accent"
+                >
+                  <input
+                    type="checkbox"
+                    checked={enabled}
+                    onChange={(e) => settingsStore.setSkillEnabled(s.name, e.target.checked)}
+                    className="mt-0.5 accent-accent"
+                  />
+                  <span className="min-w-0 flex-1">
+                    <span className={`font-medium ${enabled ? "" : "text-muted line-through"}`}>{s.name}</span>
+                    {s.description && (
+                      <span className="mt-0.5 block truncate text-xs text-muted">{s.description}</span>
+                    )}
+                  </span>
+                  <span className="mt-0.5 shrink-0 rounded bg-well px-1.5 py-0.5 text-[10px] uppercase text-muted">
+                    {SOURCE_LABEL[s.source] ?? s.source}
+                  </span>
+                </label>
+              );
+            })}
+          </div>
+        )}
+      </Section>
+    </div>
+  );
+}
+
 function ProjectScriptsTab({ projects, focusCwd }: { projects: SettingsProject[]; focusCwd?: string }) {
   // De-dupe by cwd (a repo + its worktrees can share a path root); keep first seen.
   const seen = new Set<string>();

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { AiClient, type ChatMessage } from "./AiClient";
 import type { Block, CommandBlock, ShellController, ShellSnapshot } from "../shell/ShellController";
 import { KEY, loadJSON, saveJSON } from "../util/persist";
@@ -286,6 +287,10 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
   // Height of the Agents status panel — drag the divider below it to resize, so a
   // long agent list and the chat can share the column however the user wants.
   const [agentsPanelH, setAgentsPanelH] = useState<number>(() => loadJSON(KEY.agentsPanelH, 180));
+  // The agents pane doubles as a machine monitor: same box, two views. Agents
+  // are heavy neighbours, and the question "why is everything crawling?" is
+  // answered a few pixels from the list of what is running.
+  const [pane, setPane] = useState<"agents" | "system">("agents");
   // Status filter for the Agents panel ("all" = no filter).
   const [agentFilter, setAgentFilter] = useState<AgentStatus | "all">("all");
   useEffect(() => { saveJSON(KEY.agentsPanelH, agentsPanelH); }, [agentsPanelH]);
@@ -1646,7 +1651,19 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
               </button>
             );
           })}
+          <button
+            onClick={() => setPane((p) => (p === "agents" ? "system" : "agents"))}
+            title={pane === "agents" ? "Show this machine's CPU, memory and disk" : "Back to the agent list"}
+            className={`ml-auto flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors ${
+              pane === "system" ? "bg-edge text-gray-100" : "text-muted hover:bg-edge/50"
+            }`}
+          >
+            {pane === "agents" ? "⌗ System" : "☰ Agents"}
+          </button>
         </div>
+        {pane === "system" ? (
+          <SystemPane height={agentsPanelH} />
+        ) : (
         <div className="space-y-0.5 overflow-y-auto pr-0.5" style={{ height: agentsPanelH }}>
           {visibleAgents.length === 0 && (
             <div className="px-1.5 py-2 text-[11px] text-muted">No agents here.</div>
@@ -1688,6 +1705,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
             );
           })}
         </div>
+        )}
         {/* Drag to resize the agents panel vs. the chat below it. */}
         <div
           onMouseDown={(e) => {
@@ -1866,6 +1884,141 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
 
 /** A collapsed breadcrumb for an internal live-watch continuation — one muted
  *  line, click to reveal the full prompt (debugging only). */
+/** One sample of the machine's vitals, from the `system_stats` command. */
+interface SystemStats {
+  cpu: number;
+  memUsed: number;
+  memTotal: number;
+  swapUsed: number;
+  swapTotal: number;
+  diskUsed: number;
+  diskTotal: number;
+  load1: number;
+  uptimeSecs: number;
+  cores: number;
+}
+
+/** Bytes as the largest unit that still reads as a small number. */
+function fmtBytes(n: number): string {
+  const GB = 1024 ** 3;
+  if (n >= GB) return `${(n / GB).toFixed(n >= 10 * GB ? 0 : 1)}G`;
+  return `${Math.round(n / 1024 ** 2)}M`;
+}
+
+function fmtUptime(secs: number): string {
+  const d = Math.floor(secs / 86400);
+  const h = Math.floor((secs % 86400) / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  return d > 0 ? `${d}d ${h}h` : h > 0 ? `${h}h ${m}m` : `${m}m`;
+}
+
+/** Green below the first threshold, amber below the second, red above it. */
+function pressure(pct: number, warn: number, bad: number): string {
+  return pct >= bad ? "#f87171" : pct >= warn ? "#fbbf24" : "#4ade80";
+}
+
+/** One labelled bar: the number that matters, drawn as well as written. */
+function Meter({ label, pct, detail, warn = 75, bad = 90 }: {
+  label: string;
+  pct: number;
+  detail: string;
+  warn?: number;
+  bad?: number;
+}) {
+  const color = pressure(pct, warn, bad);
+  return (
+    <div className="px-1.5 py-1">
+      <div className="flex items-baseline gap-2 text-[11px]">
+        <span className="w-10 shrink-0 text-muted">{label}</span>
+        <span className="font-medium tabular-nums" style={{ color }}>
+          {Math.round(pct)}%
+        </span>
+        <span className="ml-auto truncate text-[10px] text-muted/80">{detail}</span>
+      </div>
+      <div className="mt-1 h-1 overflow-hidden rounded-full bg-edge">
+        <div
+          className="h-full rounded-full transition-[width] duration-500"
+          style={{ width: `${Math.min(100, Math.max(0, pct))}%`, background: color }}
+        />
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The machine, in the same box as the agents that are loading it.
+ *
+ * Polls only while it is the visible pane and the window has focus — this sits
+ * next to a list of agents that are already competing for the CPU, so a monitor
+ * that keeps sampling behind a game would be part of the problem it reports.
+ */
+function SystemPane({ height }: { height: number }) {
+  const [s, setS] = useState<SystemStats | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    const tick = () => {
+      if (!document.hasFocus()) return;
+      invoke<SystemStats>("system_stats")
+        .then((v) => live && (setS(v), setErr(null)))
+        .catch((e) => live && setErr(String(e)));
+    };
+    tick();
+    const id = setInterval(tick, 2000);
+    return () => {
+      live = false;
+      clearInterval(id);
+    };
+  }, []);
+
+  const pct = (used: number, total: number) => (total > 0 ? (used / total) * 100 : 0);
+
+  return (
+    <div className="overflow-y-auto pr-0.5" style={{ height }}>
+      {err && <div className="px-1.5 py-2 text-[11px] text-red-300">Couldn't read system stats: {err}</div>}
+      {!err && !s && <div className="px-1.5 py-2 text-[11px] text-muted">Sampling…</div>}
+      {s && (
+        <>
+          <Meter
+            label="CPU"
+            pct={s.cpu}
+            detail={s.cores > 0 ? `${s.cores} cores` : ""}
+          />
+          <Meter
+            label="RAM"
+            pct={pct(s.memUsed, s.memTotal)}
+            detail={`${fmtBytes(s.memUsed)} / ${fmtBytes(s.memTotal)}`}
+          />
+          {s.swapTotal > 0 && (
+            // Swap is the one that actually predicts a stalled machine, so it
+            // turns amber far earlier than memory does.
+            <Meter
+              label="Swap"
+              pct={pct(s.swapUsed, s.swapTotal)}
+              detail={`${fmtBytes(s.swapUsed)} / ${fmtBytes(s.swapTotal)}`}
+              warn={25}
+              bad={60}
+            />
+          )}
+          <Meter
+            label="Disk"
+            pct={pct(s.diskUsed, s.diskTotal)}
+            detail={`${fmtBytes(s.diskTotal - s.diskUsed)} free`}
+            warn={85}
+            bad={95}
+          />
+          <div className="flex items-center gap-3 px-1.5 pt-1.5 text-[10px] text-muted">
+            <span>up {fmtUptime(s.uptimeSecs)}</span>
+            {/* Windows has no load average; a permanent 0 would only mislead. */}
+            {s.load1 > 0 && <span>load {s.load1.toFixed(2)}</span>}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 function WatchTick({ content }: { content: string }) {
   const [open, setOpen] = useState(false);
   return (

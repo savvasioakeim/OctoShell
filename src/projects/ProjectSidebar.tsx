@@ -253,6 +253,7 @@ export function ProjectSidebar(props: Props) {
   const activeAnchorId = activeTab && isChild(activeTab) ? activeTab.parentId! : activeId;
   const activeGroupId = assign[activeAnchorId] || null;
   const endDrag = () => { setDragId(null); setOver(null); setDragGroup(null); setOverGroup(null); };
+  const ctxId = ctx?.kind === "project" ? ctx.id : undefined;
   const openCtx = (e: React.MouseEvent, kind: Ctx["kind"], id?: string) => {
     e.preventDefault();
     e.stopPropagation();
@@ -297,7 +298,11 @@ export function ProjectSidebar(props: Props) {
         style={style}
         className={`group cursor-pointer rounded py-1 pr-2 transition-colors ${
           dragId === t.id ? "opacity-50" : ""
-        } ${active ? "bg-accent/25 text-gray-100" : "text-muted hover:bg-edge/60"}`}
+        } ${active ? "bg-accent/25 text-gray-100" : "text-muted hover:bg-edge/60"} ${
+          // The open context menu says which row it belongs to -- otherwise, with
+          // the menu drawn wherever it fits, that is a guess.
+          ctxId === t.id ? "bg-accent/15 text-gray-100 ring-1 ring-inset ring-accent/70" : ""
+        }`}
       >
         {/* Measure the NAME line (not the whole row) so the board node lines up
             with the name even when a branch sub-line is shown below it. */}
@@ -521,6 +526,7 @@ export function ProjectSidebar(props: Props) {
             groupOf={groupOf}
             onSelect={onSelect}
             openCtx={openCtx}
+            ctxId={ctxId}
           />
 
           <div className="space-y-0.5 pt-5">
@@ -657,7 +663,7 @@ export function ProjectSidebar(props: Props) {
  * interactive status node per group / project / worktree.
  */
 function Board({
-  tabs, activeId, snaps, groups, assign, geo, childrenOf, groupOf, onSelect, openCtx,
+  tabs, activeId, snaps, groups, assign, geo, childrenOf, groupOf, onSelect, openCtx, ctxId,
 }: {
   tabs: ProjectTab[];
   activeId: string;
@@ -669,6 +675,8 @@ function Board({
   groupOf: (id: string) => Group | null;
   onSelect: (id: string) => void;
   openCtx: (e: React.MouseEvent, kind: Ctx["kind"], id?: string) => void;
+  /** The project whose context menu is open, so its node can say so. */
+  ctxId?: string;
 }) {
   const traces: { key: string; d: string; stroke: string; w: number }[] = [];
   const nodes: React.ReactNode[] = [];
@@ -719,13 +727,14 @@ function Board({
     const g = groupOf(t.id);
     // Orchestrated nodes get an accent ring + strong glow (the tentacle's grip);
     // otherwise active = accent highlight, idle = group/neutral ring.
-    const strokeColor = orch ? FLOW : isActive ? "#cdb4ff" : ring;
+    const menuOpen = ctxId === t.id;
+    const strokeColor = menuOpen ? "#cdb4ff" : orch ? FLOW : isActive ? "#cdb4ff" : ring;
     return (
       <circle
         key={`n-${t.id}`}
         cx={cx}
         cy={cy}
-        r={orch || isActive ? r + 1.5 : r}
+        r={orch || isActive || menuOpen ? r + 1.5 : r}
         fill={fill}
         stroke={strokeColor}
         strokeWidth={orch ? 2.5 : 2}
@@ -841,6 +850,28 @@ function ContextMenu({
   // The project this menu is for (if any), and whether its agent is running.
   const projTab = ctx.kind === "project" ? tabs.find((t) => t.id === ctx.id) : undefined;
   const projRunning = !!projTab?.controller.getSnapshot().agentBusy;
+
+  // Right-clicking a project asks GitHub, once, whether this branch has a PR.
+  // A worktree tab has its own branch and its own cwd, so `gh pr view` there
+  // answers for the worktree rather than for the repository it came from.
+  const [pr, setPr] = useState<{ number: number; state: string } | "looking" | null>("looking");
+  useEffect(() => {
+    const cwd = ctx.kind === "project" ? projTab?.controller.getCwd() : undefined;
+    if (!cwd) { setPr(null); return; }
+    let live = true;
+    void (async () => {
+      try {
+        const out = (await invoke<string>("run_capture", {
+          cwd, command: "gh pr view --json number,state 2>$null",
+        })).trim();
+        const j = out ? JSON.parse(out) : null;
+        if (live) setPr(typeof j?.number === "number" ? { number: j.number, state: String(j.state ?? "") } : null);
+      } catch {
+        if (live) setPr(null); // no gh, no remote, no branch — all mean "nothing to open"
+      }
+    })();
+    return () => { live = false; };
+  }, [ctx.kind, ctx.id]);
   /** Dispatch the typed task to a controller (user-initiated → node pulse only). */
   const dispatch = (controllers: { setMode: (m: "agent") => void; runAgent: (p: string) => void }[], focus?: string) => {
     const p = task.trim();
@@ -851,12 +882,31 @@ function ContextMenu({
   };
   const groupMembers = ctx.kind === "group" ? tabs.filter((t) => !t.parentId && assign[t.id] === ctx.id) : [];
 
+  // Right-clicking near the bottom of a long project list used to run the menu
+  // off the screen. Measure once the real contents are laid out (the PR item
+  // arrives asynchronously, so this re-runs) and lift or flip it back on.
+  const box = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState({ top: ctx.y, left: ctx.x, maxHeight: undefined as number | undefined });
+  useLayoutEffect(() => {
+    const el = box.current;
+    if (!el) return;
+    const M = 8; // breathing room against the window edge
+    const vh = window.innerHeight, vw = window.innerWidth;
+    const maxHeight = vh - 2 * M;
+    const h = Math.min(el.scrollHeight, maxHeight);
+    // Prefer dropping down from the cursor; if that overflows, lift it up.
+    const top = Math.max(M, Math.min(ctx.y, vh - M - h));
+    const left = Math.max(M, Math.min(ctx.x, vw - M - el.offsetWidth));
+    setPos((p) => (p.top === top && p.left === left && p.maxHeight === maxHeight ? p : { top, left, maxHeight }));
+  }, [ctx.x, ctx.y, pr, groups.length, groupMembers.length, projRunning]);
+
   return (
     <>
       <div className="fixed inset-0 z-40" onClick={close} onContextMenu={(e) => { e.preventDefault(); close(); }} />
       <div
-        className="fixed z-50 overflow-hidden rounded-lg border border-edge bg-panel py-1 text-xs shadow-xl"
-        style={{ top: ctx.y, left: ctx.x, width: 200 }}
+        ref={box}
+        className="fixed z-50 overflow-y-auto overflow-x-hidden rounded-lg border border-edge bg-panel py-1 text-xs shadow-xl"
+        style={{ top: pos.top, left: pos.left, width: 200, maxHeight: pos.maxHeight }}
       >
         {ctx.kind === "blank" && (
           <button className="w-full px-3 py-1.5 text-left text-gray-200 hover:bg-edge" onClick={() => newGroup()}>
@@ -925,6 +975,24 @@ function ContextMenu({
             >
               ▶ Open dev server
             </button>
+            {pr === "looking" ? (
+              <div className="px-3 py-1.5 text-muted">⟳ Looking for a PR…</div>
+            ) : pr ? (
+              <button
+                className="w-full px-3 py-1.5 text-left text-gray-200 hover:bg-edge"
+                onClick={() => {
+                  const cwd = projTab?.controller.getCwd();
+                  // `gh` opens the browser itself, so this needs no opener plugin.
+                  if (cwd) void invoke("run_capture", { cwd, command: "gh pr view --web 2>$null" });
+                  close();
+                }}
+              >
+                ↗ Open PR #{pr.number}
+                {pr.state && pr.state !== "OPEN" && (
+                  <span className="text-muted"> ({pr.state.toLowerCase()})</span>
+                )}
+              </button>
+            ) : null}
             <div className="my-1 border-t border-edge" />
             <div className="px-3 py-0.5 text-[10px] uppercase tracking-wider text-muted">Group</div>
             <button className="w-full px-3 py-1.5 text-left text-gray-200 hover:bg-edge" onClick={() => newGroup(ctx.id)}>
