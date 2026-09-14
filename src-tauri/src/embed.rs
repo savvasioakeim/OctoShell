@@ -49,19 +49,10 @@ fn model() -> Result<Arc<Mutex<TextEmbedding>>, String> {
 /// Where the ~90 MB of model weights live. fastembed defaults to a cwd-relative
 /// `.fastembed_cache`, which for us would mean writing them into the repo (or
 /// into whatever directory the app happened to launch from) and re-downloading
-/// per working directory. Pin it to the user's local app data instead.
+/// per working directory. Pin it to the OS cache dir instead
+/// (`%LOCALAPPDATA%\OctoShell`, `~/Library/Caches/OctoShell`, `~/.cache/OctoShell`).
 fn cache_dir() -> std::path::PathBuf {
-    let base = std::env::var_os("LOCALAPPDATA")
-        .map(std::path::PathBuf::from)
-        .or_else(|| dirs_home().map(|h| h.join(".cache")))
-        .unwrap_or_else(std::env::temp_dir);
-    base.join("OctoShell").join("models")
-}
-
-fn dirs_home() -> Option<std::path::PathBuf> {
-    std::env::var_os("USERPROFILE")
-        .or_else(|| std::env::var_os("HOME"))
-        .map(std::path::PathBuf::from)
+    crate::platform::cache_dir().join("models")
 }
 
 /// Embed a batch of texts. Batching matters: the per-call overhead dominates for

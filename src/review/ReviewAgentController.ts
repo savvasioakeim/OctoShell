@@ -20,18 +20,17 @@ import {
   type AgentProvider,
 } from "../agents/providers";
 import { settingsStore } from "../settings/settingsStore";
+import { reviewOverviewScript } from "../platform/shellScripts";
 import type { Block } from "../shell/ShellController";
+import { captureOut } from "../util/capture";
 
 /** A tiny pointer to where the change lives — just the branch and the latest
  *  commit (hash + subject). NOT a diff: the review agent runs git itself, so
  *  embedding a big diff/stat is wasteful and can mislead. Uses the existing
  *  `run_capture` — no backend change. Best-effort: "" on failure. */
 export async function fetchReviewOverview(cwd: string): Promise<string> {
-  const script =
-    '"BRANCH: " + (git rev-parse --abbrev-ref HEAD 2>$null);' +
-    '"HEAD: " + (git log -1 --format=\'%h %s\' 2>$null)';
   try {
-    return (await invoke<string>("run_capture", { cwd, command: script })).trim();
+    return await captureOut(cwd, reviewOverviewScript());
   } catch {
     return "";
   }
@@ -246,7 +245,7 @@ export class ReviewAgentController {
           sandboxImage: sandbox?.image ?? null,
           sandboxCommand: sandbox?.command ?? null,
           autoApprove: true, // the reviewer reads/diffs — no per-tool approval gate
-        }).catch((err) => this.onDone(String(err)));
+        }).catch((err) => this.onDone(String(err), 1));
       });
       return;
     }
@@ -259,7 +258,7 @@ export class ReviewAgentController {
       provider: this.provider,
       approval: false, // the review agent reads/diffs — no per-tool approval gate
       configDir: this.configDir,
-    }).catch((err) => this.onDone(String(err)));
+    }).catch((err) => this.onDone(String(err), 1));
   }
 
   private onEvent(data: string): void {

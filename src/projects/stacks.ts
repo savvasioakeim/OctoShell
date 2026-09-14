@@ -8,8 +8,11 @@
 // was unreadable, untestable and impossible to extend from outside.
 //
 // Now a stack is one object. Detection is data (marker files), the shell probe is
-// GENERATED from that data rather than hand-written, and the decision is made in
-// TypeScript where it can be read and tested.
+// GENERATED from that data rather than hand-written (for both script shells, in
+// shellScripts.ts), and the decision is made in TypeScript where it can be read
+// and tested.
+
+import { stackProbeScript } from "../platform/shellScripts";
 
 /** One project stack: how to spot it, and what to run in it. */
 export interface StackDef {
@@ -123,20 +126,12 @@ export function allMarkers(): string[] {
   return [...new Set(allStacks().flatMap((s) => s.markers))];
 }
 
-/** A PowerShell one-liner that reports which marker files exist in the cwd and,
- *  when there's a package.json, which npm scripts it defines. Generated from the
- *  table so a new stack needs no shell code — and it stays ONE round trip.
- *  Emits compact JSON: `{"markers":[...],"scripts":[...]}`. */
+/** A one-liner (for this host's script shell) that reports which marker files
+ *  exist in the cwd and, when there's a package.json, which npm scripts it
+ *  defines. Generated from the table so a new stack needs no shell code — and it
+ *  stays ONE round trip. Emits compact JSON: `{"markers":[...],"scripts":[...]}`. */
 export function buildProbe(): string {
-  const list = allMarkers()
-    .map((m) => `'${m.replace(/'/g, "''")}'`)
-    .join(",");
-  return (
-    `$m=@(); foreach($f in @(${list})){ if(Test-Path -LiteralPath $f){ $m+=$f } }; ` +
-    `$s=@(); if(Test-Path -LiteralPath 'package.json'){ try{ ` +
-    `$s=@((Get-Content package.json -Raw | ConvertFrom-Json).scripts.PSObject.Properties.Name) }catch{} }; ` +
-    `@{markers=@($m);scripts=@($s)} | ConvertTo-Json -Compress`
-  );
+  return stackProbeScript(allMarkers());
 }
 
 /** What {@link buildProbe} reports back. */

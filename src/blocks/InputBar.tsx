@@ -85,9 +85,9 @@ const INPUT_MAX_PX = 308;
  *
  * In **shell** mode Enter submits a command; while one is running, Enter pipes
  * the line to its stdin. In **agent** mode Enter sends the prompt to the local
- * `claude` agent. **Tab** runs PowerShell's completion engine (cmdlets, paths,
- * parameters): a unique/common-prefix match is inserted inline, otherwise a
- * candidate menu opens. Shift+Enter inserts a newline, Ctrl+C interrupts, ↑/↓
+ * `claude` agent. **Tab** asks the backend's completion engine (PowerShell's on
+ * Windows; commands + paths natively elsewhere): a unique/common-prefix match is
+ * inserted inline, otherwise a candidate menu opens. Shift+Enter inserts a newline, Ctrl+C interrupts, ↑/↓
  * navigate history (or the completion menu when open).
  */
 export function InputBar({ controller, cwd, busy, value, altScreen, interacting, mode, agentBusy, agentModel, agentEffort, agentThought, agentProvider, agentConfigDir, agentTokens, agentContext, agentSessionId, agentApiKey, agentRateReset, agentApproval }: Props) {
@@ -836,7 +836,9 @@ export function InputBar({ controller, cwd, busy, value, altScreen, interacting,
             agent ? "border-accent/40 focus-within:border-accent" : "border-edge focus-within:border-accent/60"
           }`}
         >
-          <span className="select-none pt-0.5 font-semibold leading-relaxed text-accent">
+          {/* Same font-size + line-height as the textarea, so the icon sits level
+              with the first line on any rendering engine (no hand-tuned nudge). */}
+          <span className="select-none text-sm font-semibold leading-relaxed text-accent">
             {agent ? "✦" : "❯"}
           </span>
           <textarea

@@ -2,16 +2,21 @@ mod acp;
 mod agent;
 mod ai;
 mod approval;
+mod completion;
 mod docker;
 mod embed;
 mod jobctl;
+#[cfg(target_os = "macos")]
+mod macos;
 mod memory;
 mod mobile;
 mod mods;
 mod ollama;
+mod platform;
 mod push;
 mod pty;
 mod service;
+mod shells;
 mod skills;
 mod sysstats;
 mod timezone;
@@ -127,7 +132,17 @@ fn save_dropped_file(name: String, data: String) -> Result<String, String> {
 
 /// Build and run the Tauri application.
 pub fn run() {
-    tauri::Builder::default()
+    // FIRST, before any thread or child exists: a GUI-launched app on macOS has
+    // a bare PATH, so adopt the user's login-shell PATH or every CLI we drive
+    // (claude, node, gh…) is "not found". No-op on Windows.
+    platform::adopt_login_shell_env();
+
+    let builder = tauri::Builder::default();
+    // macOS needs an explicit menu (Edit for ⌘C/⌘V, and no ⌘W on the window).
+    #[cfg(target_os = "macos")]
+    let builder = builder.menu(macos::build_menu);
+
+    builder
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -165,7 +180,7 @@ pub fn run() {
             if let Some(tz) = timezone::apply_with_cache(tz_dir) {
                 eprintln!("[octoshell] TZ={tz} (so children never shell out to tzutil)");
             }
-            // Pre-warm the Tab-completion runspace so the first Tab is instant.
+            // Pre-warm the Tab-completion engine so the first Tab is instant.
             let engine = app.state::<CompletionEngine>().inner().clone();
             std::thread::spawn(move || engine.warm());
             // Start the per-tool approval bridge (sidecar + localhost listener).
@@ -183,10 +198,13 @@ pub fn run() {
             pty::close_tab,
             pty::kill_foreground,
             pty::run_capture,
+            pty::dir_exists,
+            platform::adopt_env_vars,
             pty::shell_complete,
             pty::open_editor,
             pty::open_in_file_manager,
             pty::health_check,
+            pty::platform_info,
             ai::ai_chat,
             ai::ai_cancel,
             ai::list_mcp_servers,
@@ -245,6 +263,9 @@ pub fn run() {
             if let tauri::RunEvent::Exit = event {
                 let mgr = app.state::<SandboxManager>().inner().clone();
                 tauri::async_runtime::block_on(mgr.stop_all());
+                // Unix: end every child process tree we started (the Windows
+                // Job Object does this by itself when our handle closes).
+                jobctl::shutdown();
             }
         });
 }

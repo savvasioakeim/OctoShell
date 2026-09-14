@@ -9,8 +9,13 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { App } from "./App";
 import { QaWindow } from "./qa/QaWindow";
 import { ShellController } from "./shell/ShellController";
+import { initPlatform } from "./platform/platform";
 
 async function bootstrap() {
+  // Which OS, which shells: everything platform-specific reads this synchronously
+  // later, so it must be in place before the first render or the first PTY.
+  await initPlatform();
+
   // The floating QA window loads the same bundle; render its UI instead of
   // the full app (no shell/PTY) when we're in that webview.
   if (getCurrentWindow().label === "qa") {

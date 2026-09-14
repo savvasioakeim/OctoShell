@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 
-/** One completion candidate from PowerShell's engine. */
+/** One completion candidate from the backend engine (PowerShell's names). */
 export interface CMatch {
   t: string; // completionText — what to insert
   l: string; // listItemText — what to show
@@ -13,7 +13,7 @@ export interface CompletionResult {
   m: CMatch[];
 }
 
-/** Ask the backend (PowerShell `TabExpansion2`) to complete a line at a caret. */
+/** Ask the backend completion engine to complete a line at a caret. */
 export async function requestCompletion(cwd: string, line: string, cursor: number): Promise<CompletionResult> {
   try {
     const raw = await invoke<string>("shell_complete", { cwd, line, cursor });
@@ -38,7 +38,7 @@ export function longestCommonPrefix(items: string[]): string {
   return prefix;
 }
 
-/** Short human label for a PowerShell completion result type. */
+/** Short human label for a completion result type (PowerShell's vocabulary). */
 export function kindLabel(k: string): string {
   switch (k) {
     case "Command": return "cmd";

@@ -22,6 +22,16 @@ import { normPath, parseMergedWorktrees, pollCommand } from "./projects/worktree
 import { settingsStore, useSettings } from "./settings/settingsStore";
 import { KEY, loadJSON, saveJSON } from "./util/persist";
 import { OnboardingOverlay } from "./onboarding/OnboardingOverlay";
+import { hasModKey } from "./platform/platform";
+import {
+  copyDependencyDirsScript,
+  copyEnvFilesScript,
+  createWorktreeScript,
+  gitProbeScript,
+  listWorktreesScript,
+  removeWorktreeScript,
+} from "./platform/shellScripts";
+import { capture, captureOut, type Captured } from "./util/capture";
 
 interface Tab {
   id: string;
@@ -73,10 +83,6 @@ interface GroupsState {
 
 export const GROUP_COLORS = ["#82AAFF", "#C792EA", "#4ade80", "#f78c6c", "#f07178", "#7fdbca", "#ffcb6b", "#ff5370"];
 
-// One-shot probe: "<branch>|<git diff --shortstat HEAD>". Empty branch ⇒ not a repo.
-const GIT_PROBE =
-  "\"$(git rev-parse --abbrev-ref HEAD 2>$null)|$(git diff --shortstat HEAD 2>$null)\"";
-
 function parseGitStat(out: string): GitStat | null {
   const [branch, stat = ""] = out.trim().split("|");
   if (!branch) return null;
@@ -89,7 +95,7 @@ function parseGitStat(out: string): GitStat | null {
  * Poll git branch + diff stat, but ONLY for the projects you're actually using —
  * the active one plus any you've "touched" (ran a command/agent in) this session.
  * With 15 work projects open but 1-2 in use, polling all of them spawned a `git
- * status` (pwsh) per repo every cycle for no reason. Untouched projects are
+ * status` (a script shell) per repo every cycle for no reason. Untouched projects are
  * skipped; switching to one probes it once so its badge is fresh.
  */
 function useGitStats(tabs: Tab[], activeId: string): Map<string, GitStat> {
@@ -107,7 +113,7 @@ function useGitStats(tabs: Tab[], activeId: string): Map<string, GitStat> {
       which.map(async (t): Promise<[string, GitStat | null]> => {
         if (!t.cwd) return [t.id, null];
         try {
-          const out = await invoke<string>("run_capture", { cwd: t.cwd, command: GIT_PROBE });
+          const out = await captureOut(t.cwd, gitProbeScript());
           return [t.id, parseGitStat(out)];
         } catch {
           return [t.id, null];
@@ -218,7 +224,9 @@ export function App({ initial }: { initial: ShellController }) {
   const [preloadProgress, setPreloadProgress] = useState(0);
   const [onboarding, setOnboarding] = useState(() => !loadJSON<boolean>(KEY.onboardingDone, false));
   // User-resizable panel widths (px), persisted across restarts.
-  const [layout, setLayout] = useState(() => loadJSON(KEY.layout, { left: 200, right: 344 }));
+  // Left default fits the three sidebar tabs at the 17px root font; the
+  // user can still drag it down to 160 (labels then truncate).
+  const [layout, setLayout] = useState(() => loadJSON(KEY.layout, { left: 216, right: 344 }));
 
   useEffect(() => { saveJSON(KEY.layout, layout); }, [layout]);
 
@@ -414,7 +422,24 @@ export function App({ initial }: { initial: ShellController }) {
    *  by the sidebar "New worktree" button and the orchestrator's worktree-dispatch
    *  — both go through here so an orchestrator-made worktree is a first-class
    *  session (shows in the bar, gets its own agent), not an invisible on-disk dir. */
-  const createWorktree = async (srcId: string, branch: string): Promise<Tab | { error: string }> => {
+  /** Keep an unexpected blob of shell output readable in an error toast. */
+  const truncateForError = (t: string) => (t.length > 120 ? `${t.slice(0, 119)}…` : t);
+
+  /** Creations currently in flight, keyed by repo + branch. Two callers asking for
+   *  the same worktree at the same time share one result instead of each running
+   *  the git script and adopting the outcome separately — the state store can't
+   *  help here, since nothing has been added to it yet while the first call runs. */
+  const creatingRef = useRef<Map<string, Promise<Tab | { error: string }>>>(new Map());
+
+  const createWorktree = (srcId: string, branch: string): Promise<Tab | { error: string }> => {
+    const inFlight = creatingRef.current.get(`${srcId}::${branch.trim()}`);
+    if (inFlight) return inFlight;
+    const run = createWorktreeOnce(srcId, branch);
+    creatingRef.current.set(`${srcId}::${branch.trim()}`, run);
+    return run.finally(() => creatingRef.current.delete(`${srcId}::${branch.trim()}`));
+  };
+
+  const createWorktreeOnce = async (srcId: string, branch: string): Promise<Tab | { error: string }> => {
     const src = tabs.find((t) => t.id === srcId);
     if (!src?.cwd) return { error: "not a git project (home is not a repo)" };
     const branchName = branch.trim().replace(/[^A-Za-z0-9._/-]/g, "-").replace(/^-+|-+$/g, "");
@@ -423,55 +448,32 @@ export function App({ initial }: { initial: ShellController }) {
     // New worktrees branch off the configured base branch (Settings → Workspace),
     // or the main worktree's HEAD when unset. Sanitised the same way as the branch.
     const baseBranch = settingsStore.getSnapshot().workspace.baseBranch.trim().replace(/[^A-Za-z0-9._/-]/g, "");
-    const baseArg = baseBranch ? ` "${baseBranch}"` : "";
     // Resolve the MAIN worktree, ignore the managed folder locally, create the
-    // worktree + branch, and print its path (or ERR:…). One pwsh round-trip.
-    const script =
-      "$main=(git worktree list --porcelain|Where-Object{$_ -like 'worktree *'}|Select-Object -First 1);" +
-      "if(-not $main){Write-Output 'ERR:not a git repo';return};" +
-      "$main=($main.Substring(9).Trim() -replace '\\\\','/');" +
-      `$wt="$main/.octoshell/worktrees/${dirName}";` +
-      "$excl=\"$main/.git/info/exclude\";" +
-      "if((Test-Path $excl) -and -not (Select-String -Path $excl -Pattern 'octoshell' -Quiet)){Add-Content -Path $excl -Value '.octoshell/'};" +
-      // Pick up commits pushed elsewhere, so a worktree we (re)create starts from
-      // the real branch tip rather than a stale local ref. Read-only; never fails
-      // the create (offline is fine).
-      "git -C \"$main\" fetch --all --quiet 2>&1 | Out-Null;" +
-      // Clear registrations whose folder is gone, so `worktree add` isn't blocked
-      // by a ghost entry.
-      "git -C \"$main\" worktree prune 2>&1 | Out-Null;" +
-      // The folder can exist WITHOUT being a registered worktree: `git worktree
-      // remove` deregisters first, and on Windows the delete then fails whenever
-      // anything still holds the directory (a shell sitting in it, node_modules).
-      // That orphan folder made every later `worktree add` fail with "already
-      // exists" — the branch was fine, the directory was just in the way. So:
-      // registered → reuse it as-is; orphaned → delete it and recreate.
-      "$reg=(git -C \"$main\" worktree list --porcelain) -join \"`n\";" +
-      "if(Test-Path $wt){" +
-      "  $known=($reg -match [regex]::Escape($wt)) -or ($reg -match [regex]::Escape(($wt -replace '/','\\')));" +
-      "  if($known){Write-Output $wt;return};" +
-      // Orphaned folder. It may still hold UNCOMMITTED work (an agent stopped
-      // mid-merge, say), so try to re-adopt it before destroying anything:
-      // `worktree repair` re-registers a checkout whose admin link git lost.
-      "  git -C \"$main\" worktree repair \"$wt\" 2>&1 | Out-Null;" +
-      "  $reg2=(git -C \"$main\" worktree list --porcelain) -join \"`n\";" +
-      "  if(($reg2 -match [regex]::Escape($wt)) -or ($reg2 -match [regex]::Escape(($wt -replace '/','\\')))){Write-Output $wt;return};" +
-      // Unrepairable: a plain directory git knows nothing about. Only now delete.
-      "  Remove-Item -LiteralPath $wt -Recurse -Force -ErrorAction SilentlyContinue;" +
-      "  if(Test-Path $wt){Write-Output ('ERR:a leftover folder for this worktree could not be deleted (' + $wt + ') - close any shell or editor open in it, then retry');return}" +
-      "};" +
-      `$r=git -C "$main" worktree add -b "${branchName}" "$wt"${baseArg} 2>&1;` +
-      `if($LASTEXITCODE -ne 0){$r=git -C "$main" worktree add "$wt" "${branchName}" 2>&1};` +
-      "if($LASTEXITCODE -ne 0){Write-Output ('ERR:'+($r -join ' '))}else{Write-Output $wt}";
-    let out = "";
+    // worktree + branch, and print its path (or ERR:…). One script round-trip;
+    // the script itself lives in shellScripts.ts (PowerShell + sh).
+    const script = createWorktreeScript({ dirName, branchName, baseBranch });
+    let res: Captured;
     try {
-      out = (await invoke<string>("run_capture", { cwd: src.cwd, command: script })).trim();
+      res = await capture(src.cwd, script);
     } catch (e) {
-      out = "ERR:" + e;
+      return { error: String(e) };
     }
-    const last = out.split(/\r?\n/).pop()?.trim() ?? "";
+    const last = res.stdout.trim().split(/\r?\n/).pop()?.trim() ?? "";
     if (!last || last.startsWith("ERR:")) {
-      return { error: last.replace(/^ERR:/, "") || "unknown" };
+      // stderr is the only place a shell-level failure (a permission error, a
+      // missing git) leaves a reason, so it is what the user gets to see.
+      const why = last.replace(/^ERR:/, "").trim() || res.stderr.trim().split(/\r?\n/).pop()?.trim();
+      return { error: why || "unknown" };
+    }
+    // The script's contract is "print the path". Trust nothing until the path is
+    // one: a non-directory here becomes a tab whose every command dies with an
+    // error naming the wrong culprit (see `Captured` in pty.rs).
+    if (!(await invoke<boolean>("dir_exists", { path: last }))) {
+      return {
+        error: `git printed something that is not a directory: ${truncateForError(last)}${
+          res.stderr.trim() ? ` (stderr: ${truncateForError(res.stderr.trim())})` : ""
+        }`,
+      };
     }
     const wtPath = last;
     const repoRoot = wtPath.split("/.octoshell/")[0];
@@ -482,12 +484,7 @@ export function App({ initial }: { initial: ShellController }) {
     // the Settings → Workspace "auto-copy .env*" toggle.
     if (settingsStore.getSnapshot().workspace.copyEnv) {
       try {
-        await invoke<string>("run_capture", {
-          cwd: repoRoot,
-          command:
-            "Get-ChildItem -Path . -Filter '.env*' -File -Force | " +
-            `ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination (Join-Path '${wtPath}' $_.Name) -Force }`,
-        });
+        await capture(repoRoot, copyEnvFilesScript(wtPath));
       } catch {
         /* missing .env / copy failure is non-fatal */
       }
@@ -496,21 +493,13 @@ export function App({ initial }: { initial: ShellController }) {
     // worktree never inherits them, so its dev server / tests would otherwise need
     // a full reinstall (or crash on a missing package). Only relocatable dep dirs
     // (node_modules, PHP/Go vendor, legacy bower) are copied; language dirs that
-    // bake absolute paths (e.g. Python venvs) are left for their own tooling. Uses
-    // robocopy (multithreaded) for speed with node_modules' many small files.
+    // bake absolute paths (e.g. Python venvs) are left for their own tooling.
+    // robocopy on Windows, APFS clones on macOS (see shellScripts.ts).
     // Best-effort and non-blocking; if the base lacks them, the server's on-demand
     // install guard (service.rs) covers it. Gated by Settings → Workspace.
     if (settingsStore.getSnapshot().workspace.copyDeps) {
       try {
-        await invoke<string>("run_capture", {
-          cwd: repoRoot,
-          command:
-            `$wt='${wtPath}';` +
-            "foreach($d in 'node_modules','vendor','bower_components'){" +
-            "$s=Join-Path '.' $d; $t=Join-Path $wt $d;" +
-            "if((Test-Path $s) -and -not (Test-Path $t)){" +
-            "robocopy $s $t /E /NFL /NDL /NJH /NJS /NP /MT:16 | Out-Null}}",
-        });
+        await capture(repoRoot, copyDependencyDirsScript(wtPath));
       } catch {
         /* missing deps / copy failure is non-fatal — the install guard covers it */
       }
@@ -527,6 +516,16 @@ export function App({ initial }: { initial: ShellController }) {
     repoRoot: string,
     parentId: string,
   ): Promise<Tab> => {
+    // One tab per directory, always. `createWorktreeScript` deliberately REUSES a
+    // worktree that is already registered, so a repeated create succeeds and hands
+    // back the same path — which used to become a second tab with its own agent on
+    // the same files. Two agents editing one checkout corrupt each other's edits
+    // ("File has been modified since read"), so the duplicate is refused here, at
+    // the one place every caller goes through.
+    const existing = tabsRef.current.find(
+      (t) => t.cwd.replace(/\\/g, "/").toLowerCase() === wtPath.replace(/\\/g, "/").toLowerCase(),
+    );
+    if (existing) return existing;
     const controller = new ShellController(crypto.randomUUID());
     await controller.init(wtPath);
     const tab: Tab = {
@@ -563,10 +562,7 @@ export function App({ initial }: { initial: ShellController }) {
       for (const root of roots) {
         let out = "";
         try {
-          out = await invoke<string>("run_capture", {
-            cwd: root.cwd,
-            command: "git worktree list --porcelain 2>&1",
-          });
+          out = await captureOut(root.cwd, listWorktreesScript());
         } catch {
           continue; // not a repo (or git unavailable) — nothing to surface
         }
@@ -634,20 +630,17 @@ export function App({ initial }: { initial: ShellController }) {
     // as its cwd, so `git worktree remove` would block until the process exits.
     tab?.controller.forget();
     tab?.controller.dispose();
-    // Isolated worktree → remove it from git (best-effort, off the UI thread).
-    // `worktree remove` deregisters BEFORE deleting, so on Windows a lingering
-    // handle (a just-closed pty, an editor, an antivirus scan of node_modules)
-    // leaves the folder behind while git already considers it gone. That orphan
-    // then blocks every future `worktree add` on the same branch. So sweep the
-    // folder ourselves afterwards and prune, leaving no half-removed state.
-    if (tab?.worktree) {
-      invoke("run_capture", {
-        cwd: tab.worktree.repoRoot,
-        command:
-          `git worktree remove "${tab.cwd}" --force 2>&1 | Out-Null;` +
-          `if(Test-Path "${tab.cwd}"){Remove-Item -LiteralPath "${tab.cwd}" -Recurse -Force -ErrorAction SilentlyContinue};` +
-          "git worktree prune 2>&1",
-      }).catch(() => {});
+    // Isolated worktree → remove it from git AND sweep the folder (best-effort,
+    // off the UI thread) — see removeWorktreeScript for why both.
+    // Never sweep a directory another tab is still sitting in. Removal is
+    // `--force` plus `rm -rf`, so closing one of several tabs that share a
+    // worktree would delete the checkout out from under the others, taking any
+    // uncommitted work with it. Duplicate tabs can no longer be created, but ones
+    // made before that fix are restored from storage, so the check has to stay.
+    const sharedByOther =
+      !!tab && tabs.some((t) => t.id !== tab.id && t.cwd.toLowerCase() === tab.cwd.toLowerCase());
+    if (tab?.worktree && !sharedByOther) {
+      capture(tab.worktree.repoRoot, removeWorktreeScript(tab.cwd)).catch(() => {});
     }
     setTabs((prev) => {
       if (prev.length <= 1) return prev;
@@ -703,7 +696,7 @@ export function App({ initial }: { initial: ShellController }) {
       for (const [root, group] of byRepo) {
         let out = "";
         try {
-          out = await invoke<string>("run_capture", { cwd: root, command: pollCommand() });
+          out = await captureOut(root, pollCommand());
         } catch {
           continue; // gh missing / not authed / no remote — skip silently
         }
@@ -720,10 +713,10 @@ export function App({ initial }: { initial: ShellController }) {
     return () => clearInterval(iv);
   }, []);
 
-  // Workspace keyboard shortcuts.
+  // Workspace keyboard shortcuts: Ctrl+… on Windows/Linux, ⌘… on macOS.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (!e.ctrlKey) return;
+      if (!hasModKey(e)) return;
       if (e.key === "t") { e.preventDefault(); void newProject(); }
       else if (e.key === "w") { e.preventDefault(); closeProject(activeId); }
       else if (e.shiftKey && (e.key === "K" || e.key === "k")) { e.preventDefault(); active.controller.clear(); }
@@ -772,13 +765,7 @@ export function App({ initial }: { initial: ShellController }) {
             setActiveId(tab.id);
           }}
           onRemoveWorktree={(w) => {
-            void invoke("run_capture", {
-              cwd: w.repoRoot,
-              command:
-                `git worktree remove "${w.path}" --force 2>&1 | Out-Null;` +
-                `if(Test-Path "${w.path}"){Remove-Item -LiteralPath "${w.path}" -Recurse -Force -ErrorAction SilentlyContinue};` +
-                "git worktree prune 2>&1",
-            }).catch(() => {});
+            void capture(w.repoRoot, removeWorktreeScript(w.path)).catch(() => {});
             setUnopened((u) => ({
               ...u,
               [w.parentId]: (u[w.parentId] ?? []).filter((x) => x.path !== w.path),
@@ -799,7 +786,7 @@ export function App({ initial }: { initial: ShellController }) {
         />
         <ResizeHandle
           onDrag={(dx) => setLayout((l) => ({ ...l, left: clamp(l.left + dx, 160, 460) }))}
-          onReset={() => setLayout((l) => ({ ...l, left: 208 }))}
+          onReset={() => setLayout((l) => ({ ...l, left: 216 }))}
         />
 
         {/* Every project's center panel stays mounted (so switching back doesn't

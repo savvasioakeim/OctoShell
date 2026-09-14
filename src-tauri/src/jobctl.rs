@@ -1,4 +1,4 @@
-//! Process containment via a Windows **Job Object**.
+//! Process containment: a Windows **Job Object**, or process groups elsewhere.
 //!
 //! Windows does not kill child processes when their parent dies. So if OctoShell
 //! crashes, is force-killed, or is replaced by a dev hot-reload, every shell and
@@ -55,6 +55,10 @@ mod imp {
     /// Assign a spawned process (by PID) to the job, so it — and its descendants —
     /// die with OctoShell. Best-effort: failures are silently ignored (the worst
     /// case is the pre-existing orphan behaviour for that one process).
+    /// Nothing to do: the OS closing our last job handle on exit is what kills
+    /// the children. (The Unix side needs an explicit sweep; see below.)
+    pub fn shutdown() {}
+
     pub fn add(pid: u32) {
         let Some(&job) = JOB.get() else { return };
         if job == 0 || pid == 0 {
@@ -73,10 +77,36 @@ mod imp {
     }
 }
 
+/// macOS / Linux: there is no kill-on-close Job Object, but there is something
+/// close. Every child OctoShell spawns is made the leader of its own process
+/// group (`platform::own_process_group`), and this registry remembers those
+/// leaders. On a clean exit [`shutdown`] signals every registered group, ending
+/// each helper together with whatever it spawned. Shells in a PTY need no help
+/// even on a crash: closing the PTY master sends them SIGHUP.
 #[cfg(not(windows))]
 mod imp {
+    use std::sync::Mutex;
+
+    static CHILDREN: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+
     pub fn init() {}
-    pub fn add(_pid: u32) {}
+
+    /// Remember a spawned group leader so [`shutdown`] can end its tree.
+    pub fn add(pid: u32) {
+        if pid == 0 {
+            return;
+        }
+        let mut c = CHILDREN.lock().unwrap();
+        if !c.contains(&pid) {
+            c.push(pid);
+        }
+    }
+
+    /// End every registered process tree. Called once, on app exit.
+    pub fn shutdown() {
+        let pids: Vec<u32> = std::mem::take(&mut *CHILDREN.lock().unwrap());
+        crate::platform::kill_trees(&pids);
+    }
 }
 
-pub use imp::{add, init};
+pub use imp::{add, init, shutdown};

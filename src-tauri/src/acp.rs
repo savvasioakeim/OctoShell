@@ -54,6 +54,7 @@ use tokio::sync::{mpsc, oneshot, watch, Notify};
 
 use crate::approval::ApprovalBridge;
 use crate::docker::{SandboxConfig, SandboxManager, SandboxOptions};
+use crate::platform;
 
 /// Base image for sandboxed ACP terminal commands. `node:20` carries a POSIX
 /// shell plus node/npm — the common case; swap per-project later if needed.
@@ -259,6 +260,8 @@ fn create_terminal(req: &CreateTerminalRequest, terminals: &Terminals) -> String
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     #[cfg(windows)]
     cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW (tokio Command inherent)
+    // Its own process group, so `kill` ends whatever the command spawned too.
+    platform::own_process_group_tokio(&mut cmd);
 
     let pid = match cmd.spawn() {
         Ok(mut child) => {
@@ -376,18 +379,11 @@ fn exit_status(code: Option<i32>) -> TerminalExitStatus {
     }
 }
 
-/// Kill a terminal's process tree (best-effort, Windows taskkill).
+/// Kill a terminal's process tree (best-effort).
 fn kill_pid(pid: Option<u32>) {
-    #[cfg(windows)]
     if let Some(pid) = pid {
-        use std::os::windows::process::CommandExt;
-        let _ = std::process::Command::new("taskkill")
-            .args(["/T", "/F", "/PID", &pid.to_string()])
-            .creation_flags(0x0800_0000)
-            .output();
+        platform::kill_tree(pid);
     }
-    #[cfg(not(windows))]
-    let _ = pid;
 }
 
 #[derive(Clone, Serialize)]

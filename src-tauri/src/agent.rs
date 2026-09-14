@@ -23,11 +23,35 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::approval::ApprovalBridge;
+use crate::platform;
 
 #[cfg(windows)]
 const CLAUDE_BIN: &str = "claude.exe";
 #[cfg(not(windows))]
 const CLAUDE_BIN: &str = "claude";
+
+/// Fold one of `approval`'s `--settings` JSON constants into the settings map we
+/// hand the CLI. Both halves are objects and the CLI accepts `--settings` only
+/// once, so the approval allow-list and the skill overrides have to be merged
+/// rather than passed as two flags. A malformed constant is skipped, not fatal:
+/// losing an allow-list entry is better than losing the whole turn.
+fn merge_settings(settings: &mut serde_json::Map<String, serde_json::Value>, json: &str) {
+    let Ok(serde_json::Value::Object(extra)) = serde_json::from_str::<serde_json::Value>(json) else {
+        return;
+    };
+    for (key, value) in extra {
+        match (settings.get_mut(&key), value) {
+            // Both halves carry a `permissions` object (an allow-list and a deny
+            // list, say). A plain insert would drop one of them, so nest one level.
+            (Some(serde_json::Value::Object(into)), serde_json::Value::Object(from)) => {
+                into.extend(from);
+            }
+            (_, value) => {
+                settings.insert(key, value);
+            }
+        }
+    }
+}
 
 /// Thread-safe registry of in-flight agent runs, keyed by session id, so a run
 /// can be cancelled and a new turn replaces any stale one.
@@ -66,6 +90,7 @@ impl AgentManager {
         config_dir: Option<String>,
         effort: Option<String>,
         skills_off: Vec<String>,
+        guard_protected_folders: bool,
     ) -> Result<(), String> {
         // One active turn per session: replace any in-flight run.
         if let Some(mut old) = self.runs.lock().unwrap().remove(&id) {
@@ -109,6 +134,25 @@ impl AgentManager {
                 // task plan via TodoWrite — which drives our trace progress bar.
                 "--tools".into(), "default".into(),
             ]);
+            // The MCP servers this agent should see, resolved the same
+            // ancestor-aware way the orchestrator resolves them (ai.rs).
+            //
+            // The CLI keys project-scoped servers by EXACT cwd, and an agent runs
+            // in a worktree — a directory that has no entry of its own. So it fell
+            // back to the bare user-level definition and got a DCR 404 from a
+            // server that only ever worked because of the Authorization header
+            // configured on the workspace folder above it. Passing the resolved
+            // set in fixes that, and an inline definition also wins over the
+            // config file's copy of the same name.
+            //
+            // Sandboxed runs get nothing: these are host definitions (local stdio
+            // commands, host paths), and the container can reach neither them nor
+            // the approval sidecar.
+            let mut servers = if sandboxed {
+                serde_json::Map::new()
+            } else {
+                crate::ai::mcp_servers_map(config_dir.as_deref(), std::slice::from_ref(&cwd))
+            };
             // Approval mode: route sensitive tools to our permission MCP sidecar
             // (which asks the user). Otherwise run fully autonomously.
             // `--settings` carries two unrelated things, so it is assembled once:
@@ -124,28 +168,31 @@ impl AgentManager {
                     ),
                 );
             }
+            #[cfg(target_os = "macos")]
+            if guard_protected_folders {
+                merge_settings(&mut settings, platform::TCC_DENY_RULES);
+            }
             if approval && approval_script.is_some() {
                 let script = approval_script.unwrap();
-                let mcp = serde_json::json!({
-                    "mcpServers": { "octo": {
+                servers.insert(
+                    "octo".into(),
+                    serde_json::json!({
                         "command": "node",
                         "args": [script],
                         "env": { "OCTO_PORT": approval_port.to_string(), "OCTO_SESSION": id.clone(), "OCTO_TOKEN": approval_token.clone() }
-                    } }
-                })
-                .to_string();
+                    }),
+                );
                 args.extend([
                     "--permission-mode".into(), "default".into(),
                     "--permission-prompt-tool".into(), "mcp__octo__approve".into(),
-                    "--mcp-config".into(), mcp,
                 ]);
-                if let Ok(serde_json::Value::Object(ask)) =
-                    serde_json::from_str::<serde_json::Value>(crate::approval::ASK_TOOLS)
-                {
-                    settings.extend(ask);
-                }
+                merge_settings(&mut settings, crate::approval::ASK_TOOLS);
             } else {
                 args.push("--dangerously-skip-permissions".into());
+            }
+            if !servers.is_empty() {
+                args.push("--mcp-config".into());
+                args.push(serde_json::json!({ "mcpServers": servers }).to_string());
             }
             if !settings.is_empty() {
                 args.push("--settings".into());
@@ -213,16 +260,12 @@ impl AgentManager {
         cmd.stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            cmd.creation_flags(CREATE_NO_WINDOW);
-        }
+        // No console window; its own process group so `cancel` can end the
+        // agent together with its MCP sidecar and any Bash it spawned.
+        platform::background(&mut cmd);
 
         let mut child = cmd.spawn().map_err(|e| {
-            format!("could not launch the `{provider}` agent CLI (installed & on PATH?): {e}")
+            platform::spawn_error(if provider == "gemini" { "gemini" } else { CLAUDE_BIN }, Some(&cwd), &e)
         })?;
         // Tie the agent (and its MCP sidecar / sub-processes, which inherit job
         // membership) to OctoShell's lifetime so it can't outlive a crash.
@@ -294,24 +337,10 @@ impl AgentManager {
     }
 }
 
-/// Terminate a child process AND its descendants. On Windows the only reliable
-/// tree-kill without extra job plumbing is `taskkill /T`; elsewhere `child.kill`
-/// (called by the caller) is left to handle it.
+/// Terminate a child process AND its descendants (`taskkill /T` on Windows, a
+/// process-group signal elsewhere — see `platform::kill_tree`).
 fn kill_tree(child: &Child) {
-    #[cfg(windows)]
-    {
-        use std::process::Command;
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        let _ = Command::new("taskkill")
-            .args(["/T", "/F", "/PID", &child.id().to_string()])
-            .creation_flags(CREATE_NO_WINDOW)
-            .output();
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = child; // caller's child.kill() handles the single process
-    }
+    platform::kill_tree(child.id());
 }
 
 #[tauri::command]
@@ -329,15 +358,67 @@ pub fn agent_send(
     config_dir: Option<String>,
     effort: Option<String>,
     skills_off: Option<Vec<String>>,
+    guard_protected_folders: Option<bool>,
 ) -> Result<(), String> {
     manager.send(
         app, id, prompt, cwd, resume, model, provider,
         approval.unwrap_or(false), bridge.port(), bridge.script_path(), bridge.token(), config_dir,
         effort, skills_off.unwrap_or_default(),
+        // Default ON: a new client that does not send the flag still gets the
+        // protection, which is the safe way round for a permission guard.
+        guard_protected_folders.unwrap_or(true),
     )
 }
 
 #[tauri::command]
 pub fn agent_cancel(manager: State<'_, AgentManager>, id: String) -> Result<(), String> {
     manager.cancel(&id)
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The CLI takes `--settings` once, so the skill overrides and the approval
+    /// allow-list have to survive being folded into the same object. A shallow
+    /// insert used to drop whichever `permissions` block arrived first, which lost
+    /// the allow-list silently — the turn ran, just without asking anything.
+    #[test]
+    fn merge_settings_keeps_both_permissions_blocks() {
+        let mut settings = serde_json::Map::new();
+        settings.insert("skillOverrides".into(), serde_json::json!({ "foo": "off" }));
+        merge_settings(&mut settings, r#"{"permissions":{"deny":["Read(~/Music/**)"]}}"#);
+        merge_settings(&mut settings, crate::approval::ASK_TOOLS);
+
+        let perms = settings["permissions"].as_object().expect("permissions object");
+        assert!(perms.contains_key("deny"), "deny list was dropped: {perms:?}");
+        assert!(perms.contains_key("ask"), "ask list was dropped: {perms:?}");
+        assert_eq!(settings["skillOverrides"]["foo"], "off");
+    }
+
+    /// A constant that fails to parse must not take the rest of the settings with
+    /// it: losing one allow-list entry beats losing the whole turn.
+    #[test]
+    fn merge_settings_ignores_malformed_json() {
+        let mut settings = serde_json::Map::new();
+        settings.insert("keep".into(), serde_json::json!(1));
+        merge_settings(&mut settings, "{not json");
+        assert_eq!(settings["keep"], 1);
+    }
+
+    /// The deny rules name the folders macOS actually guards, and must NOT name
+    /// the ones people keep projects in.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn tcc_deny_rules_are_valid_and_spare_project_folders() {
+        let v: serde_json::Value =
+            serde_json::from_str(platform::TCC_DENY_RULES).expect("TCC_DENY_RULES is valid JSON");
+        let deny = v["permissions"]["deny"].as_array().expect("deny array");
+        assert!(deny.iter().any(|r| r.as_str().unwrap().contains("Library/Containers")));
+        for folder in ["Desktop", "Documents", "Downloads"] {
+            assert!(
+                !deny.iter().any(|r| r.as_str().unwrap().contains(folder)),
+                "{folder} must stay readable — projects live there"
+            );
+        }
+    }
 }

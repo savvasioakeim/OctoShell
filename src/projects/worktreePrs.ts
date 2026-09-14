@@ -11,17 +11,15 @@
 // One `git worktree list` plus one `gh pr list` per repository answers the same
 // question, so the fan-out disappears.
 
+import { worktreePrPollScript } from "../platform/shellScripts";
+
 /** Marker separating the two command outputs in a single capture. */
 export const SPLIT = "---octo---";
 
-/** The one command whose output `parseMergedWorktrees` reads. */
+/** The one command whose output `parseMergedWorktrees` reads. Written for both
+ *  script shells in the platform layer, so it runs under sh on macOS too. */
 export function pollCommand(): string {
-  return (
-    "git worktree list --porcelain; " +
-    `Write-Output '${SPLIT}'; ` +
-    "gh pr list --state all --limit 100 --json headRefName,state " +
-    "-q '.[] | .headRefName + \" \" + .state' 2>$null"
-  );
+  return worktreePrPollScript(SPLIT);
 }
 
 /** Compare paths the way two tools that disagree about slashes and case require. */

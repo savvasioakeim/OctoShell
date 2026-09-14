@@ -74,6 +74,8 @@ Two costs, both real:
 
 Windows will ask to allow OctoShell on private networks the first time. Say yes
 for **Private** and not Public, or the phone simply times out with no clue why.
+On macOS the same prompt comes from the application firewall (System Settings →
+Network → Firewall), if you have it turned on.
 
 ### If the address works on your computer but not your phone
 
@@ -130,7 +132,13 @@ tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-net
 no account, no DNS, no firewall change. It needs `cloudflared` on PATH:
 
 ```powershell
+# Windows
 winget install --id Cloudflare.cloudflared
+```
+
+```bash
+# macOS
+brew install cloudflared
 ```
 
 Without it, sharing still works — the server is just local to the machine, which

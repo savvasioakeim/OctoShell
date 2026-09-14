@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Merged into the macOS bundle's Info.plist by the Tauri bundler.
+
+  These strings are what macOS shows when it asks for access to a protected
+  folder. Without them the app is simply denied, silently: the prompt has
+  nothing to say, and every tool it runs in there fails with an unexplained
+  "Operation not permitted" from getcwd. Projects live in Documents and on the
+  Desktop for most people, so those are the two that matter.
+-->
+<plist version="1.0">
+<dict>
+  <key>NSDocumentsFolderUsageDescription</key>
+  <string>OctoShell runs your shells and coding agents inside your projects, so it needs access to the folders you open in it.</string>
+  <key>NSDesktopFolderUsageDescription</key>
+  <string>OctoShell runs your shells and coding agents inside your projects, so it needs access to the folders you open in it.</string>
+  <key>NSDownloadsFolderUsageDescription</key>
+  <string>OctoShell runs your shells and coding agents inside your projects, so it needs access to the folders you open in it.</string>
+</dict>
+</plist>

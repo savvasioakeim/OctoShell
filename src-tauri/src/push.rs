@@ -34,7 +34,6 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 use web_push_native::jwt_simple::algorithms::ES256KeyPair;
 use web_push_native::p256::PublicKey;
-use web_push_native::jwt_simple::prelude::*;
 use web_push_native::{Auth, WebPushBuilder};
 
 /// How long a push may sit at the service before it's dropped. Short on purpose:

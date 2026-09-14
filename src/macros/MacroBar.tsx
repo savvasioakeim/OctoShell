@@ -5,6 +5,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { AiClient } from "../ai/AiClient";
 import type { ShellController } from "../shell/ShellController";
 import { SmartPrButton } from "./SmartPrButton";
+import { shellLabel } from "../platform/platform";
+import { gitStatusAndDiffScript } from "../platform/shellScripts";
+import { captureOut } from "../util/capture";
 
 const client = new AiClient();
 
@@ -40,17 +43,14 @@ const MACROS: Macro[] = [
       const last = controller.getLastCommandBlock();
       let status = last && /git\s+status/.test(last.command) ? last.outputText : "";
       if (!status.trim()) {
-        status = await invoke<string>("run_capture", {
-          cwd: controller.getCwd(),
-          command: "git status --porcelain=v1; git diff --stat HEAD",
-        });
+        status = await captureOut(controller.getCwd(), gitStatusAndDiffScript());
       }
       if (!status.trim()) {
         controller.setInput("# No changes to commit");
         return;
       }
       const system =
-        "You are a CLI agent. Reply with ONE PowerShell command line and nothing else (no markdown).";
+        `You are a CLI agent. Reply with ONE ${shellLabel()} command line and nothing else (no markdown).`;
       const prompt =
         `Working dir: ${controller.getCwd()}\nGit status:\n${status}\n\n` +
         "Produce a command that stages all changes, commits with a concise " +
@@ -68,7 +68,7 @@ const MACROS: Macro[] = [
       // One round trip: ask which marker files exist (and, for JS projects, which
       // npm scripts are defined), then decide HERE. The probe is generated from
       // the stack table, so teaching OctoShell a new stack needs no shell code.
-      const out = await invoke<string>("run_capture", { cwd, command: buildProbe() });
+      const out = await captureOut(cwd, buildProbe());
       const hit = testCommandFor(parseProbe(out));
       if (!hit) {
         controller.setInput(`# No test command found (looked for ${testableStackLabels()})`);
