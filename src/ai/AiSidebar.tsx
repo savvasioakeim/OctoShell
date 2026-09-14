@@ -1480,32 +1480,37 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
       className="flex shrink-0 flex-col gap-2 overflow-hidden rounded-xl border border-edge bg-panel p-2"
       style={{ width }}
     >
-      {/* Title row (with the Strategy entry at its right), then the run
-          controls on a row of their own. The panel can be 232-760px wide, so the
-          controls WRAP instead of overflowing — the old single row clipped the
-          last button below ~400px. */}
+      {/* Title, then a compact single-row button strip beneath it. */}
       <div className="px-1">
         <div className="flex items-center gap-1.5">
           <span className="text-grad text-sm font-semibold">Orchestrator</span>
           {thinking && <WorkingNode />}
-          {onOpenStrategy && (
-            <button
-              onClick={onOpenStrategy}
-              title="Strategy Mode — plan complex work with a moderated multi-agent discussion before coding"
-              className="ml-auto inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-xs font-semibold text-accent hover:bg-accent/15"
-            >
-              <img src={strategyIcon} alt="" className="h-5 w-5 object-contain" />
-              Strategy
-            </button>
-          )}
         </div>
-        <div className="mt-1 rounded-lg border border-edge bg-card">
-          <div className="flex flex-wrap items-center gap-1 px-1.5 py-1">
+        {/* One panel split by a single centre divider: Strategy (the primary
+            planning entry) on the left, the run-controls cluster on the right,
+            reading as two glued panels joined by that vertical line. The panel
+            can be as narrow as 232px, so the cluster wraps rather than clipping
+            its last button. */}
+        <div className="mt-1 flex items-stretch overflow-hidden rounded-lg border border-edge bg-card">
+          {onOpenStrategy && (
+            <div className="flex items-center px-1 py-1">
+              <button
+                onClick={onOpenStrategy}
+                title="Strategy Mode — plan complex work with a moderated multi-agent discussion before coding"
+                className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-semibold text-accent hover:bg-accent/15"
+              >
+                <img src={strategyIcon} alt="" className="h-6 w-6 object-contain" />
+                Strategy
+              </button>
+            </div>
+          )}
+          <div className="w-px self-stretch bg-edge" />
+          <div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-1 px-1.5 py-1">
           <button
             onClick={stopAll}
             disabled={!canStop}
             title="Stop everything — orchestrator + all agents (like Escape)"
-            className={`inline-flex h-6 flex-1 items-center justify-center gap-1 rounded border border-transparent px-1.5 text-[10px] font-semibold ${
+            className={`inline-flex h-6 items-center gap-1 rounded border border-transparent px-1.5 text-[10px] font-semibold ${
               canStop
                 ? "bg-red-500/25 text-red-200 hover:bg-red-500/35"
                 : "border border-edge text-muted/50"
@@ -1519,7 +1524,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
               setSessionMenu(true);
             }}
             title="Chats — new chat + switch/search existing"
-            className="inline-flex h-6 flex-1 items-center justify-center gap-1 rounded border border-[#7c5cff]/50 px-1.5 text-[10px] text-muted hover:bg-[#7c5cff]/15 hover:text-gray-200"
+            className="inline-flex h-6 items-center gap-1 rounded border border-[#7c5cff]/50 px-1.5 text-[10px] text-muted hover:bg-[#7c5cff]/15 hover:text-gray-200"
           >
             <svg viewBox="0 0 24 24" fill="none" stroke="url(#chat-grad)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 shrink-0" aria-hidden>
               <defs>
@@ -1535,7 +1540,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
           <button
             onClick={() => setAutoRun((v) => !v)}
             title={autoRun ? "Auto-run: actions run without confirmation" : "Confirm: every action needs a click"}
-            className={`inline-flex h-6 flex-1 items-center justify-center gap-1 rounded border border-transparent px-1.5 text-[10px] font-medium ${
+            className={`inline-flex h-6 items-center gap-1 rounded border border-transparent px-1.5 text-[10px] font-medium ${
               autoRun ? "bg-amber-500/20 text-amber-300" : "text-muted hover:bg-edge/50 hover:text-gray-200"
             }`}
           >
@@ -1548,17 +1553,19 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
                 ? "Live watch: continues on its own when an agent finishes"
                 : "Live watch off"
             }
-            className={`inline-flex h-6 flex-1 items-center justify-center gap-1 rounded border border-transparent px-1.5 text-[10px] font-medium ${
+            className={`inline-flex h-6 items-center gap-1 rounded border border-transparent px-1.5 text-[10px] font-medium ${
               liveWatch ? "bg-emerald-500/20 text-emerald-300" : "text-muted hover:bg-edge/50 hover:text-gray-200"
             }`}
           >
             {liveWatch && watchingNow > 0 && <WorkingNode />}
             <span className="text-sm leading-none">👁</span>{" "}
-            {liveWatch
-              ? watchingNow > 0
-                ? `${watchingNow} working${watchStep > 0 ? ` · #${watchStep}` : ""}`
-                : "Watch"
-              : "Watch"}
+            <span className="truncate">
+              {liveWatch
+                ? watchingNow > 0
+                  ? `${watchingNow} working${watchStep > 0 ? ` · #${watchStep}` : ""}`
+                  : "Watch"
+                : "Watch"}
+            </span>
           </button>
           </div>
         </div>

@@ -482,9 +482,9 @@ export function ProjectSidebar(props: Props) {
       className="relative flex shrink-0 flex-col overflow-hidden rounded-xl border border-edge bg-panel"
       style={{ width }}
     >
-      {/* The three tabs share the strip's width (the panel can be as narrow as
-          160px) and truncate rather than overflow; a badge never truncates. */}
-      <div className="flex items-center gap-1 border-b border-edge px-1.5 py-1.5">
+      {/* Left-packed tabs; they truncate rather than overflow when the panel is
+          at its narrowest (160px), and a badge never truncates. */}
+      <div className="flex items-center gap-1 border-b border-edge px-2 py-1.5">
         {([
           { id: "projects", label: "Projects" },
           { id: "services", label: "Services", badge: services.length || undefined },
@@ -494,7 +494,7 @@ export function ProjectSidebar(props: Props) {
             key={t.id}
             onClick={() => setLeftTab(t.id)}
             title={t.label}
-            className={`flex min-w-0 flex-auto items-center justify-center gap-1 rounded-md px-1 py-1 text-[11px] font-semibold uppercase tracking-wide transition-colors ${
+            className={`flex min-w-0 items-center gap-1 rounded-md px-2 py-1 text-[11px] font-semibold uppercase tracking-wider transition-colors ${
               leftTab === t.id ? "bg-edge text-grad" : "text-muted hover:bg-edge/50 hover:text-gray-200"
             }`}
           >
