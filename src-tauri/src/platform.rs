@@ -32,6 +32,34 @@ pub fn home_dir() -> Option<PathBuf> {
     std::env::var_os(var).map(PathBuf::from)
 }
 
+/// Folders macOS guards with TCC, as Claude Code `permissions.deny` rules.
+///
+/// OctoShell is a terminal, so macOS holds IT responsible for whatever its
+/// children touch: an agent that walks `~/Library/Containers` puts OctoShell's
+/// name on a permission prompt, once PER container, so one home-wide search can
+/// fire dozens in a row. None of these paths is anything a coding agent needs,
+/// so the agent is told to stay out rather than the user being worn down into
+/// handing over the whole disk.
+///
+/// Desktop/Documents/Downloads are deliberately NOT here: projects live there.
+/// Those three are asked for once and explained by the usage strings in
+/// `Info.plist`.
+///
+/// Covers the Read tool, and best-effort Glob/Grep. It canNOT cover a walk the
+/// agent does through Bash (`find ~`), which has no permission rule to match.
+#[cfg(target_os = "macos")]
+pub const TCC_DENY_RULES: &str = r#"{"permissions":{"deny":[
+    "Read(~/Library/Containers/**)",
+    "Read(~/Library/Group Containers/**)",
+    "Read(~/Library/Mail/**)",
+    "Read(~/Library/Messages/**)",
+    "Read(~/Library/Safari/**)",
+    "Read(~/Library/Cookies/**)",
+    "Read(~/Music/**)",
+    "Read(~/Pictures/**)",
+    "Read(~/Movies/**)"
+]}}"#;
+
 /// Where large, regenerable files live (the ~90 MB embedding model). Each OS has
 /// a conventional spot: `%LOCALAPPDATA%`, `~/Library/Caches`, `$XDG_CACHE_HOME`.
 pub fn cache_dir() -> PathBuf {

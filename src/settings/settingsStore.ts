@@ -85,6 +85,12 @@ export interface WorkspaceSettings {
   trackedPorts: number[];
   /** Which native shell the terminal launches. */
   defaultShell: DefaultShell;
+  /** macOS: tell agents to stay out of the folders the OS guards (other apps'
+   *  containers, Mail, Music, Pictures). OctoShell is the responsible process for
+   *  everything it spawns, so an agent wandering in there makes the OS show a
+   *  permission prompt with OctoShell's name on it, once per folder. Off: the
+   *  agent may go anywhere and you answer the prompts. */
+  guardProtectedFolders: boolean;
 }
 export interface AppearanceSettings {
   /** Monospace font family for the terminal/feed ("" = theme default). */
@@ -202,6 +208,7 @@ const DEFAULT_WORKSPACE: WorkspaceSettings = {
   copyDeps: true,
   trackedPorts: [3000, 5173, 1420, 8080, 4000],
   defaultShell: "powershell",
+  guardProtectedFolders: true,
 };
 const DEFAULT_APPEARANCE: AppearanceSettings = {
   fontFamily: "",

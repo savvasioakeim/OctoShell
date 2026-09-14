@@ -8,6 +8,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
+    "install:local": "npm run tauri build -- --debug --bundles app && rsync -a --delete src-tauri/target/debug/bundle/macos/OctoShell.app /Applications/",
     "check:models": "node scripts/check-local-models.mjs"
   },
   "dependencies": {

@@ -1174,6 +1174,7 @@ export class ShellController {
       // Read at dispatch time, not cached: toggling a skill in Settings should
       // apply to the next turn without restarting anything.
       skillsOff: settingsStore.getSnapshot().skillsOff,
+      guardProtectedFolders: settingsStore.getSnapshot().workspace.guardProtectedFolders,
     }).catch((err) => {
       // A spawn failure (CLI not on PATH, bad cwd) is a failed turn: report it
       // with a non-zero code so the error block actually renders.

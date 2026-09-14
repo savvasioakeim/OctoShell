@@ -1093,6 +1093,14 @@ function WorkspaceTab() {
             checked={workspace.copyDeps}
             onChange={(v) => set({ copyDeps: v })}
           />
+          {platform().os === "macos" && (
+            <ToggleRow
+              label="Keep agents out of macOS protected folders"
+              desc="macOS treats OctoShell as responsible for every shell and agent it runs, so an agent that reads another app's data, Mail, Music or Pictures makes the system show a permission prompt with OctoShell's name on it — one per folder. On: agents are told those folders are off limits. Off: they may read anything and you answer the prompts. Your projects in Desktop, Documents and Downloads are never restricted."
+              checked={workspace.guardProtectedFolders}
+              onChange={(v) => set({ guardProtectedFolders: v })}
+            />
+          )}
           <TrackedPortsField ports={workspace.trackedPorts} onChange={(v) => set({ trackedPorts: v })} />
           <Field label="Auto-clean — when a worktree is deleted">
             <Select

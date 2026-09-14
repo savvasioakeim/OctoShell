@@ -13,6 +13,8 @@ src-tauri/gen/
 # Env / secrets
 .env
 .env.*
+# Local macOS code-signing identity name (personal; see scripts/install-local.mjs)
+src-tauri/.signing-identity
 
 # OS / editor
 .DS_Store
