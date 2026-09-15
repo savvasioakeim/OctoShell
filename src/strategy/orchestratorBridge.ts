@@ -98,3 +98,37 @@ export function orchestratorControl(): OrchestratorControl | null {
 export function orchestratorView(): OrchestratorView | null {
   return control ? control.view() : null;
 }
+
+// ---------------------------------------------------------------------------
+// QA for one worktree, asked for from the project's right-click menu.
+//
+// The sidebar knows the worktree and its task journal; only the orchestrator can
+// turn that into QA. This carries the request across without the sidebar needing
+// a reference to the chat.
+
+export interface WorktreeQaRequest {
+  /** The project's name as shown in the sidebar. */
+  project: string;
+  /** The worktree's branch, when it is a worktree. */
+  branch?: string;
+  cwd: string;
+  /** taskJournal.textFor(cwd): what was asked and what the agent reported. */
+  journal: string;
+}
+
+let qaRequester: ((r: WorktreeQaRequest) => void) | null = null;
+
+/** The orchestrator calls this once on mount; returns an unsubscribe. */
+export function registerQaRequester(h: (r: WorktreeQaRequest) => void): () => void {
+  qaRequester = h;
+  return () => {
+    if (qaRequester === h) qaRequester = null;
+  };
+}
+
+/** Ask the orchestrator for QA of one worktree. False when none is listening. */
+export function requestWorktreeQa(r: WorktreeQaRequest): boolean {
+  if (!qaRequester) return false;
+  qaRequester(r);
+  return true;
+}

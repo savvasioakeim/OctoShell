@@ -195,6 +195,7 @@ pub fn run() {
             agent::agent_send,
             agent::agent_cancel,
             approval::approval_respond,
+            approval::services_respond,
             service::service_start,
             service::service_stop,
             service::list_ports,

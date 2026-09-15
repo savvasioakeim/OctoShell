@@ -11,6 +11,9 @@ import { notify } from "../util/notify";
 import { playSfx } from "../util/sfx";
 import { acpCommandFor, acpSandboxCommandFor, isAcp, normalizeProvider, parseAgentLine, prepareOpencodeConfig, supportsEffort, type AgentProvider, type AgentStep } from "../agents/providers";
 import { settingsStore } from "../settings/settingsStore";
+import { serviceStore, type ServiceEntry } from "../services/serviceStore";
+import { taskJournal } from "../tasks/taskJournal";
+import { projectConfigStore } from "../projects/projectConfig";
 import { ReviewAgentController, buildReviewPrompt, fetchReviewOverview } from "../review/ReviewAgentController";
 
 /** Keep at most this many historical blocks per session in storage. */
@@ -38,6 +41,19 @@ const STEP_PROTOCOL = [
 // us as ACP `plan` session updates (parseAcp → e.steps → the trace bar). So we ask
 // for a plan in tool-agnostic terms; the agent's native plan tool then lights the
 // same trace bar / nodes / percentage the native path drives.
+/** Dev servers go through OctoShell, never a background shell job: a server an
+ *  agent starts in Bash is invisible, unstoppable from the UI, and its port a
+ *  guess for everyone else. The octo_services tool descriptions carry the details. */
+const DEV_SERVER_RULE = [
+  "<<DEV SERVERS>>",
+  "If you need a dev server, use the octo_services MCP tools: call list_dev_servers first (it may already be running),",
+  "then start_dev_server. Never start a long-running dev server yourself in Bash (no `npm run dev &`, no nohup, no start /b):",
+  "OctoShell manages ports and shows the user every server it runs. Use dev_server_logs to see its output.",
+  "Keep this project's task journal current with update_task_progress (same tools): after each meaningful step, when you are blocked,",
+  "and once at the end with what changed and concrete steps to verify it. The user's QA for this work is built from that journal.",
+  "<</DEV SERVERS>>",
+].join("\n");
+
 const ACP_STEP_PROTOCOL = [
   "<<OCTOSHELL TASK STEPS — MANDATORY>>",
   "This applies to EVERY task you are given (typed directly or dispatched by the orchestrator), including ones already phrased as \"do these steps\".",
@@ -504,6 +520,16 @@ export class ShellController {
           if (e.payload.id === this.sessionId) this.onApprovalRequest(e.payload);
         },
       ),
+      await listen<{ id: string; requestId: string; op: string; args: Record<string, unknown> }>(
+        "services://request",
+        (e) => {
+          if (e.payload.id !== this.sessionId) return;
+          const { requestId, op, args } = e.payload;
+          void this.answerServices(op, args ?? {}).then((result) =>
+            invoke("services_respond", { requestId, result }).catch(() => {}),
+          );
+        },
+      ),
     );
     await invoke("open_new_tab", {
       id: this.sessionId,
@@ -592,6 +618,128 @@ export class ShellController {
   }
 
   /** A pending tool-approval arrived from the agent — show it for a decision. */
+  /** This project's label for services it starts: the folder name, which for a
+   *  worktree is its branch -- the same thing you see in the sidebar. */
+  private serviceLabel(): string {
+    const parts = this.cwd.split(/[\\/]/).filter(Boolean);
+    return parts[parts.length - 1] ?? "service";
+  }
+
+  /** What an agent is told about one managed server. `mine` lets it tell its own
+   *  servers apart from the ones other projects (or you) are running. */
+  private describeService(e: ServiceEntry) {
+    const same = (a: string, b: string) => a.replace(/\\/g, "/").toLowerCase() === b.replace(/\\/g, "/").toLowerCase();
+    return {
+      id: e.id,
+      project: e.name,
+      cwd: e.cwd,
+      command: e.command,
+      status: e.status,
+      url: e.url ?? null,
+      port: e.port ?? null,
+      pid: e.pid ?? null,
+      exitCode: e.exitCode ?? null,
+      startedBy: e.startedBy ?? "user",
+      mine: same(e.cwd, this.cwd),
+    };
+  }
+
+  /** Carry out one dev-server request from this project's agent.
+   *
+   *  Everything goes through serviceStore -- the same path as "Open dev server" in
+   *  the sidebar -- so a server an agent starts is a row in the Services panel,
+   *  not a process only the agent knows about. */
+  private async answerServices(op: string, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const all = () => serviceStore.getSnapshot();
+    const same = (a: string, b: string) => a.replace(/\\/g, "/").toLowerCase() === b.replace(/\\/g, "/").toLowerCase();
+    const find = (id: unknown) => all().find((e) => e.id === id);
+
+    try {
+      if (op === "list") {
+        return { ok: true, servers: all().map((e) => this.describeService(e)) };
+      }
+
+      if (op === "start") {
+        const live = all().find((e) => same(e.cwd, this.cwd) && e.status !== "exited");
+        if (live && !args.restart) {
+          // The whole point of asking OctoShell: no second copy fighting for the port.
+          return { ok: true, reused: true, server: this.describeService(live) };
+        }
+        if (live && args.restart) {
+          await serviceStore.restart(live.id);
+          return { ok: true, restarted: true, server: this.describeService(await this.settle(live.id)) };
+        }
+        const command =
+          (typeof args.command === "string" && args.command.trim()) ||
+          projectConfigStore.get(this.cwd).dev ||
+          "npm run dev";
+        const portHint = typeof args.port === "number" && args.port > 0 ? args.port : undefined;
+        const { id } = await serviceStore.start({
+          name: this.serviceLabel(),
+          cwd: this.cwd,
+          command,
+          portHint,
+          startedBy: this.serviceLabel(),
+        });
+        const settled = await this.settle(id);
+        return {
+          ok: settled.status !== "exited",
+          server: this.describeService(settled),
+          logs: settled.logs.slice(-20),
+          ...(settled.status === "exited" ? { error: "the server exited while starting -- see logs" } : {}),
+        };
+      }
+
+      if (op === "stop") {
+        const e = find(args.id);
+        if (!e) return { ok: false, error: "no managed server with that id -- call list_dev_servers" };
+        if (!same(e.cwd, this.cwd)) {
+          // Another project's server, or yours: an agent does not get to kill it.
+          return { ok: false, error: `that server belongs to ${e.name}, not this project; ask the user to stop it` };
+        }
+        await serviceStore.stop(e.id);
+        return { ok: true, stopped: e.id };
+      }
+
+      if (op === "logs") {
+        const e = find(args.id);
+        if (!e) return { ok: false, error: "no managed server with that id -- call list_dev_servers" };
+        const n = Math.min(300, Math.max(1, typeof args.lines === "number" ? Math.floor(args.lines) : 60));
+        return { ok: true, id: e.id, status: e.status, lines: e.logs.slice(-n) };
+      }
+
+      if (op === "task") {
+        const str = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : undefined);
+        const summary = str(args.summary);
+        if (!summary) return { ok: false, error: "summary is required" };
+        const status = args.status === "blocked" || args.status === "done" ? args.status : "in_progress";
+        taskJournal.addProgress(this.cwd, {
+          summary,
+          status,
+          changed: str(args.changed),
+          howToVerify: str(args.how_to_verify),
+        });
+        return { ok: true, recorded: true };
+      }
+
+      return { ok: false, error: `unknown operation ${op}` };
+    } catch (err) {
+      return { ok: false, error: String(err) };
+    }
+  }
+
+  /** Give a just-started server up to ~20s to either come up or fall over, so the
+   *  agent gets a URL or a reason in one call instead of polling. */
+  private async settle(id: string): Promise<ServiceEntry> {
+    const deadline = Date.now() + 20_000;
+    for (;;) {
+      const e = serviceStore.getSnapshot().find((x) => x.id === id);
+      if (!e) throw new Error("the server disappeared from OctoShell's list");
+      if (e.status !== "starting" || Date.now() > deadline) return e;
+      await new Promise((r) => setTimeout(r, 400));
+    }
+  }
+
   private onApprovalRequest(p: { requestId: string; toolName: string; input: unknown }): void {
     const inp = p.input as { command?: string } | undefined;
     const toolInput =
@@ -957,6 +1105,9 @@ export class ShellController {
       startedAt: Date.now(),
       via: opts?.via,
     });
+    // Every prompt this agent runs goes in the project's task journal: it is what
+    // "QA this worktree" hands the orchestrator as "what was this work".
+    taskJournal.addPrompt(this.cwd, text, opts?.orchestrated ? "orchestrator" : opts?.via ?? "user");
     this.agentBusy = true;
     // A new turn starts with no reasoning of its own.
     this.agentThought = "";
@@ -995,7 +1146,10 @@ export class ShellController {
         : isAcp(this.agentProvider)
           ? ACP_STEP_PROTOCOL
           : "";
-    const preamble = [rulesBlock, stepRule].filter(Boolean).join("\n\n");
+    // The dev-server rule only reaches agents that actually get the tools (native
+    // claude and ACP), and only once per session like the global rules.
+    const devRule = resume === null && (this.agentProvider === "claude" || isAcp(this.agentProvider)) ? DEV_SERVER_RULE : "";
+    const preamble = [rulesBlock, stepRule, devRule].filter(Boolean).join("\n\n");
     const full = preamble ? `${preamble}\n\n${prompt}` : prompt;
 
     // ACP path: one long-lived session drives the chosen ACP agent over the

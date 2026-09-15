@@ -46,6 +46,10 @@ export interface QaItem {
   backend?: QaBackend;
   /** What the reviewer should verify, in prose. */
   whatToCheck: string;
+  /** The checks as separate, ordered steps — one action and its expected result
+   *  each. Preferred over `whatToCheck`: an array stays a list no matter how the
+   *  model formats text, which prose never reliably does. */
+  steps?: string[];
 }
 
 /** The reviewer's decision for one item (notes kept even with no verdict yet). */
@@ -53,6 +57,9 @@ export interface QaResult {
   id: string;
   verdict: Verdict | null;
   notes: string;
+  /** Screenshots dropped onto this item, as real file paths — what the agent
+   *  opens when a decline or a note is dispatched back to it. */
+  images?: string[];
 }
 
 // ---- cross-window event channel names (main ⇄ QA webview) ----
@@ -73,6 +80,8 @@ export const QA = {
 
 export interface QaLoadPayload {
   items: QaItem[];
+  /** Verdicts and notes from an earlier pass, when reopening from QA history. */
+  results?: QaResult[];
 }
 /** qa → main: start this item's server of the given role. */
 export interface QaStartServerPayload {

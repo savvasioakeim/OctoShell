@@ -7,7 +7,9 @@ import { Markdown } from "../blocks/Markdown";
 import { WorkingNode } from "../blocks/WorkingNode";
 import strategyIcon from "../assets/strategy.png";
 import { parseActions, type OrchestratorAction } from "./actions";
-import { parseQa } from "../qa/parseQa";
+import { parseQa, stepsOf } from "../qa/parseQa";
+import { qaHistory, qaKey } from "../qa/qaHistory";
+import { QaHistoryButton } from "../qa/QaHistoryButton";
 import { openQaWindow } from "../qa/qaHost";
 import type { QaItem, QaResult } from "../qa/qaTypes";
 import { aggregateReviews, type ReviewSnapshot } from "../review/ReviewAgentController";
@@ -15,7 +17,7 @@ import { serviceStore } from "../services/serviceStore";
 import { projectConfigStore } from "../projects/projectConfig";
 import { supportsProfile } from "../agents/providers";
 import { modStore } from "../mods/modStore";
-import { registerOrchestrator, registerOrchestratorControl } from "../strategy/orchestratorBridge";
+import { registerOrchestrator, registerOrchestratorControl, registerQaRequester } from "../strategy/orchestratorBridge";
 import { useSettings } from "../settings/settingsStore";
 import { dragHasFiles, filesFromDrop, saveDroppedFile } from "../util/drop";
 import { memoryStore, type Recalled } from "../memory/memoryStore";
@@ -587,7 +589,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
         // --- Output style (your replies render as Markdown) ---
         "- FORMAT plans and multi-task status as a clean Markdown list — never a wall of prose. When you present steps or report progress across several tasks, use a numbered list (for an ordered plan) or bullets (for parallel work), ONE item per step/task. Start each item with a bold label and a status emoji, e.g. `1. **tracking-config-admin** (ridebly-fe) — ✅ done`, `2. **tracking-config-be** — 🔄 in progress`, `3. **client-injection** — ⏳ queued`. Add at most a short half-line of detail after the dash. Use ✅ done · 🔄 in progress · ⏳ pending/queued · ❌ failed.",
         "- Keep the surrounding prose tight: a one-line intro before the list and a one-line next-step after it. Use `**bold**` for project/branch names and short `code` spans for commands, files and ports so they stand out.",
-        "- QA MODE: when the tasks you dispatched are DONE and there's something the user should manually verify, ask in prose if they want to QA, and append a separate ```octo-qa fenced block — a JSON array, one object per feature: {\"title\":\"…\",\"branch\":\"<worktree branch>\",\"project\":\"<repo>\",\"startCommand\":\"<command that starts its dev server, e.g. npm run dev>\",\"whatToCheck\":\"<what the user should look at / how to test>\"}. OctoShell shows an \"Open QA Mode\" button that walks the user feature-by-feature (approve/decline + notes) and can start each server for them. You learned the ticket and what changed — put the concrete check steps in whatToCheck. Emit this block ONLY when there's real, finished work to QA.",
+        "- QA MODE: when the tasks you dispatched are DONE and there's something the user should manually verify, ask in prose if they want to QA, and append a separate ```octo-qa fenced block — a JSON array, one object per feature: {\"title\":\"…\",\"branch\":\"<worktree branch>\",\"project\":\"<repo>\",\"startCommand\":\"<command that starts its dev server, e.g. npm run dev>\",\"whatToCheck\":\"<one sentence: what this feature should now do>\",\"steps\":[\"<step 1>\",\"<step 2>\",\"…\"]}. OctoShell shows an \"Open QA Mode\" button that walks the user feature-by-feature (approve/decline + notes) and can start each server for them. You learned the ticket and what changed — put the checks in \"steps\": an ARRAY of strings, one step per element, in the order the user does them. Each step is ONE concrete action and what they should see, e.g. \"Open http://localhost:3000/login\", \"Enter a wrong password 5 times → the 6th attempt shows 'Too many attempts'\". Name the exact page/URL, button or field, the input to use, and the expected result. Never put several steps in one string, never number them yourself, and never write the checks as a paragraph — whatToCheck is only a one-line summary. Emit this block ONLY when there's real, finished work to QA.",
         "- QA BACKEND: if a feature can't be tested without a backend running (e.g. a frontend feature that calls an API), add a \"backend\" field to that item: {\"backend\":{\"project\":\"<backend repo name>\",\"command\":\"<command that starts the backend, e.g. npm run dev>\"}}. The QA window then shows a second \"backend\" start button. OctoShell runs it from the worktree on the SAME branch if one exists, otherwise from the backend repo's base branch — so you only need to name the backend repo and its start command, not a path.",
         "- QA BACKEND BRANCH: CRITICAL when one ticket spans repos on DIFFERENT branch names (e.g. a fe_be ticket where the BE branch is `feat/rental-booking-notes` but the FE branch is `feat/rental-notes`). The backend must run from ITS OWN worktree, not the feature's. Add the backend's real branch: {\"backend\":{\"project\":\"<repo>\",\"command\":\"…\",\"branch\":\"<the BACKEND's branch>\"}}. Without it, OctoShell matches the feature branch, finds no backend worktree, and silently runs the backend from base (dev) — which LACKS the new API, so the QA tests stale code. Always set backend.branch when the backend's branch name differs from the item's branch.",
         ...(autoRun
@@ -999,10 +1001,18 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
         if (!item) continue;
         const notes = r.notes?.trim();
         let prompt: string | null = null;
+        // Screenshots the reviewer dropped in, as paths the agent can open.
+        const shots = r.images?.length
+          ? ` Screenshots from QA (open these image files to see exactly what the reviewer saw): ${r.images.join(", ")}.`
+          : "";
+        // What was being checked: the steps when the QA has them. An item written
+        // with steps may carry no whatToCheck at all, and the agent needs the checks.
+        const steps = stepsOf(item);
+        const checked = steps.length ? steps.map((s, n) => `${n + 1}) ${s}`).join(" ") : item.whatToCheck;
         if (r.verdict === "decline") {
-          prompt = `The feature "${item.title}" did NOT pass QA.${notes ? ` Problem: ${notes}.` : ""} Fix it completely. What was being checked: ${item.whatToCheck}`;
-        } else if (r.verdict === "approve" && notes) {
-          prompt = `The feature "${item.title}" passed QA with one note: ${notes}. Apply that tweak and nothing else.`;
+          prompt = `The feature "${item.title}" did NOT pass QA.${notes ? ` Problem: ${notes}.` : ""}${shots} Fix it completely. What was being checked: ${checked}`;
+        } else if (r.verdict === "approve" && (notes || r.images?.length)) {
+          prompt = `The feature "${item.title}" passed QA with one note: ${notes || "see the screenshots"}.${shots} Apply that tweak and nothing else.`;
         }
         if (prompt) {
           const tab = resolveByBranch(item);
@@ -1095,7 +1105,12 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
   /** Open the floating QA window for these items, wiring server-start (both the
    *  feature's own server and any backend it needs) and the finish handler. */
   const startQa = useCallback(
-    (items: QaItem[]) => {
+    (passed: QaItem[], sessionId?: string) => {
+      // Every QA runs as a history session. Reopening one uses the items it was
+      // saved with (ids included), so the verdicts restored below still line up.
+      const sid = sessionId ?? qaHistory.add({ items: passed });
+      const session = qaHistory.get(sid);
+      const items = session?.items ?? passed;
       void openQaWindow(items, {
         onStartServer: async (item, role) => {
           if (role === "backend") {
@@ -1142,8 +1157,11 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
               : undefined;
           return { url, warning };
         },
-        onClosed: (results) => finishQa(results, items),
-      });
+        onClosed: (results) => {
+          qaHistory.setResults(sid, results);
+          finishQa(results, items);
+        },
+      }, session?.results ?? undefined);
     },
     [resolveByBranch, resolveBackend, finishQa],
   );
@@ -1175,6 +1193,46 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
     },
     [ask, saveWatch],
   );
+
+  // "QA this worktree" from a project's right-click menu. The orchestrator gets the
+  // worktree's task journal and answers with a one-item octo-qa block, which lands
+  // in QA history like any other.
+  useEffect(
+    () =>
+      registerQaRequester((r) => {
+        const journal =
+          r.journal.trim() ||
+          "(No task journal was recorded for this worktree. Work out what it does from its branch name, commits and diff before writing the checks.)";
+        const where = r.branch ? `worktree "${r.project}" (branch "${r.branch}")` : `project "${r.project}"`;
+        void ask(
+          [
+            `🔍 QA request for ONE ${where}, at ${r.cwd}.`,
+            "",
+            "Its task journal (what its agent was asked, and what it reported):",
+            journal,
+            "",
+            "Write QA for THIS work only. Reply in one or two sentences, then append a ```octo-qa block with exactly ONE item for it:",
+            "title, project, branch, startCommand, whatToCheck (ONE sentence: what this work should now do), and steps.",
+            "steps is a JSON ARRAY of strings, one step per element, in order: each is ONE concrete action and what the person should see",
+            "(exact page/URL, button or field, the input to use, the expected result). Never several steps in one string, never numbered by you, never a paragraph.",
+            "Base the steps on what the journal says changed and how to verify it. Do NOT dispatch anything.",
+          ].join("\n"),
+        );
+      }),
+    [ask],
+  );
+
+  // Every QA block the orchestrator writes goes into QA history as it arrives, so
+  // it stays reachable from the header after the chat scrolls on or is replaced.
+  // Keyed by the message text: re-rendering, or switching back to this chat, finds
+  // the session it already made.
+  useEffect(() => {
+    for (const msg of messages) {
+      if (msg.role !== "assistant") continue;
+      const { items } = parseQa(parseActions(msg.content).clean);
+      if (items.length) qaHistory.add({ items, key: qaKey(msg.content) });
+    }
+  }, [messages]);
 
   // Auto-run proposed actions (when enabled) and detect plan completion. Runs on
   // every new assistant message; each action fires at most once (autoRanRef).
@@ -1436,6 +1494,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
           >
             <span className="text-sm leading-none">⏹</span> Stop
           </button>
+          <QaHistoryButton onOpen={(s) => startQa(s.items, s.id)} />
           <button
             onClick={() => {
               setChatSearch("");
@@ -1685,7 +1744,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
               {clean && <Markdown text={clean} />}
               {qa.items.length > 0 && (
                 <button
-                  onClick={() => startQa(qa.items)}
+                  onClick={() => startQa(qa.items, qaHistory.add({ items: qa.items, key: qaKey(m.content) }))}
                   className="mt-2 w-full rounded bg-emerald-500/20 px-2 py-1.5 text-xs font-medium text-emerald-200 hover:bg-emerald-500/30"
                 >
                   🔍 Open QA Mode ({qa.items.length} feature{qa.items.length > 1 ? "s" : ""})
