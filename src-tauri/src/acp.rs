@@ -39,7 +39,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
-    ContentBlock, CreateTerminalRequest, CreateTerminalResponse, InitializeRequest,
+    ContentBlock, CreateTerminalRequest, CreateTerminalResponse, EnvVariable, InitializeRequest,
+    McpServer, McpServerStdio,
     KillTerminalRequest, KillTerminalResponse, NewSessionRequest, PermissionOptionKind,
     PromptRequest, ReleaseTerminalRequest, ReleaseTerminalResponse, RequestPermissionOutcome,
     RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome,
@@ -602,6 +603,21 @@ async fn run_session(
     let app_perm = app.clone();
     let id_perm = id.clone();
     let bridge = app.state::<ApprovalBridge>().inner().clone();
+    // The dev-server tools, same sidecar and bridge as the native claude path.
+    // Not in a sandbox: the sidecar is a host path the container cannot run.
+    let services_mcp: Vec<McpServer> = match bridge.services_script_path().filter(|_| !sandboxed) {
+        Some(script) => {
+            let mut srv = McpServerStdio::new("octo_services", "node");
+            srv.args = vec![script];
+            srv.env = vec![
+                EnvVariable::new("OCTO_PORT", bridge.port().to_string()),
+                EnvVariable::new("OCTO_SESSION", id.clone()),
+                EnvVariable::new("OCTO_TOKEN", bridge.token()),
+            ];
+            vec![McpServer::Stdio(srv)]
+        }
+        None => Vec::new(),
+    };
     let auto_perm = auto_approve.clone();
     // Client-terminal registry, shared across the terminal/* handlers.
     let terminals: Terminals = Arc::new(Mutex::new(HashMap::new()));
@@ -768,8 +784,10 @@ async fn run_session(
             let mut init = InitializeRequest::new(ProtocolVersion::V1);
             init.client_capabilities.terminal = true;
             conn.send_request(init).block_task().await?;
+            let mut new_session = NewSessionRequest::new(session_cwd);
+            new_session.mcp_servers = services_mcp;
             let session = conn
-                .send_request(NewSessionRequest::new(session_cwd))
+                .send_request(new_session)
                 .block_task()
                 .await?;
             let session_id = session.session_id;

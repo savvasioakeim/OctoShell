@@ -76,6 +76,66 @@ process.stdin.on("data", (d) => {
 });
 "#;
 
+/// The dev-server sidecar MCP server (Node, stdio). Always attached to agents, so
+/// an agent that needs a dev server asks OctoShell for one instead of burying
+/// `npm run dev &` in a Bash call -- where nobody can see it, stop it, or know
+/// which port it took. Every call goes through the same token-checked bridge as
+/// approvals; the UI does the actual start, so what an agent starts appears in
+/// the Services panel next to what you started.
+const SERVICES_JS: &str = r#"
+const net = require("net");
+const PORT = parseInt(process.env.OCTO_PORT, 10);
+const SESSION = process.env.OCTO_SESSION || "";
+const TOKEN = process.env.OCTO_TOKEN || "";
+const send = (o) => process.stdout.write(JSON.stringify(o) + "\n");
+function call(op, args, cb) {
+  let done = false;
+  const finish = (d) => { if (!done) { done = true; cb(d); } };
+  const sock = net.connect(PORT, "127.0.0.1", () => {
+    sock.write(JSON.stringify({ token: TOKEN, session: SESSION, op, args: args || {} }) + "\n");
+  });
+  let buf = "";
+  sock.on("data", (d) => {
+    buf += d.toString();
+    const i = buf.indexOf("\n");
+    if (i >= 0) { sock.end(); try { finish(JSON.parse(buf.slice(0, i))); } catch { finish({ ok: false, error: "bridge parse error" }); } }
+  });
+  sock.on("error", () => finish({ ok: false, error: "OctoShell is not reachable" }));
+}
+const TOOLS = [
+  { name: "list_dev_servers", description: "List every dev server OctoShell is managing: project, command, status (starting/running/exited), URL, port, pid, and who started it. Call this BEFORE starting one -- the server you need may already be running.", inputSchema: { type: "object", properties: {} } },
+  { name: "start_dev_server", description: "Start a dev server for THIS project, managed by OctoShell (visible to the user in the Services panel, stoppable, port-tracked). Use this instead of running a dev server in Bash. If this project already has one starting or running, returns that one instead of starting a duplicate. Waits briefly and returns status, URL and the first log lines.", inputSchema: { type: "object", properties: { command: { type: "string", description: "Command to run. Omit to use the project's configured dev command (else `npm run dev`)." }, port: { type: "number", description: "Port the server should use, if it needs a specific one." }, restart: { type: "boolean", description: "Restart this project's server even if it is already running." } } } },
+  { name: "stop_dev_server", description: "Stop a dev server this project owns, by id from list_dev_servers.", inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] } },
+  { name: "dev_server_logs", description: "Recent output of a managed dev server, by id from list_dev_servers. Use it to see why a server failed or which URL it printed.", inputSchema: { type: "object", properties: { id: { type: "string" }, lines: { type: "number", description: "How many trailing lines (default 60, max 300)." } }, required: ["id"] } },
+  { name: "update_task_progress", description: "Record progress on the task you were given, in OctoShell's task journal for this project. Call it when you finish a meaningful step, when you are blocked, and ONCE AT THE END. The user's QA for this work is built from this journal, so the final call must say concretely what changed and how a person can verify it.", inputSchema: { type: "object", properties: { summary: { type: "string", description: "What you just did or found, in a sentence or two." }, status: { type: "string", enum: ["in_progress", "blocked", "done"] }, changed: { type: "string", description: "What changed: features, behaviour, files (on the final call)." }, how_to_verify: { type: "string", description: "Concrete steps a person can follow to check it works: where to click, what to expect (on the final call)." } }, required: ["summary"] } },
+];
+const OPS = { list_dev_servers: "list", start_dev_server: "start", stop_dev_server: "stop", dev_server_logs: "logs", update_task_progress: "task" };
+function handle(m) {
+  if (m.method === "initialize") send({ jsonrpc: "2.0", id: m.id, result: { protocolVersion: (m.params && m.params.protocolVersion) || "2024-11-05", capabilities: { tools: {} }, serverInfo: { name: "octo_services", version: "1.0.0" } } });
+  else if (m.method === "tools/list") send({ jsonrpc: "2.0", id: m.id, result: { tools: TOOLS } });
+  else if (m.method === "tools/call") {
+    const name = m.params && m.params.name;
+    const op = OPS[name];
+    if (!op) { send({ jsonrpc: "2.0", id: m.id, result: { isError: true, content: [{ type: "text", text: "unknown tool " + name }] } }); return; }
+    call(op, (m.params && m.params.arguments) || {}, (r) => {
+      send({ jsonrpc: "2.0", id: m.id, result: { isError: !(r && r.ok), content: [{ type: "text", text: JSON.stringify(r, null, 2) }] } });
+    });
+  } else if (m.id != null && m.method) send({ jsonrpc: "2.0", id: m.id, result: {} });
+}
+let buf = "";
+process.stdin.on("data", (d) => {
+  buf += d.toString();
+  let i;
+  while ((i = buf.indexOf("\n")) >= 0) {
+    const line = buf.slice(0, i).trim();
+    buf = buf.slice(i + 1);
+    if (!line) continue;
+    let m; try { m = JSON.parse(line); } catch { continue; }
+    handle(m);
+  }
+});
+"#;
+
 /// Length-aware constant-time byte comparison (no early-exit timing leak).
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
@@ -116,6 +176,10 @@ pub struct ApprovalBridge {
     /// In-process async waiters (ACP permission requests) — resolved via a tokio
     /// oneshot so acp.rs can `.await` the user's decision directly.
     async_pending: Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<Decision>>>>,
+    /// The dev-server sidecar's path (see SERVICES_JS).
+    services_script: Arc<Mutex<Option<String>>>,
+    /// Dev-server requests waiting for the UI to act and answer.
+    services_pending: Arc<Mutex<HashMap<String, Sender<Value>>>>,
 }
 
 impl ApprovalBridge {
@@ -171,6 +235,15 @@ fn random_token() -> String {
 }
 
 #[derive(Clone, Serialize)]
+struct ServicesEvent {
+    id: String, // octoshell session (project) id that asked
+    #[serde(rename = "requestId")]
+    request_id: String,
+    op: String,
+    args: Value,
+}
+
+#[derive(Clone, Serialize)]
 struct ApprovalEvent {
     id: String, // octoshell session (project) id
     #[serde(rename = "requestId")]
@@ -187,6 +260,13 @@ struct WireReq {
     #[serde(default)]
     token: String,
     session: String,
+    /// Present on a dev-server request ("list" | "start" | "stop" | "logs");
+    /// absent on an approval, which is what every older sidecar sends.
+    #[serde(default)]
+    op: Option<String>,
+    #[serde(default)]
+    args: Value,
+    #[serde(default)]
     tool_name: String,
     #[serde(default)]
     input: Value,
@@ -204,6 +284,11 @@ impl ApprovalBridge {
             *self.script.lock().unwrap() = Some(path.to_string_lossy().to_string());
         }
 
+        let services_path = dir.join("services-mcp.cjs");
+        if std::fs::write(&services_path, SERVICES_JS).is_ok() {
+            *self.services_script.lock().unwrap() = Some(services_path.to_string_lossy().to_string());
+        }
+
         let token = random_token();
         *self.token.lock().unwrap() = token.clone();
 
@@ -214,12 +299,14 @@ impl ApprovalBridge {
         *self.port.lock().unwrap() = listener.local_addr().map(|a| a.port()).unwrap_or(0);
 
         let pending = self.pending.clone();
+        let services_pending = self.services_pending.clone();
         thread::spawn(move || {
             for stream in listener.incoming().flatten() {
                 let app = app.clone();
                 let pending = pending.clone();
+                let services_pending = services_pending.clone();
                 let token = token.clone();
-                thread::spawn(move || handle_conn(app, pending, stream, token));
+                thread::spawn(move || handle_conn(app, pending, services_pending, stream, token));
             }
         });
     }
@@ -233,11 +320,15 @@ impl ApprovalBridge {
     pub fn token(&self) -> String {
         self.token.lock().unwrap().clone()
     }
+    pub fn services_script_path(&self) -> Option<String> {
+        self.services_script.lock().unwrap().clone()
+    }
 }
 
 fn handle_conn(
     app: AppHandle,
     pending: Arc<Mutex<HashMap<String, Sender<Decision>>>>,
+    services_pending: Arc<Mutex<HashMap<String, Sender<Value>>>>,
     stream: TcpStream,
     expected_token: String,
 ) {
@@ -256,6 +347,11 @@ fn handle_conn(
     // Reject anything that doesn't present our secret — a local process trying to
     // spoof an approval prompt. Constant-time compare to avoid a timing oracle.
     if !constant_time_eq(req.token.as_bytes(), expected_token.as_bytes()) {
+        return;
+    }
+
+    if let Some(op) = req.op {
+        answer_services(&app, &services_pending, stream, req.session, op, req.args);
         return;
     }
 
@@ -314,5 +410,87 @@ pub fn approval_respond(
             Ok(())
         }
         None => Err("unknown or already-resolved approval request".into()),
+    }
+}
+
+/// Hand a dev-server request to the UI and write its answer back to the sidecar.
+///
+/// The UI owns the service list (names, logs, who started what), so it does the
+/// work; this only carries the question and the reply. A UI that never answers --
+/// the project was closed mid-request -- gets a timeout rather than a hung agent.
+fn answer_services(
+    app: &AppHandle,
+    services_pending: &Arc<Mutex<HashMap<String, Sender<Value>>>>,
+    stream: TcpStream,
+    session: String,
+    op: String,
+    args: Value,
+) {
+    let request_id = next_id();
+    let (tx, rx) = channel::<Value>();
+    services_pending.lock().unwrap().insert(request_id.clone(), tx);
+    let _ = app.emit(
+        "services://request",
+        ServicesEvent { id: session, request_id: request_id.clone(), op, args },
+    );
+    let reply = rx
+        .recv_timeout(std::time::Duration::from_secs(90))
+        .unwrap_or_else(|_| serde_json::json!({ "ok": false, "error": "OctoShell did not answer (is this project still open?)" }));
+    services_pending.lock().unwrap().remove(&request_id);
+    let mut w = stream;
+    let _ = writeln!(w, "{reply}");
+    let _ = w.flush();
+    let _ = w.shutdown(Shutdown::Both);
+}
+
+/// The UI's answer to a dev-server request from an agent.
+#[tauri::command]
+pub fn services_respond(
+    bridge: State<'_, ApprovalBridge>,
+    request_id: String,
+    result: Value,
+) -> Result<(), String> {
+    match bridge.services_pending.lock().unwrap().remove(&request_id) {
+        Some(tx) => {
+            let _ = tx.send(result);
+            Ok(())
+        }
+        None => Err("unknown or already-answered services request".into()),
+    }
+}
+
+#[cfg(test)]
+mod wire_tests {
+    use super::*;
+
+    /// Every approval sidecar in the wild sends no `op`. Adding dev-server ops to
+    /// the same wire must not turn those into something else, or approval mode
+    /// silently stops asking.
+    #[test]
+    fn an_approval_without_op_is_still_an_approval() {
+        let r: WireReq = serde_json::from_str(
+            r#"{"token":"t","session":"s","tool_name":"Bash","input":{"command":"ls"},"tool_use_id":"u"}"#,
+        )
+        .unwrap();
+        assert!(r.op.is_none());
+        assert_eq!(r.tool_name, "Bash");
+    }
+
+    #[test]
+    fn a_services_request_carries_its_op_and_args() {
+        let r: WireReq = serde_json::from_str(
+            r#"{"token":"t","session":"s","op":"start","args":{"command":"npm run dev"}}"#,
+        )
+        .unwrap();
+        assert_eq!(r.op.as_deref(), Some("start"));
+        assert_eq!(r.args["command"], "npm run dev");
+        assert_eq!(r.tool_name, "", "a services request has no tool name, and needs none");
+    }
+
+    #[test]
+    fn a_request_without_a_session_is_rejected() {
+        // The session is what routes a request to one project; without it the UI
+        // could not know whose server this is.
+        assert!(serde_json::from_str::<WireReq>(r#"{"token":"t","op":"list"}"#).is_err());
     }
 }

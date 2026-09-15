@@ -97,11 +97,25 @@ export function InputBar({ controller, cwd, busy, value, altScreen, interacting,
   const [history, setHistory] = useState<string[]>([]);
   const [histIdx, setHistIdx] = useState<number>(-1);
   const [menu, setMenu] = useState<MenuState | null>(null);
-  const [modelMenu, setModelMenu] = useState(false);
-  const [effortMenu, setEffortMenu] = useState(false);
+  // The agent pickers share ONE open slot: opening any of them closes whichever
+  // was open, instead of stacking four menus on top of each other. The setters
+  // keep the useState shape (a boolean or an updater) so every call site stays.
+  type PickerMenu = "model" | "effort" | "provider" | "profile";
+  const [openMenu, setOpenMenu] = useState<PickerMenu | null>(null);
+  const pickerSetter = (name: PickerMenu) => (v: boolean | ((open: boolean) => boolean)) =>
+    setOpenMenu((cur) => {
+      const next = typeof v === "function" ? v(cur === name) : v;
+      return next ? name : cur === name ? null : cur;
+    });
+  const modelMenu = openMenu === "model";
+  const setModelMenu = pickerSetter("model");
+  const effortMenu = openMenu === "effort";
+  const setEffortMenu = pickerSetter("effort");
   const [thoughtOpen, setThoughtOpen] = useState(false);
-  const [providerMenu, setProviderMenu] = useState(false);
-  const [profileMenu, setProfileMenu] = useState(false);
+  const providerMenu = openMenu === "provider";
+  const setProviderMenu = pickerSetter("provider");
+  const profileMenu = openMenu === "profile";
+  const setProfileMenu = pickerSetter("profile");
   const settings = useSettings();
   const agentProfileName = settings.profiles.find((p) => p.configDir === agentConfigDir)?.name ?? "Default";
 

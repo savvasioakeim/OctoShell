@@ -16,6 +16,8 @@ import { ServicesView } from "../services/ServicesView";
 import { useServices, serviceStore } from "../services/serviceStore";
 import { PortsView } from "../ports/PortsView";
 import { projectConfigStore } from "./projectConfig";
+import { orchestratorReady, requestWorktreeQa } from "../strategy/orchestratorBridge";
+import { taskJournal } from "../tasks/taskJournal";
 
 export interface ProjectTab {
   id: string;
@@ -990,6 +992,29 @@ function ContextMenu({
                 )}
               </button>
             ) : null}
+            <button
+              className="w-full px-3 py-1.5 text-left text-gray-200 hover:bg-edge disabled:cursor-default disabled:opacity-40"
+              disabled={!orchestratorReady()}
+              title={
+                orchestratorReady()
+                  ? "Ask the orchestrator for QA of this work, built from what its agent was asked and reported"
+                  : "The orchestrator isn't running"
+              }
+              onClick={() => {
+                const cwd = projTab?.controller.getCwd();
+                if (cwd && projTab) {
+                  requestWorktreeQa({
+                    project: projTab.name,
+                    branch: projTab.parentId ? projTab.name : undefined,
+                    cwd,
+                    journal: taskJournal.textFor(cwd),
+                  });
+                }
+                close();
+              }}
+            >
+              🔍 QA this {projTab?.parentId ? "worktree" : "project"}
+            </button>
             <div className="my-1 border-t border-edge" />
             <div className="px-3 py-0.5 text-[10px] uppercase tracking-wider text-muted">Group</div>
             <button className="w-full px-3 py-1.5 text-left text-gray-200 hover:bg-edge" onClick={() => newGroup(ctx.id)}>

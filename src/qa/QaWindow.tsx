@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from "react";
+import { stepsOf } from "./parseQa";
+import { dragHasFiles, filesFromDrop, isImageFile, saveDroppedFile } from "../util/drop";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { emit, listen } from "@tauri-apps/api/event";
 import {
@@ -23,6 +25,12 @@ export function QaWindow() {
   const [results, setResults] = useState<Record<string, QaResult>>({});
   const [servers, setServers] = useState<Record<string, QaServerPayload>>({});
   const [pinned, setPinned] = useState(true);
+  // Dropped screenshots: while dragging over the notes, any drop error, and a
+  // preview per saved path. Previews are object URLs for files dropped in THIS
+  // window; a QA reopened from history has paths but no previews, and shows names.
+  const [dropping, setDropping] = useState(false);
+  const [dropErr, setDropErr] = useState<string | null>(null);
+  const [previews, setPreviews] = useState<Record<string, string>>({});
   const resultsRef = useRef(results);
   resultsRef.current = results;
 
@@ -32,6 +40,9 @@ export function QaWindow() {
     void listen<QaLoadPayload>(QA.load, (e) => {
       setItems(e.payload.items);
       setIdx(0);
+      // Start from the verdicts this QA was saved with (reopened from history),
+      // or from nothing. Never from whatever the previous QA left in this window.
+      setResults(Object.fromEntries((e.payload.results ?? []).map((r) => [r.id, r])));
     }).then((u) => unsubs.push(u));
     void listen<QaServerPayload>(QA.server, (e) => {
       setServers((s) => ({ ...s, [`${e.payload.id}:${e.payload.role}`]: e.payload }));
@@ -63,8 +74,46 @@ export function QaWindow() {
 
   const setNotes = (notes: string) => {
     if (!item) return;
-    setResults((r) => ({ ...r, [item.id]: { id: item.id, verdict: r[item.id]?.verdict ?? null, notes } }));
+    setResults((r) => ({ ...r, [item.id]: { ...r[item.id], id: item.id, verdict: r[item.id]?.verdict ?? null, notes } }));
   };
+  /** Replace this item's screenshots and tell the main window right away, so a
+   *  crash or a force-close cannot lose them. */
+  const setImages = (images: string[]) => {
+    if (!item) return;
+    const cur = resultsRef.current[item.id];
+    const next: QaResult = { ...cur, id: item.id, verdict: cur?.verdict ?? null, notes: cur?.notes ?? "", images };
+    setResults((r) => ({ ...r, [item.id]: next }));
+    void emit(QA.result, next);
+  };
+
+  const onDropImages = async (e: React.DragEvent) => {
+    if (!dragHasFiles(e.dataTransfer)) return; // dragged text: let the textarea have it
+    e.preventDefault();
+    setDropping(false);
+    if (!item) return;
+    const files = filesFromDrop(e.dataTransfer);
+    const images = files.filter(isImageFile);
+    if (!images.length) {
+      setDropErr(files.length ? "Only images can be attached here." : null);
+      return;
+    }
+    setDropErr(files.length > images.length ? "Skipped the files that aren't images." : null);
+    try {
+      const saved = await Promise.all(
+        images.map(async (file) => ({ file, path: await saveDroppedFile(file) })),
+      );
+      setPreviews((p) => {
+        const n = { ...p };
+        for (const { file, path } of saved) n[path] = URL.createObjectURL(file);
+        return n;
+      });
+      const existing = resultsRef.current[item.id]?.images ?? [];
+      setImages([...existing, ...saved.map((s) => s.path)]);
+    } catch (err) {
+      setDropErr(`Couldn't attach the image: ${err}`);
+    }
+  };
+
   const flush = () => {
     if (!item) return;
     const r = resultsRef.current[item.id];
@@ -72,7 +121,7 @@ export function QaWindow() {
   };
   const decide = (verdict: Verdict) => {
     if (!item) return;
-    const next: QaResult = { id: item.id, verdict, notes: results[item.id]?.notes ?? "" };
+    const next: QaResult = { ...results[item.id], id: item.id, verdict, notes: results[item.id]?.notes ?? "" };
     setResults((r) => ({ ...r, [item.id]: next }));
     void emit(QA.result, next);
     // Advance to the next feature; on the last, stay (reviewer can close).
@@ -168,16 +217,74 @@ export function QaWindow() {
             <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted">
               What to check
             </div>
-            <p className="whitespace-pre-wrap text-xs leading-relaxed text-gray-300">{item.whatToCheck}</p>
+            {(() => {
+              // Steps as a real list, one per line, however the orchestrator
+              // formatted them; unstructured prose falls back to a paragraph.
+              const steps = stepsOf(item);
+              if (steps.length === 0) {
+                return <p className="whitespace-pre-wrap text-xs leading-relaxed text-gray-300">{item.whatToCheck}</p>;
+              }
+              return (
+                <ol className="space-y-1.5 text-xs leading-relaxed text-gray-300">
+                  {steps.map((step, i) => (
+                    <li key={i} className="flex gap-2">
+                      <span className="mt-px flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-accent/20 text-[10px] font-semibold text-accent">
+                        {i + 1}
+                      </span>
+                      <span className="min-w-0 flex-1 whitespace-pre-wrap">{step}</span>
+                    </li>
+                  ))}
+                </ol>
+              );
+            })()}
           </div>
 
           <textarea
             value={result?.notes ?? ""}
             onChange={(e) => setNotes(e.target.value)}
             onBlur={flush}
-            placeholder="Notes (optional · kept even if you close)…"
-            className="mt-3 min-h-[72px] flex-1 resize-none rounded-lg border border-edge bg-card px-3 py-2 text-xs leading-relaxed text-gray-100 outline-none transition-colors placeholder:text-muted/60 focus:border-accent/60 focus:ring-1 focus:ring-accent/30"
+            onDragOver={(e) => {
+              if (!dragHasFiles(e.dataTransfer)) return;
+              e.preventDefault();
+              setDropping(true);
+            }}
+            onDragLeave={() => setDropping(false)}
+            onDrop={(e) => void onDropImages(e)}
+            placeholder="Notes (optional · kept even if you close) — drop screenshots here…"
+            className={`mt-3 min-h-[72px] flex-1 resize-none rounded-lg border bg-card px-3 py-2 text-xs leading-relaxed text-gray-100 outline-none transition-colors placeholder:text-muted/60 focus:border-accent/60 focus:ring-1 focus:ring-accent/30 ${
+              dropping ? "border-accent bg-accent/5" : "border-edge"
+            }`}
           />
+          {(result?.images?.length ?? 0) > 0 && (
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {result!.images!.map((path) => {
+                const name = path.split(/[\\/]/).pop() ?? path;
+                return (
+                  <div key={path} title={path} className="group relative">
+                    {previews[path] ? (
+                      <img
+                        src={previews[path]}
+                        alt={name}
+                        className="h-14 w-14 rounded-md border border-edge object-cover"
+                      />
+                    ) : (
+                      <div className="flex h-14 max-w-[9rem] items-center rounded-md border border-edge bg-card px-2 text-[10px] text-muted">
+                        <span className="truncate">🖼 {name}</span>
+                      </div>
+                    )}
+                    <button
+                      onClick={() => setImages((result?.images ?? []).filter((p) => p !== path))}
+                      title="Remove"
+                      className="absolute -right-1 -top-1 hidden h-4 w-4 items-center justify-center rounded-full bg-red-500/80 text-[9px] text-white group-hover:flex"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {dropErr && <p className="mt-1 text-[11px] text-red-300">{dropErr}</p>}
 
           <div className="mt-3 grid grid-cols-2 gap-2">
             <VerdictBtn active={result?.verdict === "approve"} tone="approve" onClick={() => decide("approve")}>

@@ -66,6 +66,7 @@ impl AgentManager {
         config_dir: Option<String>,
         effort: Option<String>,
         skills_off: Vec<String>,
+        services_script: Option<String>,
     ) -> Result<(), String> {
         // One active turn per session: replace any in-flight run.
         if let Some(mut old) = self.runs.lock().unwrap().remove(&id) {
@@ -124,28 +125,48 @@ impl AgentManager {
                     ),
                 );
             }
+            // MCP servers OctoShell itself provides, assembled once for one
+            // `--mcp-config`. The dev-server tools ride along on every run (a
+            // sandboxed run excepted: the sidecar is a host path the container
+            // cannot see); the approval server only in approval mode.
+            let octo_env = serde_json::json!({
+                "OCTO_PORT": approval_port.to_string(),
+                "OCTO_SESSION": id.clone(),
+                "OCTO_TOKEN": approval_token.clone(),
+            });
+            let mut mcp_servers = serde_json::Map::new();
+            if let Some(script) = services_script.as_ref().filter(|_| !sandboxed) {
+                mcp_servers.insert(
+                    "octo_services".into(),
+                    serde_json::json!({ "command": "node", "args": [script], "env": octo_env }),
+                );
+            }
             if approval && approval_script.is_some() {
                 let script = approval_script.unwrap();
-                let mcp = serde_json::json!({
-                    "mcpServers": { "octo": {
-                        "command": "node",
-                        "args": [script],
-                        "env": { "OCTO_PORT": approval_port.to_string(), "OCTO_SESSION": id.clone(), "OCTO_TOKEN": approval_token.clone() }
-                    } }
-                })
-                .to_string();
+                mcp_servers.insert(
+                    "octo".into(),
+                    serde_json::json!({ "command": "node", "args": [script], "env": octo_env }),
+                );
                 args.extend([
                     "--permission-mode".into(), "default".into(),
                     "--permission-prompt-tool".into(), "mcp__octo__approve".into(),
-                    "--mcp-config".into(), mcp,
                 ]);
                 if let Ok(serde_json::Value::Object(ask)) =
                     serde_json::from_str::<serde_json::Value>(crate::approval::ASK_TOOLS)
                 {
                     settings.extend(ask);
                 }
+                // Asking before an agent may LIST or START a managed server would
+                // prompt for the one route we want agents to take instead of Bash.
+                if let Some(serde_json::Value::Object(perms)) = settings.get_mut("permissions") {
+                    perms.insert("allow".into(), serde_json::json!(["mcp__octo_services"]));
+                }
             } else {
                 args.push("--dangerously-skip-permissions".into());
+            }
+            if !mcp_servers.is_empty() {
+                args.push("--mcp-config".into());
+                args.push(serde_json::json!({ "mcpServers": mcp_servers }).to_string());
             }
             if !settings.is_empty() {
                 args.push("--settings".into());
@@ -333,7 +354,7 @@ pub fn agent_send(
     manager.send(
         app, id, prompt, cwd, resume, model, provider,
         approval.unwrap_or(false), bridge.port(), bridge.script_path(), bridge.token(), config_dir,
-        effort, skills_off.unwrap_or_default(),
+        effort, skills_off.unwrap_or_default(), bridge.services_script_path(),
     )
 }
 
