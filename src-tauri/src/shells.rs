@@ -75,6 +75,10 @@ function global:prompt {
 /// OSC 7 expects, and `parse_cwd` decodes it.
 const ZSH_INTEGRATION: &str = r#"
 # --- OctoShell shell integration (OSC 133 command markers + OSC 7 cwd) ---
+# zsh marks output that didn't end in a newline with a reverse "%" and relies on
+# the next prompt overwriting it. OctoShell freezes each command's output as its
+# own block, so nothing overwrites it and the "%" stayed in the block.
+unsetopt PROMPT_SP
 __octo_precmd() {
   local __octo_code=$?
   local __octo_pwd=${PWD//\%/%25}
