@@ -9,7 +9,7 @@ import { KEY, loadJSON, removeKey, saveJSON } from "../util/persist";
 import { deleteBlocksDb, loadBlocksDb, saveBlocksDb } from "../util/db";
 import { notify } from "../util/notify";
 import { playSfx } from "../util/sfx";
-import { acpCommandFor, acpSandboxCommandFor, acpSessionConfigFor, isAcp, normalizeProvider, parseAgentLine, prepareOpencodeConfig, supportsEffort, type AgentProvider, type AgentStep } from "../agents/providers";
+import { acpCommandFor, acpSandboxCommandFor, acpSessionConfigFor, configDirEnvFor, isAcp, normalizeProvider, parseAgentLine, prepareOpencodeConfig, supportsEffort, type AgentProvider, type AgentStep } from "../agents/providers";
 import { settingsStore } from "../settings/settingsStore";
 import { serviceStore, type ServiceEntry } from "../services/serviceStore";
 import { taskJournal } from "../tasks/taskJournal";
@@ -1042,6 +1042,14 @@ export class ShellController {
     // Tear down a running ACP adapter before switching, or the next prompt would
     // hit the OLD agent (backend keys sessions by id, not provider).
     if (isAcp(this.agentProvider)) this.resetAcpSession();
+    // A profile is a folder handed to the CLI through ITS env var, so a Claude
+    // profile (CLAUDE_CONFIG_DIR) means nothing to Codex (CODEX_HOME): carried
+    // over, Codex looked for its login inside the Claude folder and failed with
+    // "Authentication required". Keep it only when the variable is the same.
+    if (configDirEnvFor(provider) !== configDirEnvFor(this.agentProvider) && this.agentConfigDir) {
+      this.agentConfigDir = null;
+      saveJSON(KEY.agentCfgDir(this.sessionId), null);
+    }
     this.agentProvider = provider;
     this.agentSessionId = null;
     this.agentModel = null; // model names are provider-specific
