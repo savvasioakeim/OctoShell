@@ -10,10 +10,26 @@ export function base64ToBytes(b64: string): Uint8Array {
   return out;
 }
 
+/** Cursor-forward (`ESC[nC`) as the spaces it stands for. xterm's serializer
+ *  writes a run of empty cells that way (the gaps `ls` leaves between columns
+ *  with tabs), so dropping it glued `package.json  README.md` into one word. */
+// eslint-disable-next-line no-control-regex
+const CURSOR_FORWARD = /\x1b\[(\d*)C/g;
+/** At a soft-wrapped line the serializer redraws a row's tail with a hop up,
+ *  right, erase, left and down. It carries no text, so it goes first, or its
+ *  hop right would turn into spaces too. */
+// eslint-disable-next-line no-control-regex
+const WRAP_REDRAW = /\x1b\[A\x1b\[\d*C\x1b\[\d*X\x1b\[\d*D\x1b\[B/g;
+function forwardAsSpaces(input: string): string {
+  return input
+    .replace(WRAP_REDRAW, "")
+    .replace(CURSOR_FORWARD, (_, n: string) => " ".repeat(Math.max(1, parseInt(n, 10) || 1)));
+}
+
 /** Remove all escape sequences, leaving plain text. */
 export function stripAnsi(input: string): string {
   // eslint-disable-next-line no-control-regex
-  return input.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]/g, "");
+  return forwardAsSpaces(input).replace(/\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]/g, "");
 }
 
 const DEFAULT_FG = "#A6ACCD"; // matches the live xterm foreground (Palenight)
@@ -105,7 +121,8 @@ function styleOf(state: SgrState): string {
  * SerializeAddon.serialize()) into HTML wrapped in a <pre>. Result is fully
  * selectable, so copy-paste behaves like a text editor across blocks.
  */
-export function ansiToHtml(input: string): string {
+export function ansiToHtml(raw: string): string {
+  const input = forwardAsSpaces(raw);
   const state = freshState();
   let html = "";
   let text = "";

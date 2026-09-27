@@ -16,6 +16,8 @@ use std::thread;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
+use crate::platform;
+
 const MODEL: &str = "claude-sonnet-5";
 const API_URL: &str = "https://api.anthropic.com/v1/messages";
 /// Output cap for the sidebar's API transport. 1024 silently truncated longer
@@ -45,6 +47,7 @@ pub struct AiManager {
 impl AiManager {
     pub fn cancel(&self, id: &str) {
         if let Some(mut child) = self.runs.lock().unwrap().remove(id) {
+            platform::kill_tree(child.id());
             let _ = child.kill();
         }
     }
@@ -73,6 +76,10 @@ pub async fn ai_chat(
     // MCP server names the orchestrator may use (from Settings). Empty/None =
     // planner-only (no MCP servers loaded, the safe default).
     allowed_mcp: Option<Vec<String>>,
+    // The open tabs' working directories. Only used to resolve MCP config: a
+    // server's authenticated definition is usually project-scoped, so without
+    // these we'd load the bare user-level one and fail to connect.
+    cwds: Option<Vec<String>>,
     // MCP servers contributed by enabled mods, as `{name: {command,args,env}}`.
     // Merged with the ones from the user's Claude config, but NEVER on top of
     // them: a mod must not be able to shadow a server the user already trusts by
@@ -98,7 +105,7 @@ pub async fn ai_chat(
         // child is registered under `request_id` so `ai_cancel` can kill it.
         let runs = manager.runs.clone();
         tauri::async_runtime::spawn_blocking(move || {
-            chat_via_cli(runs, request_id, provider, messages, system, model, config_dir, allowed_mcp, mod_mcp, readonly)
+            chat_via_cli(runs, request_id, provider, messages, system, model, config_dir, allowed_mcp, cwds, mod_mcp, readonly)
         })
         .await
         .map_err(|e| e.to_string())?
@@ -125,23 +132,142 @@ fn claude_config_path(config_dir: Option<&str>) -> Option<std::path::PathBuf> {
     }
 }
 
-/// The user's home directory, without pulling in the `dirs` crate: `USERPROFILE`
-/// on Windows, `HOME` elsewhere.
 pub fn home_dir() -> Option<std::path::PathBuf> {
-    #[cfg(windows)]
-    let var = "USERPROFILE";
-    #[cfg(not(windows))]
-    let var = "HOME";
-    std::env::var_os(var).map(std::path::PathBuf::from)
+    platform::home_dir()
 }
 
-/// The `mcpServers` object from the resolved config, or empty if none/unreadable.
-fn mcp_servers_map(config_dir: Option<&str>) -> serde_json::Map<String, serde_json::Value> {
+/// The whole Claude config as JSON, or None if missing/unreadable.
+fn claude_config(config_dir: Option<&str>) -> Option<serde_json::Value> {
     claude_config_path(config_dir)
         .and_then(|p| std::fs::read_to_string(p).ok())
         .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
-        .and_then(|v| v.get("mcpServers").and_then(|m| m.as_object()).cloned())
+}
+
+/// The project-scoped `mcpServers` entries that apply to `cwd`, shallowest
+/// ancestor first.
+///
+/// Claude Code keeps per-directory config under `projects["<abs cwd>"]`, and a
+/// server defined there routinely carries the credentials the user-level one
+/// lacks — an `Authorization` header for an HTTP server, tokens in `env` for a
+/// stdio one. We match ANCESTORS, not just the exact path, because the workspace
+/// folder is where those servers get configured while a tab is opened on a repo
+/// one level down: an exact-match lookup finds nothing, falls back to the bare
+/// user-level definition, and the CLI then tries to OAuth a server that only
+/// ever worked because of a static header.
+fn project_scoped_servers(cfg: &serde_json::Value, cwd: &str) -> Vec<serde_json::Map<String, serde_json::Value>> {
+    let Some(projects) = cfg.get("projects").and_then(|p| p.as_object()) else {
+        return Vec::new();
+    };
+    let here = std::path::Path::new(cwd);
+    let mut hits: Vec<(usize, serde_json::Map<String, serde_json::Value>)> = projects
+        .iter()
+        .filter(|(dir, _)| here.starts_with(std::path::Path::new(dir)))
+        .filter_map(|(dir, entry)| {
+            let servers = entry.get("mcpServers").and_then(|m| m.as_object())?;
+            (!servers.is_empty()).then(|| (std::path::Path::new(dir).components().count(), servers.clone()))
+        })
+        .collect();
+    hits.sort_by_key(|(depth, _)| *depth);
+    hits.into_iter().map(|(_, servers)| servers).collect()
+}
+
+/// The MCP servers visible from `cwds`: the user-level `mcpServers`, with
+/// project-scoped ones layered over them (nearest directory wins), which is the
+/// precedence the CLI itself applies. `cwds` is normally the open tabs — the
+/// orchestrator spans all of them — and on a name collision between two of them
+/// the later tab wins; two open projects defining the same server name
+/// differently isn't a case worth more machinery than that.
+pub(crate) fn mcp_servers_map(config_dir: Option<&str>, cwds: &[String]) -> serde_json::Map<String, serde_json::Value> {
+    claude_config(config_dir)
+        .map(|cfg| merge_servers(&cfg, cwds))
         .unwrap_or_default()
+}
+
+/// The layering itself, split out from the file read so it can be tested.
+fn merge_servers(cfg: &serde_json::Value, cwds: &[String]) -> serde_json::Map<String, serde_json::Value> {
+    let mut merged = cfg
+        .get("mcpServers")
+        .and_then(|m| m.as_object())
+        .cloned()
+        .unwrap_or_default();
+    for cwd in cwds.iter().filter(|c| !c.trim().is_empty()) {
+        for layer in project_scoped_servers(cfg, cwd) {
+            for (name, def) in layer {
+                merged.insert(name, def);
+            }
+        }
+    }
+    merged
+}
+
+#[cfg(test)]
+mod mcp_tests {
+    use super::merge_servers;
+    use serde_json::json;
+
+    fn config() -> serde_json::Value {
+        json!({
+            "mcpServers": {
+                // The user-level definition: no credentials, so loading THIS one
+                // is what sent the CLI down an OAuth path the server rejects.
+                "partners": { "type": "http", "url": "https://example.test/mcp" },
+                "blender": { "type": "stdio", "command": "uvx" }
+            },
+            "projects": {
+                "/work": {
+                    "mcpServers": {
+                        "partners": {
+                            "type": "http",
+                            "url": "https://example.test/mcp",
+                            "headers": { "Authorization": "Bearer secret" }
+                        }
+                    }
+                },
+                "/work/repo": {
+                    "mcpServers": { "partners": { "type": "http", "url": "https://nearer.test/mcp" } }
+                },
+                "/elsewhere": {
+                    "mcpServers": { "other": { "type": "stdio", "command": "other" } }
+                }
+            }
+        })
+    }
+
+    #[test]
+    fn user_level_servers_survive() {
+        let merged = merge_servers(&config(), &[]);
+        assert!(merged.contains_key("blender"));
+        assert!(merged["partners"].get("headers").is_none());
+    }
+
+    /// The bug this fix exists for: the tab sits on a repo, the credentials sit
+    /// on the workspace folder above it.
+    #[test]
+    fn an_ancestors_credentials_are_adopted() {
+        let merged = merge_servers(&config(), &["/work/deep/repo".to_string()]);
+        assert_eq!(merged["partners"]["headers"]["Authorization"], "Bearer secret");
+        assert!(merged.contains_key("blender"), "user-level servers must not be lost");
+    }
+
+    #[test]
+    fn the_nearest_directory_wins() {
+        let merged = merge_servers(&config(), &["/work/repo".to_string()]);
+        assert_eq!(merged["partners"]["url"], "https://nearer.test/mcp");
+    }
+
+    /// Path matching is by component, so a sibling with a shared name prefix is
+    /// not an ancestor.
+    #[test]
+    fn a_name_prefix_is_not_an_ancestor() {
+        let merged = merge_servers(&config(), &["/workshop".to_string()]);
+        assert!(merged["partners"].get("headers").is_none());
+    }
+
+    #[test]
+    fn unrelated_projects_are_ignored() {
+        let merged = merge_servers(&config(), &["/work".to_string()]);
+        assert!(!merged.contains_key("other"));
+    }
 }
 
 /// One MCP server the user has configured, for the Settings checklist.
@@ -153,10 +279,12 @@ pub struct McpServerInfo {
 }
 
 /// List the MCP servers configured for a given profile (or the home default),
-/// so the user can tick which ones the orchestrator is allowed to use.
+/// so the user can tick which ones the orchestrator is allowed to use. `cwds`
+/// (the open tabs) brings in project-scoped servers, which is where an
+/// authenticated definition usually lives.
 #[tauri::command]
-pub fn list_mcp_servers(config_dir: Option<String>) -> Vec<McpServerInfo> {
-    let map = mcp_servers_map(config_dir.as_deref());
+pub fn list_mcp_servers(config_dir: Option<String>, cwds: Option<Vec<String>>) -> Vec<McpServerInfo> {
+    let map = mcp_servers_map(config_dir.as_deref(), &cwds.unwrap_or_default());
     let mut out: Vec<McpServerInfo> = map
         .iter()
         .map(|(name, def)| {
@@ -338,6 +466,7 @@ fn chat_via_cli(
     model: Option<String>,
     config_dir: Option<String>,
     allowed_mcp: Option<Vec<String>>,
+    cwds: Option<Vec<String>>,
     mod_mcp: Option<serde_json::Value>,
     readonly: Option<bool>,
 ) -> Result<String, String> {
@@ -409,6 +538,7 @@ fn chat_via_cli(
         //     orchestrator call them headlessly WITHOUT `--dangerously-skip-
         //     permissions`, so Bash / file edits stay denied. Startup/tool
         //     timeouts bound a stuck server instead of hanging the turn.
+        let cwds = cwds.unwrap_or_default();
         let selected: Vec<String> = allowed_mcp
             .unwrap_or_default()
             .into_iter()
@@ -437,7 +567,7 @@ fn chat_via_cli(
             }
         }
         if !selected.is_empty() {
-            let mut all = mcp_servers_map(config_dir.as_deref());
+            let mut all = mcp_servers_map(config_dir.as_deref(), &cwds);
             // Mods fill only the gaps: a config server always wins a name
             // collision, so installing a mod can never silently redirect an MCP
             // server the user already relies on.
@@ -458,7 +588,13 @@ fn chat_via_cli(
                 }
                 let cfg = serde_json::json!({ "mcpServers": chosen }).to_string();
                 cmd.arg("--mcp-config").arg(cfg);
-                cmd.env("MCP_TIMEOUT", "8000"); // server startup budget (ms)
+                // Server startup budget (ms). 8s was too tight to distinguish a
+                // hung server from a slow one: a stdio server launched through
+                // `npx` cold-starts well past that on a machine under load, and
+                // every time it did, the turn reported the server as simply down.
+                // 20s still bounds a genuinely stuck server (the CLI's own default
+                // is 30s) without turning load into a false outage.
+                cmd.env("MCP_TIMEOUT", "20000");
                 cmd.env("MCP_TOOL_TIMEOUT", "60000"); // per-tool-call budget (ms)
             }
         }
@@ -480,15 +616,12 @@ fn chat_via_cli(
         }
     }
 
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
+    // No console window; its own process group so a cancel ends the CLI's MCP
+    // servers with it.
+    platform::background(&mut cmd);
 
     let mut child = cmd.spawn().map_err(|e| {
-        format!("could not launch the `{provider}` CLI (is it installed and on PATH?): {e}")
+        crate::platform::spawn_error(&provider, None, &e)
     })?;
     // Tie the assistant CLI to OctoShell's lifetime so it can't be orphaned.
     crate::jobctl::add(child.id());

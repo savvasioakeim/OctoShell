@@ -15,6 +15,8 @@
 // single table, and `AgentProvider` is DERIVED from its keys: a typo is a
 // compile error, and a new provider is one object.
 
+import { hostCommand } from "../platform/platform";
+
 /** One entry in a provider's model picker. `value: null` = let the CLI decide. */
 export interface ModelOption {
   label: string;
@@ -51,18 +53,33 @@ export const OLLAMA_MODELS: ModelOption[] = [
   { label: "Gemma 3 4B", value: "ollama/gemma3:4b" },
 ];
 
+/** Models offered for Codex, set on the ACP session as its `model` option
+ *  (the ones a ChatGPT login accepts as of 2026-09-27). */
+export const CODEX_MODELS: ModelOption[] = [
+  { label: "Default", value: null },
+  { label: "GPT-6 Sol", value: "gpt-6-sol" },
+  { label: "GPT-6 Luna", value: "gpt-6-luna" },
+  { label: "GPT-6 Astra", value: "gpt-6-astra" },
+];
+
 /** For providers whose model selection isn't plumbed through their adapter yet —
  *  they run their own default. Stops e.g. Codex from offering Claude's aliases. */
 const DEFAULT_ONLY: ModelOption[] = [{ label: "Default", value: null }];
 
 /** An ACP-speaking agent: how to launch it, and how to set its model. */
 export interface AcpAgentDef {
-  /** Launch command (whitespace-split; `AcpAgent::from_str` parses it). */
+  /** Launch command in its plain form (whitespace-split; `AcpAgent::from_str`
+   *  parses it). On Windows, `acpCommandFor` runs it through `cmd /c`, since
+   *  npm-installed CLIs are `.cmd` shims there; elsewhere it runs as written. */
   command: string;
   /** Env var that selects the model, prefixed onto the command as
    *  `NAME=value` (ACP parses leading NAME=value tokens as env vars). Null when
    *  the agent doesn't take a model via env — then it gets a trailing `-m`. */
   modelEnv: string | null;
+  /** Model and effort are set on the ACP session after it starts, as these
+   *  config options, instead of on the command line. Absent = command line
+   *  (and no effort at all). */
+  sessionOptions?: { model: string; effort: string };
   /** Docker image to run the WHOLE adapter inside when the sandbox setting is on
    *  (host isolation for every command the agent runs — not just delegated
    *  terminals). Null = no sandbox support (the adapter needs a host-installed
@@ -98,7 +115,8 @@ export interface ProviderDef {
 }
 
 /** THE provider table. One entry per agent; the key is the persisted provider id.
- *  On Windows npx/gemini are `.cmd` shims, so their commands go through cmd.exe. */
+ *  Launch commands are written once, in plain form; `hostCommand` adds the
+ *  Windows `cmd /c` shim at launch time. */
 export const PROVIDER_DEFS = {
   claude: {
     label: "Claude",
@@ -121,7 +139,7 @@ export const PROVIDER_DEFS = {
     models: CLAUDE_MODELS,
     configDirEnv: "CLAUDE_CONFIG_DIR",
     acp: {
-      command: "cmd /c npx -y @agentclientprotocol/claude-agent-acp",
+      command: "npx -y @agentclientprotocol/claude-agent-acp",
       modelEnv: "ANTHROPIC_MODEL",
       // claude-code (which the adapter wraps) needs node >= 22.
       dockerImage: "node:22",
@@ -132,16 +150,17 @@ export const PROVIDER_DEFS = {
   "acp-codex": {
     label: "Codex (ACP)",
     transport: "acp",
-    models: DEFAULT_ONLY,
+    models: CODEX_MODELS,
     configDirEnv: "CODEX_HOME",
     acp: {
-      // OpenAI Codex over ACP. Was @zed-industries/codex-acp, which npm now
-      // marks deprecated ("replaced by @agentclientprotocol/codex-acp") and
-      // which last shipped in June; the new package is maintained. Model
-      // selection through the adapter isn't confirmed, so it runs the agent's
-      // default (no modelEnv).
-      command: "cmd /c npx -y @agentclientprotocol/codex-acp@latest",
+      // OpenAI Codex via the ACP adapter. The old @zed-industries package is
+      // deprecated, and its bundled Codex rejects the GPT-6 models on a ChatGPT
+      // login ("model is not supported when using Codex with a ChatGPT
+      // account"). This one takes model and effort as session options
+      // (verified 2026-09-27: `model`, `reasoning_effort`).
+      command: "npx -y @agentclientprotocol/codex-acp@latest",
       modelEnv: null,
+      sessionOptions: { model: "model", effort: "reasoning_effort" },
       dockerImage: "node:22",
       dockerCommand: "npx -y @agentclientprotocol/codex-acp@latest",
       // The adapter wraps the codex CLI; its interactive run offers the login.
@@ -153,28 +172,28 @@ export const PROVIDER_DEFS = {
     transport: "acp",
     models: DEFAULT_ONLY,
     configDirEnv: "XDG_DATA_HOME",
-    acp: { command: "cmd /c opencode acp", modelEnv: null, dockerImage: null, dockerCommand: null, loginCommand: null },
+    acp: { command: "opencode acp", modelEnv: null, dockerImage: null, dockerCommand: null, loginCommand: null },
   },
   "acp-cursor": {
     label: "Cursor (ACP)",
     transport: "acp",
     models: DEFAULT_ONLY,
     configDirEnv: "CURSOR_CONFIG_DIR",
-    acp: { command: "cmd /c cursor-agent acp", modelEnv: null, dockerImage: null, dockerCommand: null, loginCommand: null },
+    acp: { command: "cursor-agent acp", modelEnv: null, dockerImage: null, dockerCommand: null, loginCommand: null },
   },
   "acp-copilot": {
     label: "Copilot (ACP)",
     transport: "acp",
     models: DEFAULT_ONLY,
     configDirEnv: "COPILOT_HOME",
-    acp: { command: "cmd /c copilot --acp --stdio", modelEnv: null, dockerImage: null, dockerCommand: null, loginCommand: null },
+    acp: { command: "copilot --acp --stdio", modelEnv: null, dockerImage: null, dockerCommand: null, loginCommand: null },
   },
   "acp-kiro": {
     label: "Kiro (ACP)",
     transport: "acp",
     models: DEFAULT_ONLY,
     configDirEnv: null,
-    acp: { command: "cmd /c kiro-cli acp --trust-all-tools", modelEnv: null, dockerImage: null, dockerCommand: null, loginCommand: null },
+    acp: { command: "kiro-cli acp --trust-all-tools", modelEnv: null, dockerImage: null, dockerCommand: null, loginCommand: null },
   },
   "acp-gemini": {
     label: "Gemini (ACP)",
@@ -192,8 +211,9 @@ export const PROVIDER_DEFS = {
       // point — so neither can be added as an adapter here yet. Revisit once
       // `agy` ships either --acp or a stream-json headless mode.
       // `--acp`, not `--experimental-acp`: the CLI's own help marks the
-      // latter "deprecated, use --acp instead".
-      command: "cmd /c npx -y -- @google/gemini-cli@latest --acp",
+      // latter "deprecated, use --acp instead" (verified against 0.61.0,
+      // which answers `initialize` on the new flag).
+      command: "npx -y -- @google/gemini-cli@latest --acp",
       modelEnv: null,
       dockerImage: "node:22",
       dockerCommand: "npx -y -- @google/gemini-cli@latest --acp",
@@ -212,7 +232,7 @@ export const PROVIDER_DEFS = {
       // `-m ollama/<model>`, which is why OLLAMA_MODELS values carry the prefix.
       // Runs fully local, so there is no login. No generic image ships
       // OpenCode+Ollama, so it can't be sandboxed either.
-      command: "cmd /c opencode acp",
+      command: "opencode acp",
       modelEnv: null,
       dockerImage: null,
       dockerCommand: null,
@@ -260,11 +280,28 @@ export const EFFORT_LEVELS: { value: string | null; label: string }[] = [
 
 /** True if an effort picker means anything for this provider.
  *
- *  Only native `claude`: `--effort` is a claude-code CLI flag, and the ACP
- *  adapters take their own arguments that we do not control. Showing the picker
- *  anywhere else would be a control that quietly does nothing. */
+ *  Native `claude` takes `--effort`; an ACP adapter only when it takes effort as
+ *  a session option (Codex). Showing the picker anywhere else would be a control
+ *  that quietly does nothing. */
 export function supportsEffort(provider: AgentProvider): boolean {
-  return provider === "claude";
+  return provider === "claude" || !!providerDef(provider).acp?.sessionOptions;
+}
+
+/** The model part of an ACP launch command: an env prefix or `-m`. Adapters
+ *  that take it as a session option get nothing here. */
+function withModel(def: AcpAgentDef, cmd: string, model: string | null): string {
+  if (!model || def.sessionOptions) return cmd;
+  return def.modelEnv ? `${def.modelEnv}=${model} ${cmd}` : `${cmd} -m ${model}`;
+}
+
+/** Options to set on a new ACP session (`acp_send`'s sessionConfig). */
+export function acpSessionConfigFor(provider: AgentProvider, model: string | null, effort: string | null): [string, string][] {
+  const o = providerDef(provider).acp?.sessionOptions;
+  if (!o) return [];
+  return [
+    ...(model ? [[o.model, model] as [string, string]] : []),
+    ...(effort ? [[o.effort, effort] as [string, string]] : []),
+  ];
 }
 
 /** The model list for a provider.
@@ -288,8 +325,8 @@ export function acpCommandFor(
 ): string {
   const def = providerDef(provider).acp;
   if (!def) return "";
-  let cmd = def.command;
-  if (model) cmd = def.modelEnv ? `${def.modelEnv}=${model} ${cmd}` : `${cmd} -m ${model}`;
+  // `cmd /c …` on Windows (npm shims), the plain command elsewhere.
+  let cmd = withModel(def, hostCommand(def.command), model);
   // Profile selection: point the CLI's config/account dir env var at the chosen
   // folder (forward-slashed so backslashes don't confuse the ACP tokeniser). NOTE:
   // the tokeniser is whitespace-split, so a profile path containing spaces won't
@@ -348,11 +385,7 @@ export function acpSandboxCommandFor(
 ): { image: string; command: string } | null {
   const def = providerDef(provider).acp;
   if (!def || !def.dockerImage || !def.dockerCommand) return null;
-  let command = def.dockerCommand;
-  if (model) {
-    command = def.modelEnv ? `${def.modelEnv}=${model} ${command}` : `${command} -m ${model}`;
-  }
-  return { image: def.dockerImage, command };
+  return { image: def.dockerImage, command: withModel(def, def.dockerCommand, model) };
 }
 
 /** True for any provider that runs over ACP (acp.rs). Reads the table rather
@@ -581,6 +614,18 @@ function parseClaude(ev: any): NormEvent[] {
     }
     // message_stop and content_block_start/stop → ignore.
   } else if (ev?.type === "assistant") {
+    // The CLI reports its OWN failures ("Not logged in · Please run /login",
+    // rate limits) as an assistant message from a `<synthetic>` model, on stdout,
+    // with an empty stderr and a non-zero exit. Those never stream as deltas, so
+    // without this the turn ended with nothing on screen at all.
+    if (ev.message?.model === "<synthetic>") {
+      const text = (ev.message?.content ?? [])
+        .map((c: any) => (c?.type === "text" ? c.text : ""))
+        .join("")
+        .trim();
+      if (text) out.push({ text: `⚠️ ${text}` });
+      return out;
+    }
     for (const c of ev.message?.content ?? []) {
       if (c.type === "tool_use") {
         const input =

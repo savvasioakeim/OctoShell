@@ -39,13 +39,16 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use bollard::container::{
-    Config, CreateContainerOptions, ListContainersOptions, LogOutput, RemoveContainerOptions,
-    StartContainerOptions,
-};
+// bollard 0.19 moved every query parameter into `query_parameters` (with a
+// builder each) and renamed the container body: `container::Config` is now
+// `models::ContainerCreateBody`. Same wire calls, different names.
+use bollard::container::LogOutput;
 use bollard::exec::{CreateExecOptions, StartExecResults};
-use bollard::image::CreateImageOptions;
-use bollard::models::{HostConfig, Mount, MountTypeEnum};
+use bollard::models::{ContainerCreateBody, HostConfig, Mount, MountType};
+use bollard::query_parameters::{
+    CreateContainerOptionsBuilder, CreateImageOptionsBuilder, ListContainersOptionsBuilder,
+    RemoveContainerOptionsBuilder, StartContainerOptions,
+};
 use bollard::Docker;
 use futures_util::StreamExt;
 use serde::Serialize;
@@ -106,10 +109,7 @@ async fn ensure_image(docker: &Docker, image: &str) -> Result<(), BoxError> {
     if docker.inspect_image(image).await.is_ok() {
         return Ok(());
     }
-    let opts = CreateImageOptions {
-        from_image: image.to_string(),
-        ..Default::default()
-    };
+    let opts = CreateImageOptionsBuilder::default().from_image(image).build();
     let mut stream = docker.create_image(Some(opts), None, None);
     // Drain the pull progress; surface the first failure (bad tag, no network…).
     while let Some(item) = stream.next().await {
@@ -139,7 +139,7 @@ async fn create_container(
         mounts: Some(vec![Mount {
             target: Some(WORKDIR.to_string()),
             source: Some(worktree_path.to_string()),
-            typ: Some(MountTypeEnum::BIND),
+            typ: Some(MountType::BIND),
             // When read_only, the agent can't modify the worktree (lint/typecheck
             // steps). Off by default (build/test usually write).
             read_only: Some(opts.read_only),
@@ -161,7 +161,7 @@ async fn create_container(
         ..Default::default()
     };
 
-    let config = Config {
+    let config = ContainerCreateBody {
         image: Some(image.to_string()),
         working_dir: Some(WORKDIR.to_string()),
         cmd: Some(vec!["tail".to_string(), "-f".to_string(), "/dev/null".to_string()]),
@@ -178,16 +178,13 @@ async fn create_container(
         ..Default::default()
     };
 
-    let opts = name.map(|n| CreateContainerOptions {
-        name: n.to_string(),
-        platform: None,
-    });
+    let opts = name.map(|n| CreateContainerOptionsBuilder::default().name(n).build());
     let created = docker
         .create_container(opts, config)
         .await
         .map_err(|e| format!("could not create sandbox container: {e}"))?;
     docker
-        .start_container(&created.id, None::<StartContainerOptions<String>>)
+        .start_container(&created.id, None::<StartContainerOptions>)
         .await
         .map_err(|e| format!("could not start sandbox container: {e}"))?;
     Ok(created.id)
@@ -202,11 +199,7 @@ pub async fn cleanup_orphans() {
     let Ok(docker) = connect().await else { return };
     let mut filters = HashMap::new();
     filters.insert("label", vec![SANDBOX_LABEL]);
-    let opts = ListContainersOptions {
-        all: true,
-        filters,
-        ..Default::default()
-    };
+    let opts = ListContainersOptionsBuilder::default().all(true).filters(&filters).build();
     if let Ok(list) = docker.list_containers(Some(opts)).await {
         for c in list {
             if let Some(id) = c.id {
@@ -221,10 +214,7 @@ async fn remove_container(docker: &Docker, id: &str) {
     let _ = docker
         .remove_container(
             id,
-            Some(RemoveContainerOptions {
-                force: true,
-                ..Default::default()
-            }),
+            Some(RemoveContainerOptionsBuilder::default().force(true).build()),
         )
         .await;
 }

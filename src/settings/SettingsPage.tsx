@@ -25,6 +25,7 @@ import type { StrategyRole } from "../strategy/roles";
 import { vacuumDb, type VacuumResult } from "../util/db";
 import { memoryStore, useMemoryStats } from "../memory/memoryStore";
 import { projectConfigStore, useProjectScripts } from "../projects/projectConfig";
+import { effectiveShell, isWindows, platform } from "../platform/platform";
 import { updateStore, useUpdate } from "../updates/updateStore";
 
 type TabId = "ai" | "local" | "roles" | "skills" | "projects" | "workspace" | "appearance" | "system";
@@ -114,7 +115,7 @@ export function SettingsPage({
         {/* Content — one panel; sections are nested cards inside it. */}
         <div className="flex-1 overflow-y-auto rounded-xl border border-edge bg-panel p-4">
           <div className="mx-auto max-w-2xl space-y-3">
-            {tab === "ai" && <AiTab />}
+            {tab === "ai" && <AiTab projects={projects} />}
             {tab === "local" && <LocalLlmTab />}
             {tab === "roles" && <StrategyRolesTab />}
             {tab === "skills" && <SkillsTab projects={projects} />}
@@ -132,7 +133,7 @@ export function SettingsPage({
 // ---------------------------------------------------------------------------
 // Tab 1 — Profiles & AI
 // ---------------------------------------------------------------------------
-function AiTab() {
+function AiTab({ projects }: { projects: SettingsProject[] }) {
   const { profiles, agent, orchestrator, globalRules, spendLimitUsd, reviewAgent, orchestratorReadonly } = useSettings();
 
   const addProfile = async () => {
@@ -253,7 +254,7 @@ function AiTab() {
         </div>
       </Section>
 
-      <OrchestratorMcpSection />
+      <OrchestratorMcpSection cwds={projects.map((p) => p.cwd)} />
 
       <MemorySection />
 
@@ -345,8 +346,10 @@ interface McpServer {
 
 /** Lists the MCP servers from the orchestrator's Claude config and lets the user
  *  tick which ones it may use. Only the ticked servers' tools are pre-approved;
- *  file/Bash tools are never granted, and nothing selected = pure planner. */
-function OrchestratorMcpSection() {
+ *  file/Bash tools are never granted, and nothing selected = pure planner.
+ *  `cwds` (the open projects) surfaces project-scoped servers too — the backend
+ *  resolves them the way the CLI does, nearest directory first. */
+function OrchestratorMcpSection({ cwds }: { cwds: string[] }) {
   const { profiles, orchestrator, orchestratorMcp } = useSettings();
   const configDir = profiles.find((p) => p.id === orchestrator.profileId)?.configDir ?? null;
   const [servers, setServers] = useState<McpServer[] | null>(null);
@@ -363,13 +366,15 @@ function OrchestratorMcpSection() {
     let live = true;
     setServers(null);
     setErr(null);
-    invoke<McpServer[]>("list_mcp_servers", { configDir })
+    invoke<McpServer[]>("list_mcp_servers", { configDir, cwds })
       .then((s) => live && setServers(s))
       .catch((e) => live && setErr(String(e)));
     return () => {
       live = false;
     };
-  }, [configDir]);
+    // `cwds` is rebuilt on every render of the parent; key the effect on its
+    // content so a new array with the same projects doesn't refetch forever.
+  }, [configDir, cwds.join("\u0000")]);
 
   return (
     <Section
@@ -1088,6 +1093,14 @@ function WorkspaceTab() {
             checked={workspace.copyDeps}
             onChange={(v) => set({ copyDeps: v })}
           />
+          {platform().os === "macos" && (
+            <ToggleRow
+              label="Keep agents out of macOS protected folders"
+              desc="macOS treats OctoShell as responsible for every shell and agent it runs, so an agent that reads another app's data, Mail, Music or Pictures makes the system show a permission prompt with OctoShell's name on it — one per folder. On: agents are told those folders are off limits. Off: they may read anything and you answer the prompts. Your projects in Desktop, Documents and Downloads are never restricted."
+              checked={workspace.guardProtectedFolders}
+              onChange={(v) => set({ guardProtectedFolders: v })}
+            />
+          )}
           <TrackedPortsField ports={workspace.trackedPorts} onChange={(v) => set({ trackedPorts: v })} />
           <Field label="Auto-clean — when a worktree is deleted">
             <Select
@@ -1114,19 +1127,20 @@ function WorkspaceTab() {
       <Section title="Terminal" desc="Which shell the native PTY spawns.">
         <Field label="Default shell">
           <Select
-            value={workspace.defaultShell}
+            value={effectiveShell(workspace.defaultShell).id}
             onChange={(v) => set({ defaultShell: v as DefaultShell })}
-            options={[
-              { label: "PowerShell (pwsh)", value: "powershell" },
-              { label: "CMD", value: "cmd" },
-              { label: "WSL / Ubuntu", value: "wsl" },
-            ]}
+            options={platform().shells.map((s) => ({
+              label: s.available ? s.label : `${s.label} (not installed)`,
+              value: s.id,
+            }))}
           />
         </Field>
-        {workspace.defaultShell !== "powershell" && (
+        {!effectiveShell(workspace.defaultShell).semantic && (
           <p className="mt-2 text-xs text-amber-300/80">
-            ⚠️ Per-command blocks & exit codes are built for PowerShell. On CMD/WSL the terminal works, but
-            without semantic command parsing. Applies to NEW terminals.
+            ⚠️ Per-command blocks & exit codes need a shell OctoShell integrates with (
+            {platform().shells.filter((s) => s.semantic).map((s) => s.label).join(", ")}). In{" "}
+            {effectiveShell(workspace.defaultShell).label} the terminal works, but without semantic
+            command parsing. Applies to NEW terminals.
           </p>
         )}
       </Section>
@@ -1195,6 +1209,69 @@ function AppearanceTab() {
 // ---------------------------------------------------------------------------
 // Tab 4 — System & Database
 // ---------------------------------------------------------------------------
+/** Names of extra environment variables to take from the login shell.
+ *
+ *  A GUI-launched app gets none of the user's shell environment, so OctoShell
+ *  probes the login shell at startup — but it adopts only infrastructure (PATH,
+ *  Homebrew, fnm, proxies, SSH_AUTH_SOCK). Credentials are deliberately excluded,
+ *  because everything adopted here is inherited by every agent and MCP server the
+ *  app spawns. This is where a token one of them needs gets opted in by name. */
+function EnvVarsSection() {
+  const { envVars } = useSettings();
+  const [text, setText] = useState(envVars.join("\n"));
+  const [applied, setApplied] = useState<string[] | null>(null);
+
+  const save = async () => {
+    const names = text.split(/[\s,]+/).map((n) => n.trim()).filter(Boolean);
+    settingsStore.setEnvVars(names);
+    try {
+      setApplied(await invoke<string[]>("adopt_env_vars", { names }));
+    } catch {
+      setApplied(null);
+    }
+  };
+
+  const names = text.split(/[\s,]+/).map((n) => n.trim()).filter(Boolean);
+  const missing = applied === null ? [] : names.filter((n) => !applied.includes(n));
+
+  return (
+    <Section
+      title="Environment variables from your shell"
+      desc="OctoShell takes PATH and toolchain settings (Homebrew, fnm, proxies, SSH agent) from your login shell automatically. It does NOT take secrets: anything adopted here is visible to every agent and MCP server it runs. Name a variable below only when something needs it — an MCP server's token, for example. Names only, one per line; values stay in your shell."
+    >
+      <textarea
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        spellCheck={false}
+        placeholder={"SLACK_MCP_XOXC_TOKEN\nSLACK_MCP_XOXD_TOKEN"}
+        className="min-h-[90px] w-full resize-y rounded border border-edge bg-well px-2 py-1.5 font-mono text-xs leading-relaxed text-gray-100 outline-none focus:border-accent"
+      />
+      <div className="mt-2 flex items-center gap-2">
+        <button
+          onClick={() => void save()}
+          className="cursor-pointer rounded border border-edge px-2 py-1 text-xs text-gray-200 hover:bg-edge"
+        >
+          Apply
+        </button>
+        {applied !== null && (
+          <span className="text-xs text-muted">
+            {applied.length} adopted
+            {missing.length > 0 && (
+              <span className="text-amber-300">
+                {" "}· not set in your login shell: {missing.join(", ")}
+              </span>
+            )}
+          </span>
+        )}
+      </div>
+      <p className="mt-2 text-[11px] leading-relaxed text-muted">
+        Removing a name stops it being adopted from the next launch. A variable already in
+        this process can't be taken back from the children it was passed to.
+      </p>
+    </Section>
+  );
+}
+
 /**
  * Updates: the switch the prompt's "Don't ask again" flips, and a way to look
  * right now. Both live here so declining the prompt is never a decision you
@@ -1268,6 +1345,8 @@ function SystemTab({ onSandboxLogin, onShowOnboarding }: { onSandboxLogin: () =>
   return (
     <>
       <UpdatesSection />
+      <EnvVarsSection />
+
       <Section title="Scrollback buffer" desc="How many lines of terminal output each terminal keeps in memory (bigger = more history, a bit more RAM). Applies to new terminals.">
         <div className="flex items-center gap-2">
           <input
@@ -1318,7 +1397,7 @@ function SystemTab({ onSandboxLogin, onShowOnboarding }: { onSandboxLogin: () =>
 
       <Section
         title="First-launch health check"
-        desc="Checks that the CLIs OctoShell drives (agent CLIs, PowerShell 7, GitHub CLI) are on PATH. Shown once automatically on first launch."
+        desc={`Checks that the CLIs OctoShell drives (agent CLIs, ${isWindows() ? "PowerShell 7" : "your shell"}, GitHub CLI) are on PATH. Shown once automatically on first launch.`}
       >
         <button
           onClick={onShowOnboarding}
@@ -1995,7 +2074,7 @@ function MobileSharingSection() {
                   </button>
                   <TunnelQr url={`http://${m.lanAddress}:${m.port}`} />
                   <p className="mt-1 text-xs text-muted">
-                    Nothing in between, so no one outside your network sees this. Windows may ask
+                    Nothing in between, so no one outside your network sees this. {isWindows() ? "Windows" : "Your firewall"} may ask
                     to allow OctoShell on private networks the first time — say yes, or the phone
                     just times out.
                   </p>
