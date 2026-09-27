@@ -3,12 +3,12 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>OctoShell · A native AI workspace for Windows developers</title>
-  <meta name="description" content="An open source workspace that helps you run and coordinate coding agents. Built with Tauri and Rust. Bring your own keys, own your context." />
+  <title>OctoShell · A workspace for running coding agents on Windows</title>
+  <meta name="description" content="An open source Windows app for running coding agents in your repositories, each in its own Git worktree, with the output in front of you. Built with Tauri and Rust. You use your own accounts and keys." />
 
   <!-- Open Graph / social preview -->
-  <meta property="og:title" content="OctoShell · A native AI workspace for Windows developers" />
-  <meta property="og:description" content="An open source workspace to run and coordinate coding agents. Built with Tauri and Rust. Bring your own keys, keep your context on your machine." />
+  <meta property="og:title" content="OctoShell · A workspace for running coding agents on Windows" />
+  <meta property="og:description" content="An open source Windows app for running coding agents in your repositories, each in its own Git worktree. Built with Tauri and Rust. You use your own accounts and keys." />
   <meta property="og:type" content="website" />
   <!-- og:image MUST be an absolute URL for social previews to resolve it. -->
   <meta property="og:image" content="https://savvasioakeim.github.io/OctoShell/assets/octoshell-logo.png" />
@@ -62,6 +62,12 @@
       content: ""; position: absolute; inset: 0; pointer-events: none;
       background: radial-gradient(80% 60% at 50% 0%, rgba(168, 85, 247, 0.06), transparent 70%);
     }
+
+    /* Screenshots: real captures, shown whole rather than cropped to a ratio. */
+    .shot { display: block; width: 100%; height: auto; }
+    .shot-pad { padding: 1.25rem; }
+    .shot-pad .shot { max-width: 420px; margin: 0 auto; border-radius: 0.5rem; }
+    .shot-note { margin-top: 0.75rem; font-size: 0.75rem; line-height: 1.6; color: #6b7280; }
 
     /* Feature card hover: animated neon border */
     .feature-card { transition: transform .25s ease, border-color .25s ease, box-shadow .25s ease; }
@@ -157,12 +163,13 @@
           Tauri · Rust · React · Open Source
         </span>
         <h1 class="mt-5 text-4xl font-extrabold leading-[1.08] tracking-tight text-white md:text-5xl lg:text-6xl">
-          A native <span class="gradient-text">AI workspace</span><br />for Windows developers.
+          A workspace for running <span class="gradient-text">coding agents</span><br />on Windows.
         </h1>
         <p class="mt-5 max-w-xl text-base leading-relaxed text-muted md:text-lg">
-          An open source workspace that helps you plan, run, and coordinate coding agents, built with
-          Tauri and Rust. It works with Claude, Gemini, and other agents, or local models through
-          Ollama. <span class="text-gray-200">Bring your own keys, own your context.</span>
+          OctoShell is an open source desktop app that runs coding agents in your repositories, each
+          in its own Git worktree, and shows you what they are doing while they do it. It works with
+          Claude Code, Gemini and other agents, or local models through Ollama.
+          <span class="text-gray-200">You use your own accounts and keys.</span>
         </p>
         <div class="mt-8 flex flex-wrap items-center gap-4">
           <a href="https://github.com/savvasioakeim/OctoShell/releases" target="_blank" rel="noopener"
@@ -200,117 +207,121 @@
             <span class="text-sm leading-none">&#x2715;</span>
           </div>
         </div>
-        <!-- screenshot placeholder: drop octoshell_yYw4MKZkos.jpg into assets/ and swap the div below for <img> -->
-        <div class="relative aspect-[16/9] w-full bg-gradient-to-br from-[#0D0F14] to-[#15181F]">
-          <!-- TODO: <img src="assets/octoshell_yYw4MKZkos.jpg" class="h-full w-full object-cover" alt="OctoShell screenshot" /> -->
-          <div class="absolute inset-0 flex flex-col items-center justify-center gap-3 text-center">
-            <span class="font-mono text-sm text-muted">📸 App screenshot placeholder</span>
-            <span class="font-mono text-xs text-muted/60">drop <code class="text-neoncyan">assets/octoshell_yYw4MKZkos.jpg</code> here</span>
-          </div>
-        </div>
+        <img src="img/workspace.png" class="shot" alt="The OctoShell window: worktrees for three repositories on the left, an agent two thirds through its step list in the middle, recording what it changed and how to check it, and the orchestrator tracking every task on the right." />
       </div>
     </div>
   </section>
 
-  <!-- ═══════════ 01 — STRATEGY MODE (split: text · shot) ═══════════ -->
+  <!-- 01 - STRATEGY MODE -->
   <section id="strategy" class="mx-auto max-w-6xl px-5 py-24">
     <div class="grid items-center gap-12 md:grid-cols-2">
       <div class="reveal">
-        <span class="font-mono text-xs tracking-widest text-neoncyan">THE PLAN</span>
-        <h2 class="mt-3 text-3xl font-bold tracking-tight text-white md:text-4xl">01 · Think it through before any code</h2>
+        <span class="font-mono text-xs tracking-widest text-neoncyan">PLANNING</span>
+        <h2 class="mt-3 text-3xl font-bold tracking-tight text-white md:text-4xl">01 &middot; Talk a change through before writing it</h2>
         <p class="mt-4 leading-relaxed text-slate-400">
-          For complex work, let several agents talk it through first. Each one takes a role such as
-          Architect, QA, or Security, proposes an approach, then reads the others and refines its own.
-          You moderate the discussion and, when it feels ready, OctoShell turns it into a clear plan
-          you can save, reuse, or hand straight to the orchestrator to build.
+          Strategy Mode runs a discussion between several agents, each with a role such as Architect,
+          Backend, QA or Security. You pick which of your open projects they may read, so they argue
+          about your actual code rather than a description of it. You moderate: every round stops and
+          waits for you, and you can reply to it before the next one starts.
         </p>
-        <!-- micro-visual: the roles debating, then the plan -->
-        <pre class="mt-6 overflow-x-auto rounded-lg border border-edge bg-[#0D0F14] px-4 py-3 font-mono text-xs leading-relaxed text-slate-300 shadow-inner"><span class="text-neonpurple">Architect</span>      proposes the structure
-<span class="text-neoncyan">QA Engineer</span>    flags the edge cases
-<span class="text-white">Security</span>       checks the threat model
-        <span class="text-slate-500">↓</span>
-<span class="gradient-text font-bold">Execution Plan</span>   save · reuse · execute</pre>
+        <p class="mt-4 leading-relaxed text-slate-400">
+          At the end it writes one report: the goal, the architecture, the decisions, the
+          alternatives that were rejected, the risks, the open questions, the steps and the
+          acceptance criteria. You can save it, export it as Markdown, or hand it to the orchestrator
+          to execute.
+        </p>
+        <pre class="mt-6 overflow-x-auto rounded-lg border border-edge bg-[#0D0F14] px-4 py-3 font-mono text-xs leading-relaxed text-slate-300 shadow-inner"><span class="text-neonpurple">Architect</span>      where the change belongs
+<span class="text-neoncyan">QA Engineer</span>    what breaks, and how you would see it
+<span class="text-white">Security</span>       what this exposes
+        <span class="text-slate-500">&#8595;</span>
+<span class="gradient-text font-bold">Execution Plan</span>   save &middot; export &middot; execute</pre>
       </div>
-      <div class="mockup-container reveal aspect-[16/11] w-full">
-        <!-- TODO: <img src="assets/shot-strategy.png" class="h-full w-full object-cover" alt="Strategy Mode planning workspace" /> -->
-        <div class="flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
-          <span class="font-mono text-sm text-slate-400">📸 Strategy Mode</span>
-          <span class="font-mono text-xs text-slate-600">planning workspace · agents debating by role · drop <code class="text-neoncyan">assets/shot-strategy.png</code></span>
-        </div>
+      <div class="mockup-container reveal w-full">
+        <img src="img/strategy-setup.png" class="shot" alt="Strategy Mode setup: the request, the projects attached as context, and five participants with roles." />
       </div>
     </div>
+
+    <div class="mockup-container reveal mt-10 w-full">
+      <img src="img/strategy-round.png" class="shot" alt="A round of the discussion, with each participant's answer in its own card and a list of blocking questions for the moderator." />
+    </div>
+    <p class="shot-note reveal mx-auto max-w-3xl text-center">
+      A round in progress. The participants disagreed about storing amounts as integer minor units,
+      and ended the round with questions they would not answer on their own, including whether a
+      product decision had already been made.
+    </p>
   </section>
 
-  <!-- ═══════════ 02 — THE ORCHESTRATOR (split: text · shot) ═══════════ -->
+  <!-- 02 - FROM PLAN TO WORK -->
   <section id="orchestrator" class="mx-auto max-w-6xl px-5 py-24">
     <div class="grid items-center gap-12 md:grid-cols-2">
-      <div class="reveal">
-        <span class="font-mono text-xs tracking-widest text-neonpurple">THE SPARK</span>
-        <h2 class="mt-3 text-3xl font-bold tracking-tight text-white md:text-4xl">02 · One prompt, a whole pipeline</h2>
+      <div class="reveal order-1 md:order-2">
+        <span class="font-mono text-xs tracking-widest text-neonpurple">DISPATCH</span>
+        <h2 class="mt-3 text-3xl font-bold tracking-tight text-white md:text-4xl">02 &middot; Hand the plan to agents that do the work</h2>
         <p class="mt-4 leading-relaxed text-slate-400">
-          Hand the orchestrator your tickets and a single goal. It fans them out into isolated,
-          parallel agents and keeps the loop going while you stay in command, approving as it goes.
+          The orchestrator takes a plan, or just a sentence you type, and turns it into tasks. It
+          creates a Git worktree per task, starts an agent in each one, and reports back as they
+          finish. Nothing is dispatched until you confirm it, and you can watch or interrupt any
+          agent while it runs.
         </p>
-        <!-- micro-prompt: what the user types -->
-        <div class="mt-6 rounded-lg border border-edge bg-[#0D0F14] px-4 py-3 font-mono text-sm shadow-inner">
-          <span class="text-neoncyan">&gt;</span>
-          <span class="text-slate-300">Create worktrees for all assigned tickets. Run tests. Open PRs when done.</span>
-          <span class="ml-0.5 inline-block h-4 w-1.5 translate-y-0.5 animate-pulse bg-neoncyan"></span>
-        </div>
+        <p class="mt-4 leading-relaxed text-slate-400">
+          When tasks are related, it says so when it dispatches them. An agent can then read what the
+          others changed and what they declared, which is how a frontend agent learns that the API it
+          calls is about to return a new field.
+        </p>
       </div>
-      <div class="mockup-container reveal aspect-[16/11] w-full">
-        <!-- TODO: <img src="assets/shot-orchestrator.png" class="h-full w-full object-cover" alt="Orchestrator panel" /> -->
-        <div class="flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
-          <span class="font-mono text-sm text-slate-400">📸 Orchestrator panel</span>
-          <span class="font-mono text-xs text-slate-600">central panel with agent tasks · drop <code class="text-neoncyan">assets/shot-orchestrator.png</code></span>
-        </div>
+      <div class="mockup-container reveal order-2 w-full md:order-1">
+        <img src="img/strategy-plan.png" class="shot" alt="The finished Execution Plan, with the exact JSON the API should return, and buttons to save, export or execute it." />
       </div>
     </div>
   </section>
 
-  <!-- ═══════════ 02 — ISOLATED WORKTREES (reverse: shot · text) ═══════════ -->
+  <!-- 03 - WORKTREES -->
   <section id="worktrees" class="mx-auto max-w-6xl px-5 py-24">
     <div class="grid items-center gap-12 md:grid-cols-2">
-      <div class="reveal order-1 md:order-2">
-        <span class="font-mono text-xs tracking-widest text-neoncyan">THE FOUNDATION</span>
-        <h2 class="mt-3 text-3xl font-bold tracking-tight text-white md:text-4xl">03 · Dedicated worktrees, no collisions</h2>
+      <div class="reveal">
+        <span class="font-mono text-xs tracking-widest text-neoncyan">ISOLATION</span>
+        <h2 class="mt-3 text-3xl font-bold tracking-tight text-white md:text-4xl">03 &middot; One worktree per task</h2>
         <p class="mt-4 leading-relaxed text-slate-400">
-          Point the orchestrator at your tickets and each agent works in its own isolated Git
-          worktree. No manual branch switching, no stash conflicts, no broken local environments.
+          Each agent gets its own worktree and its own branch, so two agents working at the same
+          time never touch the same files. Your own checkout stays where you left it, with no
+          branch switching and no stashing.
         </p>
-        <!-- micro-visual: folder tree -->
-        <pre class="mt-6 overflow-x-auto rounded-lg border border-edge bg-[#0D0F14] px-4 py-3 font-mono text-xs leading-relaxed text-slate-300 shadow-inner"><span class="text-slate-500">project-root/</span>
- ├── <span class="text-white">main/</span>
- ├── <span class="text-neonpurple">feature-login-agent/</span>
- └── <span class="text-neoncyan">bugfix-checkout-agent/</span></pre>
+        <p class="mt-4 leading-relaxed text-slate-400">
+          Projects are grouped the way you group them, and a dot next to each branch tells you
+          whether an agent is working there, waiting, or done. Opening one puts you in that
+          worktree's own terminal.
+        </p>
+        <pre class="mt-6 overflow-x-auto rounded-lg border border-edge bg-[#0D0F14] px-4 py-3 font-mono text-xs leading-relaxed text-slate-300 shadow-inner"><span class="text-slate-500">storefront/</span>
+ &#9500;&#9472;&#9472; <span class="text-white">main</span>                  your checkout, untouched
+ &#9500;&#9472;&#9472; <span class="text-neonpurple">feat/order-currency</span>   agent A
+ &#9492;&#9472;&#9472; <span class="text-neoncyan">feat/sidebar-refunds</span>  agent B</pre>
       </div>
-      <div class="mockup-container reveal order-2 aspect-[16/11] w-full md:order-1">
-        <!-- TODO: <img src="assets/shot-worktrees.png" class="h-full w-full object-cover" alt="Projects & worktrees sidebar" /> -->
-        <div class="flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
-          <span class="font-mono text-sm text-slate-400">📸 Projects sidebar</span>
-          <span class="font-mono text-xs text-slate-600">left sidebar · active projects + worktrees · drop <code class="text-neoncyan">assets/shot-worktrees.png</code></span>
-        </div>
+      <div class="mockup-container reveal w-full">
+        <img src="img/worktrees.png" class="shot" alt="The projects sidebar: three repositories, each with its main branch and the worktrees agents are working in." />
       </div>
     </div>
   </section>
 
-  <!-- ═══════════ 03 — LIVE AGENT EXECUTION (dominant centered shot) ═══════════ -->
+  <!-- 04 - QA -->
   <section id="live" class="mx-auto max-w-6xl px-5 py-24">
     <div class="reveal mx-auto mb-10 max-w-3xl text-center">
-      <span class="font-mono text-xs tracking-widest text-neonpurple">THE WORKSPACE</span>
-      <h2 class="mt-3 text-3xl font-bold tracking-tight text-white md:text-4xl">04 · Total visibility, no black boxes</h2>
+      <span class="font-mono text-xs tracking-widest text-neonpurple">REVIEW</span>
+      <h2 class="mt-3 text-3xl font-bold tracking-tight text-white md:text-4xl">04 &middot; Look at the change in the running app</h2>
       <p class="mt-4 leading-relaxed text-slate-400">
-        Watch agents run shell commands, read compiler output, make tool calls, and write files
-        as it happens. You stay the pilot in command.
+        When an agent finishes something you can see, QA mode starts that worktree's dev server and
+        opens a small window over your browser with what the agent says you should check. You click
+        through the change yourself, then approve it or send it back with a note. The note goes
+        straight to the agent as its next task.
       </p>
     </div>
-    <div class="mockup-container reveal aspect-[16/9] w-full">
-      <!-- TODO: <img src="assets/shot-live.png" class="h-full w-full object-cover" alt="Live agent streams & shell output" /> -->
-      <div class="flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
-        <span class="font-mono text-base text-slate-400">📸 Live agent workspace</span>
-        <span class="font-mono text-xs text-slate-600">central column · live streams, logs, shell output · drop <code class="text-neoncyan">assets/shot-live.png</code></span>
-      </div>
+    <div class="mockup-container reveal w-full">
+      <img src="img/qa-review.png" class="shot" alt="The QA window over a running app, listing what to check, with a typed note and Approve and Decline buttons." />
     </div>
+    <p class="shot-note reveal mx-auto max-w-3xl text-center">
+      Two agents worked on this page: one added the currency to the API, the other added the sidebar
+      item. The tests passed, and the change was still sent back, because the badge shows a number
+      that is written into the code and can never change.
+    </p>
   </section>
 
   <!-- ═══════════ 04 — SIGNATURE PROGRESS (centered, embeds the live trace) ═══════════ -->
@@ -318,10 +329,11 @@
     <div class="reveal rounded-2xl border border-edge bg-gradient-to-b from-card/60 to-chrome/40 p-8 md:p-14">
       <div class="mx-auto max-w-3xl text-center">
         <span class="font-mono text-xs tracking-widest text-neoncyan">THE PULSE</span>
-        <h2 class="mt-3 text-3xl font-bold tracking-tight text-white md:text-4xl">05 · Watch every phase light up</h2>
+        <h2 class="mt-3 text-3xl font-bold tracking-tight text-white md:text-4xl">05 · See which step it is on</h2>
         <p class="mt-4 leading-relaxed text-slate-400">
-          OctoShell draws each agent's phase as a live PCB trace right in the interface. Nodes light
-          up from neon purple to cyan as a task moves from planning to writing code.
+          An agent writes down its steps before it starts, through a tool OctoShell gives it, and
+          ticks them off as it goes. The bar above its output is that list, so you can see which step
+          it is on without reading the whole log.
         </p>
       </div>
       <!-- the animated horizontal progress trace (driven by JS below) -->
@@ -336,64 +348,67 @@
           <span class="phase-label" data-i="3">Review</span>
         </div>
         <p class="mt-8 text-center font-mono text-sm text-muted">
-          <span id="trace-count" class="gradient-text font-bold">1/4</span> phases · it plans, tests, and retries on its own
+          <span id="trace-count" class="gradient-text font-bold">1/4</span> steps done · the agent writes the list, not us
         </p>
       </div>
     </div>
   </section>
 
-  <!-- ═══════════ 05 — MULTI-PROJECT HUB (split: text · shot) ═══════════ -->
+  <!-- 05 - SERVERS AND PORTS -->
   <section id="multiproject" class="mx-auto max-w-6xl px-5 py-24">
     <div class="grid items-center gap-12 md:grid-cols-2">
       <div class="reveal">
-        <span class="font-mono text-xs tracking-widest text-neonpurple">THE COMMAND CENTER</span>
-        <h2 class="mt-3 text-3xl font-bold tracking-tight text-white md:text-4xl">06 · Work across many repositories</h2>
+        <span class="font-mono text-xs tracking-widest text-neonpurple">SERVERS AND PORTS</span>
+        <h2 class="mt-3 text-3xl font-bold tracking-tight text-white md:text-4xl">05 &middot; The dev servers stay in one list</h2>
         <p class="mt-4 leading-relaxed text-slate-400">
-          Follow parallel agent progress across several repositories from one place. Handy when a
-          change spans more than one service, or a feature touches a few projects at once.
+          Agents do not start dev servers on their own. They ask OctoShell, which starts the server,
+          keeps its log, and puts it in the same list as the ones you started, marked with who asked
+          for it. Starting a server on a port that is already taken replaces what was there, instead
+          of quietly moving to another port.
+        </p>
+        <p class="mt-4 leading-relaxed text-slate-400">
+          The Ports panel shows the ports you care about and what is listening on them, with a button
+          to kill a process that is still holding one.
         </p>
       </div>
-      <div class="mockup-container reveal aspect-[16/11] w-full">
-        <!-- TODO: <img src="assets/shot-multiproject.png" class="h-full w-full object-cover" alt="Orchestrator status panel" /> -->
-        <div class="flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
-          <span class="font-mono text-sm text-slate-400">📸 Orchestrator status panel</span>
-          <span class="font-mono text-xs text-slate-600">right panel · concurrent tests running/done · drop <code class="text-neoncyan">assets/shot-multiproject.png</code></span>
-        </div>
+      <div class="mockup-container shot-pad reveal w-full">
+        <img src="img/ports.png" class="shot" alt="The Ports panel, listing tracked ports with the process holding each one and a Kill button." />
       </div>
     </div>
   </section>
 
-  <!-- ═══════════ 06 — SMART REVIEW (full-width grand finale, demo GIF) ═══════════ -->
+  <!-- 06 - PHONE -->
   <section id="review" class="mx-auto max-w-6xl px-5 py-24">
     <div class="reveal rounded-2xl border border-edge bg-gradient-to-b from-card/50 to-chrome/30 p-6 md:p-10">
       <div class="mx-auto mb-8 max-w-3xl text-center">
-        <span class="font-mono text-xs tracking-widest text-neoncyan">REVIEW AND QA</span>
-        <h2 class="mt-3 text-3xl font-bold tracking-tight text-white md:text-4xl">07 · A review pass before it reaches you</h2>
+        <span class="font-mono text-xs tracking-widest text-neoncyan">AWAY FROM THE DESK</span>
+        <h2 class="mt-3 text-3xl font-bold tracking-tight text-white md:text-4xl">06 &middot; Answer from your phone</h2>
         <p class="mt-4 leading-relaxed text-slate-400">
-          When an agent hits a test failure it reads the error, rewrites the file, and runs the tests
-          again on its own. You can also turn on a review agent that reads each change first and flags
-          anything worth a second look. When it looks good, QA mode starts your app's dev server for
-          you so you can click through the change and accept it or send it back.
+          You can share the workspace with your phone for as long as you choose, to read what the
+          agents are doing and answer an approval. Nothing is reachable until you press Start, the
+          access code expires by itself, and letting the phone start new work is a separate switch
+          that is off unless you turn it on. Over your own WiFi the connection is plain HTTP between
+          the two devices, with nothing in between.
         </p>
       </div>
-      <div class="mockup-container aspect-[16/9] w-full">
-        <!-- TODO: <img src="assets/demo-selfheal.gif" class="h-full w-full object-cover" alt="Self-healing demo" /> -->
-        <div class="flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
-          <span class="font-mono text-base text-slate-400">🎞️ The fix and retry loop</span>
-          <span class="font-mono text-xs text-slate-600">test fails → agent fixes → tests pass · drop <code class="text-neoncyan">assets/demo-selfheal.gif</code></span>
-        </div>
+      <div class="mockup-container w-full">
+        <img src="img/phone-settings.png" class="shot" alt="The sharing settings: address options, a switch for letting the phone send tasks, a switch for the local network, and a duration before sharing stops." />
       </div>
+      <p class="shot-note mx-auto max-w-3xl text-center">
+        The phone interface is early and we are still working on it. It does the job, but it does not
+        look like the desktop app yet.
+      </p>
     </div>
   </section>
 
   <!-- ───────────────────────── CORE PRINCIPLES ───────────────────────── -->
   <section id="principles" class="mx-auto max-w-6xl px-5 py-20">
     <div class="reveal mb-12 text-center">
-      <span class="font-mono text-xs tracking-widest text-neoncyan">OUR PHILOSOPHY</span>
-      <h2 class="mt-3 text-3xl font-bold tracking-tight text-white md:text-4xl">Built on open source principles</h2>
+      <span class="font-mono text-xs tracking-widest text-neoncyan">HOW IT IS BUILT</span>
+      <h2 class="mt-3 text-3xl font-bold tracking-tight text-white md:text-4xl">What you are installing</h2>
       <p class="mx-auto mt-3 max-w-2xl text-slate-400">
-        OctoShell aims to be transparent, light, and fully under your control. No account to create,
-        no telemetry, nothing hidden.
+        There is no account to create and no telemetry. OctoShell talks to the agent providers you
+        have already set up, and to nothing else.
       </p>
     </div>
     <div class="grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
@@ -425,10 +440,11 @@
         <div class="mb-4 inline-flex h-11 w-11 items-center justify-center rounded-lg border border-neonpurple/30 bg-neonpurple/10 text-neonpurple">
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
         </div>
-        <h3 class="text-base font-semibold text-white">Runs locally, stays private</h3>
+        <h3 class="text-base font-semibold text-white">Runs on your machine</h3>
         <p class="mt-2 text-sm leading-relaxed text-slate-400">
-          Your code context never leaves your machine. Agents run, files change, and Git worktrees
-          live entirely in your local environment.
+          The app, your files and the Git worktrees stay local, and OctoShell has no server of its
+          own. The agents themselves are the exception worth knowing: unless you run a local model,
+          they send your code to the provider you signed in with, the same as using their CLI.
         </p>
       </div>
       <!-- Pillar 4 -->
@@ -436,10 +452,11 @@
         <div class="mb-4 inline-flex h-11 w-11 items-center justify-center rounded-lg border border-neoncyan/30 bg-neoncyan/10 text-neoncyan">
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z"/></svg>
         </div>
-        <h3 class="text-base font-semibold text-white">Light and native on Windows</h3>
+        <h3 class="text-base font-semibold text-white">Windows first</h3>
         <p class="mt-2 text-sm leading-relaxed text-slate-400">
-          Built with Rust and Tauri, so it stays light on memory and starts quickly. The terminal,
-          PTY, and parsing run in native Rust, and it feels at home on Windows.
+          Built with Rust and Tauri, using the WebView that ships with Windows rather than bundling a
+          browser, so the download is small. The terminal, the PTY and the output parsing are native
+          Rust. A macOS build exists and is less tested.
         </p>
       </div>
     </div>
@@ -448,8 +465,8 @@
   <!-- ───────────────────────── FAQ ───────────────────────── -->
   <section id="faq" class="mx-auto max-w-3xl px-5 py-20">
     <div class="reveal mb-12 text-center">
-      <h2 class="text-3xl font-bold tracking-tight text-white md:text-4xl">Questions, answered.</h2>
-      <p class="mx-auto mt-3 max-w-2xl text-muted">The short version, no sales deck.</p>
+      <h2 class="text-3xl font-bold tracking-tight text-white md:text-4xl">Questions</h2>
+      <p class="mx-auto mt-3 max-w-2xl text-muted">Short answers, including the parts that are not finished.</p>
     </div>
     <div class="space-y-4">
       <details class="reveal group rounded-xl border border-edge bg-card/50 p-5 [&_summary]:cursor-pointer">
@@ -458,7 +475,7 @@
       </details>
       <details class="reveal group rounded-xl border border-edge bg-card/50 p-5 [&_summary]:cursor-pointer">
         <summary class="flex items-center justify-between font-semibold text-white">Does my code leave my machine?<span class="text-muted transition-transform group-open:rotate-45">+</span></summary>
-        <p class="mt-3 text-sm leading-relaxed text-muted">Only what you choose to send to your model provider in a prompt. There's no OctoShell cloud, no telemetry, and no account. The app runs entirely as a native Windows process.</p>
+        <p class="mt-3 text-sm leading-relaxed text-muted">There is no OctoShell cloud, no telemetry and no account, and the app is a normal Windows process reading your local files. But an agent has to send code to its provider to work on it, so whatever it reads goes to Anthropic, Google or whoever you signed in with, exactly as it would from their own CLI. Run a local model through Ollama if you need that to stay on the machine.</p>
       </details>
       <details class="reveal group rounded-xl border border-edge bg-card/50 p-5 [&_summary]:cursor-pointer">
         <summary class="flex items-center justify-between font-semibold text-white">Why Tauri?<span class="text-muted transition-transform group-open:rotate-45">+</span></summary>
@@ -474,7 +491,7 @@
       </details>
       <details class="reveal group rounded-xl border border-edge bg-card/50 p-5 [&_summary]:cursor-pointer">
         <summary class="flex items-center justify-between font-semibold text-white">What is QA mode?<span class="text-muted transition-transform group-open:rotate-45">+</span></summary>
-        <p class="mt-3 text-sm leading-relaxed text-muted">Once agents finish, OctoShell can start your app's dev server for you and open it, so you can click through the change and either accept it or send it back with notes. You never juggle terminals to run the app yourself.</p>
+        <p class="mt-3 text-sm leading-relaxed text-muted">When an agent finishes, OctoShell starts that worktree's dev server and shows a checklist the agent wrote for the change, in a small window over your browser. You try it yourself and either approve it or decline with a note, and the note is handed back to the agent as its next task. Past passes stay in a list, so you can reopen one later.</p>
       </details>
       <details class="reveal group rounded-xl border border-edge bg-card/50 p-5 [&_summary]:cursor-pointer">
         <summary class="flex items-center justify-between font-semibold text-white">Is it really free?<span class="text-muted transition-transform group-open:rotate-45">+</span></summary>
@@ -486,8 +503,8 @@
   <!-- ───────────────────────── CTA ───────────────────────── -->
   <section class="mx-auto max-w-4xl px-5 py-16 text-center">
     <div class="reveal rounded-2xl border border-edge bg-gradient-to-b from-card/60 to-chrome/40 p-10 md:p-14">
-      <h2 class="text-3xl font-bold tracking-tight text-white md:text-4xl">Own your terminal again.</h2>
-      <p class="mx-auto mt-3 max-w-xl text-muted">Clone it, build it, ship it. No login wall, no telemetry.</p>
+      <h2 class="text-3xl font-bold tracking-tight text-white md:text-4xl">Try it on one repository.</h2>
+      <p class="mx-auto mt-3 max-w-xl text-muted">Open one project, give an agent a small task, and watch what it does. MIT licensed.</p>
       <div class="mt-8 flex flex-wrap justify-center gap-4">
         <a href="https://github.com/savvasioakeim/OctoShell/releases" target="_blank" rel="noopener"
            class="glow-purple inline-flex items-center gap-2 rounded-lg bg-neonpurple px-6 py-3 text-sm font-semibold text-white transition-all hover:-translate-y-0.5">
