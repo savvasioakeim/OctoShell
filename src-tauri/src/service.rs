@@ -420,7 +420,15 @@ impl ServiceManager {
     }
 
     pub fn stop(&self, id: &str) {
-        if let Some(mut s) = self.services.lock().unwrap().remove(id) {
+        // Take the entry OUT under the lock and let the guard go BEFORE killing.
+        // `if let Some(s) = lock().remove(..)` would hold the lock for the whole
+        // body — across kill_tree and wait() — and the service's own stdout reader
+        // needs this same lock to reap the process the moment its pipe closes.
+        // Held that way, the two block on each other, and when the caller is the
+        // UI thread (starting a server over a port a managed one already holds)
+        // the window freezes.
+        let entry = self.services.lock().unwrap().remove(id);
+        if let Some(mut s) = entry {
             // The service runs as `cmd /c <command>` (or `sh -c`), so `child` is the
             // WRAPPER shell — killing only it leaves the real server (node/etc.) alive
             // and still holding its port. Kill the whole process TREE by pid, then
@@ -516,7 +524,9 @@ fn spawn_stdout_reader(
         }
         // stdout closed → process is finishing. Reap it (unless already stopped)
         // and release every port it held (the injected one and any refined one).
-        let code = match services.lock().unwrap().remove(&id) {
+        // Same rule as `stop`: out of the map first, lock released, then wait.
+        let entry = services.lock().unwrap().remove(&id);
+        let code = match entry {
             Some(mut s) => {
                 reserved.lock().unwrap().remove(&s.port);
                 s.child.wait().ok().and_then(|st| st.code()).unwrap_or(-1)
@@ -532,8 +542,12 @@ fn spawn_stdout_reader(
     });
 }
 
+// Both of these block: freeing a port shells out to netstat and taskkill, and
+// stopping waits for a process tree to die. A SYNCHRONOUS tauri command runs on
+// the main thread, so that wait would be paid by the window. `async` puts them
+// on the async runtime instead, where a slow kill costs nothing on screen.
 #[tauri::command]
-pub fn service_start(
+pub async fn service_start(
     app: AppHandle,
     manager: State<'_, ServiceManager>,
     id: String,
@@ -545,7 +559,7 @@ pub fn service_start(
 }
 
 #[tauri::command]
-pub fn service_stop(manager: State<'_, ServiceManager>, id: String) -> Result<(), String> {
+pub async fn service_stop(manager: State<'_, ServiceManager>, id: String) -> Result<(), String> {
     manager.stop(&id);
     Ok(())
 }
