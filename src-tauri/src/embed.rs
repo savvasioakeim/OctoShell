@@ -11,7 +11,7 @@
 
 use std::sync::{Arc, Mutex, OnceLock};
 
-use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
+use fastembed::{EmbeddingModel, TextEmbedding, TextInitOptions};
 
 /// Dimensions produced by [`MODEL`]. Stored alongside every vector: mixing
 /// dimensions (or models) silently would make old vectors incomparable rather
@@ -36,7 +36,7 @@ static MODEL_CELL: OnceLock<Result<Arc<Mutex<TextEmbedding>>, String>> = OnceLoc
 fn model() -> Result<Arc<Mutex<TextEmbedding>>, String> {
     MODEL_CELL
         .get_or_init(|| {
-            let opts = InitOptions::new(MODEL)
+            let opts = TextInitOptions::new(MODEL)
                 .with_show_download_progress(false)
                 .with_cache_dir(cache_dir());
             TextEmbedding::try_new(opts)
@@ -49,19 +49,10 @@ fn model() -> Result<Arc<Mutex<TextEmbedding>>, String> {
 /// Where the ~90 MB of model weights live. fastembed defaults to a cwd-relative
 /// `.fastembed_cache`, which for us would mean writing them into the repo (or
 /// into whatever directory the app happened to launch from) and re-downloading
-/// per working directory. Pin it to the user's local app data instead.
+/// per working directory. Pin it to the OS cache dir instead
+/// (`%LOCALAPPDATA%\OctoShell`, `~/Library/Caches/OctoShell`, `~/.cache/OctoShell`).
 fn cache_dir() -> std::path::PathBuf {
-    let base = std::env::var_os("LOCALAPPDATA")
-        .map(std::path::PathBuf::from)
-        .or_else(|| dirs_home().map(|h| h.join(".cache")))
-        .unwrap_or_else(std::env::temp_dir);
-    base.join("OctoShell").join("models")
-}
-
-fn dirs_home() -> Option<std::path::PathBuf> {
-    std::env::var_os("USERPROFILE")
-        .or_else(|| std::env::var_os("HOME"))
-        .map(std::path::PathBuf::from)
+    crate::platform::cache_dir().join("models")
 }
 
 /// Embed a batch of texts. Batching matters: the per-call overhead dominates for

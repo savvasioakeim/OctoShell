@@ -2,11 +2,14 @@ import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { AiClient, type ChatMessage } from "./AiClient";
 import type { Block, CommandBlock, ShellController, ShellSnapshot } from "../shell/ShellController";
-import { KEY, loadJSON, saveJSON } from "../util/persist";
+import { KEY, loadJSON, removeKey, saveJSON } from "../util/persist";
+import { deleteChatDb, loadChatsDb, saveChatDb } from "../util/db";
 import { Markdown } from "../blocks/Markdown";
 import { WorkingNode } from "../blocks/WorkingNode";
 import strategyIcon from "../assets/strategy.png";
 import { parseActions, type OrchestratorAction } from "./actions";
+import type { PeerLink } from "../shell/ShellController";
+import { normCwd } from "../agents/contracts";
 import { parseQa, stepsOf } from "../qa/parseQa";
 import { qaHistory, qaKey } from "../qa/qaHistory";
 import { QaHistoryButton } from "../qa/QaHistoryButton";
@@ -21,6 +24,7 @@ import { registerOrchestrator, registerOrchestratorControl, registerQaRequester 
 import { useSettings } from "../settings/settingsStore";
 import { dragHasFiles, filesFromDrop, saveDroppedFile } from "../util/drop";
 import { memoryStore, type Recalled } from "../memory/memoryStore";
+import { platform, shellLabel } from "../platform/platform";
 import {
   statusOf,
   STATUS_COLOR,
@@ -30,7 +34,13 @@ import {
 } from "../shell/agentStatus";
 
 /** Per-action lifecycle once the model proposed it (keyed `msgIndex:actionIndex`). */
-type ActionState = "done" | "dismissed" | "error";
+/** `running` is the in-flight state. Worktree dispatch awaits `git worktree add`
+ *  plus a dependency copy — seconds, and far longer on a loaded machine. Without a
+ *  state to occupy that window the card kept offering Confirm and "Run all" kept
+ *  counting the action as pending, so every impatient re-click started ANOTHER
+ *  dispatch. It is deliberately NOT persisted (see the session-sync effect): a
+ *  reload must never resurrect a card stuck mid-flight. */
+type ActionState = "running" | "done" | "dismissed" | "error";
 
 /** A Claude Code profile = a named `CLAUDE_CONFIG_DIR` (its own logged-in account). */
 /** One saved assistant conversation. The active session's content is the live
@@ -41,6 +51,11 @@ interface ChatSession {
   updatedAt: number;
   messages: ChatMessage[];
   actionState: Record<string, ActionState>;
+}
+
+/** The OS, as the orchestrator's system prompt names it. */
+function osName(): string {
+  return { windows: "Windows", macos: "macOS", linux: "Linux" }[platform().os];
 }
 
 /** First real user line → a short title (skips internal live-watch breadcrumbs). */
@@ -124,6 +139,17 @@ function norm(s: string): string {
  *  worktree — the silent version of that fallback made QA test stale code. */
 function isWorktreeCwd(cwd: string): boolean {
   return /\.octoshell[\\/]worktrees[\\/]/i.test(cwd);
+}
+
+/** Is this tab the worktree of `project` on `branch`? Worktree tabs are named
+ *  after the sanitized branch, and never the base checkout. */
+function isWorktreeOf(p: ProjectRef, project: string, branch: string): boolean {
+  const proj = project.toLowerCase().trim();
+  const b = norm(branch);
+  if (!proj || !b) return false;
+  const cwd = p.controller.getCwd().toLowerCase();
+  const n = norm(p.name);
+  return (n === b || n.includes(b)) && isWorktreeCwd(cwd) && cwd.includes(proj);
 }
 
 /** A compact, model-readable digest of a project's recent activity. */
@@ -218,6 +244,10 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
   // Chat sessions: the active session's content IS the live messages/actionState,
   // so "New chat" clears the view without losing history.
   const [sessions, setSessions] = useState<ChatSession[]>(loadSessions);
+  // Chats are stored in SQLite (see loadChatsDb). Until that read comes back we
+  // show whatever localStorage still has, and we do NOT write: an empty first
+  // render must never overwrite a richer stored chat.
+  const hydrated = useRef(false);
   const [chatId, setChatId] = useState<string>(() => sessions[0].id);
   const [sessionMenu, setSessionMenu] = useState(false);
   const [chatSearch, setChatSearch] = useState("");
@@ -296,6 +326,12 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
   const prevBusyRef = useRef<Map<string, boolean>>(new Map());
   // Action keys already auto-run, so the auto-run effect fires each once.
   const autoRanRef = useRef<Set<string>>(new Set());
+  // Action keys currently executing. This ref, not the `running` state, is the
+  // real double-fire guard: setState only lands on the next render, so two clicks
+  // inside one tick (a double-click, or "Run all" pressed twice) both read the
+  // stale map and both pass. A ref is written and read synchronously, so the
+  // second caller sees the first immediately.
+  const inFlightRef = useRef<Set<string>>(new Set());
   // Auto-continuation steps since the last manual message — a runaway backstop.
   const autoStepsRef = useRef(0);
   // True between firing a watch continuation and consuming its reply (so a reply
@@ -393,14 +429,86 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
     el.style.height = `${Math.min(el.scrollHeight, 220)}px`;
   }, [input]);
 
-  // Sync the live messages/actionState into the active session and persist the
-  // whole session list (replaces the old single-chat persistence).
+  // Load the chats from SQLite once, and move any localStorage copy into it.
+  // Merging per id and keeping the longer conversation means a half-written
+  // localStorage copy can never truncate what the database already holds.
   useEffect(() => {
+    let live = true;
+    void (async () => {
+      const rows = await loadChatsDb();
+      if (!live) return;
+      if (rows === null) {
+        hydrated.current = true; // database unavailable — carry on with what we have
+        return;
+      }
+      const stored: ChatSession[] = [];
+      for (const r of rows) {
+        try {
+          const s = JSON.parse(r.data) as ChatSession;
+          if (s && typeof s.id === "string") stored.push(s);
+        } catch {
+          /* a corrupt row is skipped, not fatal */
+        }
+      }
+      if (stored.length) {
+        const byId = new Map(stored.map((s) => [s.id, s]));
+        for (const local of sessionsRef.current) {
+          const db = byId.get(local.id);
+          if (!db || local.messages.length > db.messages.length) byId.set(local.id, local);
+        }
+        const merged = [...byId.values()].sort((a, b) => b.updatedAt - a.updatedAt);
+        setSessions(merged);
+        // Write every chat back, then drop the localStorage copy. Without this the
+        // old copy stays behind for good once the database has rows -- and since it
+        // is what filled localStorage to its cap, leaving it there means every
+        // OTHER setItem in the app keeps failing silently.
+        void (async () => {
+          const ok = await Promise.all(merged.map((s) => saveChatDb(s)));
+          if (ok.every(Boolean)) {
+            removeKey(KEY.assistantSessions);
+            removeKey(KEY.assistant); // the pre-sessions single chat, if any
+          }
+        })();
+        const active = merged.find((s) => s.id === chatIdRef.current) ?? merged[0];
+        if (active) {
+          setChatId(active.id);
+          // Only adopt the stored messages when this chat is still untouched, so a
+          // message typed during the read is never thrown away.
+          if (messagesRef.current.length < active.messages.length) {
+            setMessages(active.messages);
+            setActionState(active.actionState ?? {});
+          }
+        }
+      } else {
+        // First run on the database: carry the localStorage chats over, and only
+        // drop the old copy once every row is confirmed written.
+        const ok = await Promise.all(sessionsRef.current.map((s) => saveChatDb(s)));
+        if (ok.every(Boolean)) removeKey(KEY.assistantSessions);
+      }
+      hydrated.current = true;
+    })();
+    return () => {
+      live = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Sync the live messages/actionState into the active session and store that one
+  // chat. Only the active row is written, so a long conversation costs one small
+  // upsert per message instead of rewriting every chat.
+  useEffect(() => {
+    if (!hydrated.current) return;
+    // Drop in-flight marks on the way to storage: a dispatch cannot survive a
+    // reload, so a persisted "running" would be a card frozen forever.
+    const settled = Object.fromEntries(Object.entries(actionState).filter(([, v]) => v !== "running"));
     setSessions((prev) => {
       const next = prev.map((s) =>
-        s.id === chatId ? { ...s, messages, actionState, updatedAt: Date.now(), title: chatTitle(messages) } : s,
+        s.id === chatId
+          ? { ...s, messages, actionState: settled, updatedAt: Date.now(), title: chatTitle(messages) }
+          : s,
       );
-      saveJSON(KEY.assistantSessions, next);
+      const active = next.find((s) => s.id === chatId);
+      if (active) void saveChatDb(active);
       return next;
     });
   }, [messages, actionState, chatId]);
@@ -417,11 +525,8 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
   /** Start a fresh conversation (the current one stays saved in the list). */
   const newChat = useCallback(() => {
     const s: ChatSession = { id: crypto.randomUUID(), title: "New chat", updatedAt: Date.now(), messages: [], actionState: {} };
-    setSessions((prev) => {
-      const next = [s, ...prev];
-      saveJSON(KEY.assistantSessions, next);
-      return next;
-    });
+    void saveChatDb(s);
+    setSessions((prev) => [s, ...prev]);
     setChatId(s.id);
     setMessages([]);
     setActionState({});
@@ -451,12 +556,13 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
   /** Delete a session; if it was active, fall back to the newest remaining one. */
   const deleteChat = useCallback(
     (id: string) => {
+      void deleteChatDb(id);
       setSessions((prev) => {
         let next = prev.filter((s) => s.id !== id);
         if (next.length === 0) {
           next = [{ id: crypto.randomUUID(), title: "New chat", updatedAt: Date.now(), messages: [], actionState: {} }];
+          void saveChatDb(next[0]);
         }
-        saveJSON(KEY.assistantSessions, next);
         if (id === chatId) {
           const f = next[0];
           setChatId(f.id);
@@ -561,9 +667,9 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
     // any of them by exact name, even ones we didn't digest.
     const names = tabs.map((p) => p.name).join(", ") || "(none)";
     const system = [
-      "You are OctoShell's workspace assistant for a Windows PowerShell dev environment.",
+      `You are OctoShell's workspace assistant for a ${osName()} ${shellLabel()} dev environment.`,
       "You can see every open project and what its terminal and its coding agent are doing.",
-      "Help the user understand, compare and coordinate work across all projects. When suggesting shell commands, target PowerShell (pwsh).",
+      `Help the user understand, compare and coordinate work across all projects. When suggesting shell commands, target ${shellLabel()}.`,
       // --- Orchestration protocol ---
       [
         "# Orchestration",
@@ -575,6 +681,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
         "Rules:",
         "- Use the EXACT project names from the list below. Available projects: " + names + ".",
         '- "dispatch" sends a fresh prompt to that project\'s agent. Write the prompt as a complete instruction (the agent only sees that text, not this chat).',
+        '- RELATED WORK: add "peers" to a dispatch — the OTHER worktrees this task is tied to: [{"project":"<repo>","branch":"<its branch>"}, …]. Omit "branch" when that side has no worktree and runs from its base checkout. You already work this out for QA (a frontend feature and the backend that serves it); state it here too, and list ALL of them — one backend can feed several frontends. OctoShell then tells that agent where the others live (read-only), and when one of them declares a change to a shared contract (an endpoint, a field, a type, a column) the others are told at the start of their next turn. State the link once, on either dispatch: it works both ways.',
         ...(settings.workspace.orchestratorWorktrees
           ? ['- ISOLATED WORK → add a "branch": {"action":"dispatch","project":"<repo>","branch":"<branch-name>","prompt":"…"}. OctoShell then creates a git worktree off that repo as its OWN project (visible in the sidebar) with its OWN dedicated agent, and runs the prompt there. Use this for any task that should be isolated or run in parallel (e.g. a PR/feature per branch). Then DO NOT instruct the agent to run `git worktree add` itself — that makes an invisible folder handled by the wrong agent; let the "branch" field do it. Fan out parallel work as several branch-dispatches off the same repo, one per branch.']
           : ['- WORKTREES ARE DISABLED in settings: do NOT use the "branch" field. Dispatch every task directly to the named project\'s own agent. If two tasks target the same project, run them sequentially (don\'t interrupt a busy agent).']),
@@ -663,6 +770,11 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
           temperature: aiProvider === "acp-ollama" ? settings.ollama.temperature : null,
           // MCP servers the user allowed the orchestrator to use (Settings → MCP).
           allowedMcp: settings.orchestratorMcp,
+          // Where those servers get resolved from. The authenticated definition
+          // of a server (auth header, tokens in `env`) normally sits in the
+          // project-scoped part of the Claude config rather than the user-level
+          // one, so the backend needs the open projects' dirs to find it.
+          cwds: tabs.map((p) => p.controller.getSnapshot().cwd).filter(Boolean),
           modMcp: modStore.mcpServers(),
           // Read-only inspection tools (verify instead of guess; never write code).
           readonly: settings.orchestratorReadonly,
@@ -808,15 +920,36 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
    *  a branch dispatch can't silently land on dev. Worktree tabs are named after the
    *  sanitized branch (slashes → dashes), hence norm(). */
   const findWorktreeTab = useCallback(
-    (project: string, branch: string): ProjectRef | undefined => {
+    (project: string, branch: string): ProjectRef | undefined => tabs.find((p) => isWorktreeOf(p, project, branch)),
+    [tabs],
+  );
+
+  // Peer links need the tabs as they are NOW, not as this render saw them: "Run
+  // all" fires every dispatch from one closure, so a worktree created by the
+  // first is invisible to the second through `tabs` until React re-renders.
+  const tabsRef = useRef(tabs);
+  tabsRef.current = tabs;
+  const createdRef = useRef<ProjectRef[]>([]);
+  createdRef.current = createdRef.current.filter((c) => !tabs.some((t) => t.id === c.id));
+  const openTabs = (): ProjectRef[] => [...tabsRef.current, ...createdRef.current];
+
+  /** EVERY open tab an action could mean, in the same match order as the single
+   *  resolvers above. A cancel has to reach all of them: when several tabs sat on
+   *  one worktree, `.find()` stopped exactly one agent of many and the card still
+   *  reported success, so "stop the duplicates" looked like it did nothing. */
+  const findAllTabs = useCallback(
+    (project: string, branch?: string | null): ProjectRef[] => {
       const proj = project.toLowerCase().trim();
-      const b = norm(branch);
-      if (!proj || !b) return undefined;
-      return tabs.find((p) => {
-        const cwd = p.controller.getCwd().toLowerCase();
-        const n = norm(p.name);
-        return (n === b || n.includes(b)) && isWorktreeCwd(cwd) && cwd.includes(proj);
-      });
+      const b = branch ? norm(branch) : "";
+      if (b) {
+        return tabs.filter((p) => {
+          const cwd = p.controller.getCwd().toLowerCase();
+          const n = norm(p.name);
+          return (n === b || n.includes(b)) && isWorktreeCwd(cwd) && cwd.includes(proj);
+        });
+      }
+      const exact = tabs.filter((p) => p.name.toLowerCase().trim() === proj);
+      return exact.length ? exact : tabs.filter((p) => p.name.toLowerCase().includes(proj));
     },
     [tabs],
   );
@@ -832,8 +965,9 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
     [saveWatch],
   );
 
-  /** Execute a confirmed action against the resolved project's controller. */
-  const runAction = useCallback(
+  /** Execute a confirmed action against the resolved project's controller. Never
+   *  call this directly — `runAction` wraps it with the in-flight guard. */
+  const execAction = useCallback(
     async (key: string, a: OrchestratorAction) => {
       // Spend brake: refuse NEW agent work once the session cost limit is hit
       // (cancels still go through).
@@ -846,6 +980,53 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
       /** Record what was asked for. The agent's own report (stored separately when
        *  its turn ends) says what happened; this says what the intent was — which
        *  is what "why did we do this?" questions are actually asking about. */
+      /** Resolve the orchestrator's peer list to real worktrees, so the agent gets
+       *  paths it can actually read. A peer that isn't open stays listed by name. */
+      const resolvePeers = (): PeerLink[] => {
+        if (a.kind !== "dispatch" || !a.peers?.length) return [];
+        return a.peers.map((p) => {
+          // A peer is looked up by name only; whether its agent is busy is irrelevant here.
+          const tab = p.branch
+            ? openTabs().find((t) => isWorktreeOf(t, p.project, p.branch!))
+            : resolveProject(p.project, "idle");
+          return {
+            name: tab?.name ?? (p.branch ? `${p.project} (${p.branch})` : p.project),
+            cwd: tab?.controller.getCwd(),
+            branch: p.branch,
+            project: p.project,
+          };
+        });
+      };
+      /** Give `target` its peers, then make every link run both ways. An open
+       *  peer named here learns about `target`, and a tab dispatched earlier that
+       *  named `target` before its worktree existed (what "Run all" does when it
+       *  creates both sides) gets the path now. Without that, a declared contract
+       *  change reached nobody. */
+      const linkPeers = (target: ProjectRef) => {
+        if (a.kind !== "dispatch") return;
+        const mine = resolvePeers();
+        target.controller.setPeers(mine);
+        const cwd = target.controller.getCwd();
+        if (!cwd) return;
+        const self: PeerLink = { name: target.name, cwd, branch: a.branch, project: a.project };
+        const isTarget = (l: PeerLink) =>
+          !!l.project &&
+          (l.branch && a.branch
+            ? isWorktreeOf(target, l.project, l.branch)
+            : !l.branch && !a.branch && l.project.toLowerCase().trim() === target.name.toLowerCase().trim());
+        for (const t of openTabs()) {
+          if (t.id === target.id) continue;
+          const theirs = t.controller.getCwd();
+          if (!theirs) continue;
+          const namedByMe = mine.some((l) => l.cwd && normCwd(l.cwd) === normCwd(theirs));
+          const namesMe = t.controller
+            .getPeers()
+            .some((l) => (l.cwd ? normCwd(l.cwd) === normCwd(cwd) : isTarget(l)));
+          if (!namedByMe && !namesMe) continue;
+          t.controller.addPeer(self, isTarget);
+          target.controller.addPeer({ name: t.name, cwd: theirs });
+        }
+      };
       const rememberDispatch = (target: string, cwd: string) => {
         if (a.kind !== "dispatch") return;
         memoryStore.remember({
@@ -871,6 +1052,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
         const open = findWorktreeTab(a.project, a.branch);
         if (open) {
           open.controller.setMode("agent");
+          linkPeers(open);
           if (!open.controller.runAgent(a.prompt, { orchestrated: true })) {
             fail(`the agent in worktree "${open.name}" is still busy — stop it, then retry.`);
             return;
@@ -895,7 +1077,9 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
           fail(`couldn't create worktree "${a.branch}" in ${src.name}: ${wt ? wt.error : "unknown error"}`);
           return;
         }
+        createdRef.current = [...createdRef.current, wt];
         wt.controller.setMode("agent");
+        linkPeers(wt);
         wt.controller.runAgent(a.prompt, { orchestrated: true });
         watchDispatched(wt.id);
         onSelect(wt.id);
@@ -920,6 +1104,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
       }
       if (a.kind === "dispatch") {
         p.controller.setMode("agent");
+        linkPeers(p);
         // runAgent refuses (returns false) when that agent is already busy — an
         // orchestrated dispatch never preempts. Surface it instead of dropping it
         // silently (that's how QA fixes went missing before).
@@ -934,12 +1119,42 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
         // Fire the independent built-in review agent on this project's diff.
         void p.controller.requestReview();
       } else {
-        p.controller.cancelAgent();
+        // Stop every agent the action names. Cancelling is idempotent, so hitting
+        // an already-idle tab costs nothing, and a partial stop is the worse
+        // failure by far: it reads as "cancelled" while the work keeps running.
+        const targets = findAllTabs(a.project, a.branch);
+        for (const t of targets.length ? targets : [p]) t.controller.cancelAgent();
       }
       onSelect(p.id);
       setActionState((s) => ({ ...s, [key]: "done" }));
     },
-    [resolveProject, findWorktreeTab, onSelect, onCreateWorktree, watchDispatched],
+    [resolveProject, findWorktreeTab, findAllTabs, onSelect, onCreateWorktree, watchDispatched],
+  );
+
+  /** Run a confirmed action exactly once. The guard is the whole point: worktree
+   *  dispatch is async, so between the click and the result there is a window in
+   *  which the card still looks unconfirmed. Re-clicking it (or "Run all") used to
+   *  start a second, third, … dispatch of the same task — each one adopting the
+   *  same worktree as a fresh tab with its own agent, so eight agents ended up
+   *  editing one directory. */
+  const runAction = useCallback(
+    async (key: string, a: OrchestratorAction) => {
+      if (inFlightRef.current.has(key)) return;
+      inFlightRef.current.add(key);
+      setActionState((s) => ({ ...s, [key]: "running" }));
+      try {
+        await execAction(key, a);
+      } catch (e) {
+        setActionErr((prev) => ({ ...prev, [key]: String(e) }));
+        setActionState((s) => ({ ...s, [key]: "error" }));
+      } finally {
+        inFlightRef.current.delete(key);
+        // Belt and braces: an exec path that returned without settling would
+        // otherwise leave the card spinning with no way back.
+        setActionState((s) => (s[key] === "running" ? { ...s, [key]: "error" } : s));
+      }
+    },
+    [execAction],
   );
 
   const dismissAction = useCallback((key: string) => {
@@ -1466,7 +1681,9 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
         </div>
         {/* One panel split by a single centre divider: Strategy (the primary
             planning entry) on the left, the run-controls cluster on the right,
-            reading as two glued panels joined by that vertical line. */}
+            reading as two glued panels joined by that vertical line. The panel
+            can be as narrow as 232px, so the cluster wraps rather than clipping
+            its last button. */}
         <div className="mt-1 flex items-stretch overflow-hidden rounded-lg border border-edge bg-card">
           {onOpenStrategy && (
             <div className="flex items-center px-1 py-1">
@@ -1481,7 +1698,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
             </div>
           )}
           <div className="w-px self-stretch bg-edge" />
-          <div className="flex flex-1 items-center justify-end gap-1 px-1.5 py-1">
+          <div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-1 px-1.5 py-1">
           <button
             onClick={stopAll}
             disabled={!canStop}
@@ -1536,11 +1753,13 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
           >
             {liveWatch && watchingNow > 0 && <WorkingNode />}
             <span className="text-sm leading-none">👁</span>{" "}
-            {liveWatch
-              ? watchingNow > 0
-                ? `${watchingNow} working${watchStep > 0 ? ` · #${watchStep}` : ""}`
-                : "Watch"
-              : "Watch"}
+            <span className="truncate">
+              {liveWatch
+                ? watchingNow > 0
+                  ? `${watchingNow} working${watchStep > 0 ? ` · #${watchStep}` : ""}`
+                  : "Watch"
+                : "Watch"}
+            </span>
           </button>
           </div>
         </div>
@@ -1833,16 +2052,15 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
           </div>
         )}
         <div
-          className={`flex items-end gap-2 rounded-lg border bg-panel px-3 py-2.5 focus-within:border-accent ${
+          className={`flex items-start gap-2 rounded-lg border bg-panel px-3 py-2.5 focus-within:border-accent ${
             dropping ? "border-accent bg-accent/5" : "border-accent/40"
           }`}
         >
-          <span
-            className="select-none font-semibold leading-relaxed text-accent"
-            style={{ transform: "translateY(4px)" }}
-          >
-            ✦
-          </span>
+          {/* Same font-size + line-height as the textarea: the icon's line box
+              equals the text's first line, so they align by construction
+              instead of by a hand-tuned offset (which drifted between WebView2
+              and WebKit). */}
+          <span className="select-none text-sm font-semibold leading-relaxed text-accent">✦</span>
           <textarea
             ref={inputRef}
             rows={1}
@@ -2048,6 +2266,18 @@ function ActionCard({
   const verbLabel = isDispatch ? "Send task to" : isReview ? "Start review on" : "Stop the agent in";
   const verbIcon = isDispatch ? "🚀" : isReview ? "🔍" : "🛑";
 
+  // In flight. Worktree dispatch can sit here for seconds (git + dependency copy),
+  // and silence is what made people click Confirm again, so say so plainly.
+  if (state === "running") {
+    return (
+      <div className="flex items-center gap-1.5 rounded border border-accent/30 bg-accent/10 px-2 py-1.5 text-xs text-accent">
+        <span className="animate-pulse">●</span>
+        <span>
+          {isDispatch ? "Dispatching to" : isReview ? "Starting review on" : "Stopping"} <b>{target}</b>…
+        </span>
+      </div>
+    );
+  }
   if (state === "done") {
     return (
       <div className="rounded border border-emerald-500/30 bg-emerald-500/10 px-2 py-1.5 text-xs text-emerald-300">

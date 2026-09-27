@@ -484,6 +484,8 @@ export function ProjectSidebar(props: Props) {
       className="relative flex shrink-0 flex-col overflow-hidden rounded-xl border border-edge bg-panel"
       style={{ width }}
     >
+      {/* Left-packed tabs; they truncate rather than overflow when the panel is
+          at its narrowest (160px), and a badge never truncates. */}
       <div className="flex items-center gap-1 border-b border-edge px-2 py-1.5">
         {([
           { id: "projects", label: "Projects" },
@@ -493,13 +495,14 @@ export function ProjectSidebar(props: Props) {
           <button
             key={t.id}
             onClick={() => setLeftTab(t.id)}
-            className={`flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-semibold uppercase tracking-wider transition-colors ${
+            title={t.label}
+            className={`flex min-w-0 items-center gap-1 rounded-md px-2 py-1 text-[11px] font-semibold uppercase tracking-wider transition-colors ${
               leftTab === t.id ? "bg-edge text-grad" : "text-muted hover:bg-edge/50 hover:text-gray-200"
             }`}
           >
-            {t.label}
+            <span className="truncate">{t.label}</span>
             {"badge" in t && t.badge ? (
-              <span className="rounded-full bg-accent/25 px-1 text-[9px] text-accent">{t.badge}</span>
+              <span className="shrink-0 rounded-full bg-accent/25 px-1 text-[9px] text-accent">{t.badge}</span>
             ) : null}
           </button>
         ))}
@@ -539,6 +542,14 @@ export function ProjectSidebar(props: Props) {
             >
               {groups.length > 0 ? "Ungrouped" : ""}
             </div>
+            {tabs.length === 0 && (
+              // Without this the panel is a bare trace line hanging in the dark,
+              // which reads as broken rather than empty.
+              <p className="px-3 py-2 text-[11px] leading-relaxed text-muted/80">
+                No projects yet. Add a folder below and it appears here, with its branches and
+                worktrees underneath it.
+              </p>
+            )}
             {ungrouped.map((t) => renderProject(t, 1))}
 
             {groups.map((g) => {
@@ -947,6 +958,17 @@ function ContextMenu({
               }}
             >
               📂 Open in file manager
+            </button>
+            <button
+              className="w-full px-3 py-1.5 text-left text-gray-200 hover:bg-edge"
+              title="Open this folder in VS Code (needs `code` on PATH)"
+              onClick={() => {
+                const cwd = projTab?.controller.getCwd();
+                if (cwd) void invoke("open_editor", { path: cwd });
+                close();
+              }}
+            >
+              🧩 Open in VS Code
             </button>
             <button
               className="w-full px-3 py-1.5 text-left text-gray-200 hover:bg-edge"

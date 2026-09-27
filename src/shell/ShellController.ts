@@ -9,10 +9,11 @@ import { KEY, loadJSON, removeKey, saveJSON } from "../util/persist";
 import { deleteBlocksDb, loadBlocksDb, saveBlocksDb } from "../util/db";
 import { notify } from "../util/notify";
 import { playSfx } from "../util/sfx";
-import { acpCommandFor, acpSandboxCommandFor, isAcp, normalizeProvider, parseAgentLine, prepareOpencodeConfig, supportsEffort, type AgentProvider, type AgentStep } from "../agents/providers";
+import { acpCommandFor, acpSandboxCommandFor, acpSessionConfigFor, configDirEnvFor, isAcp, normalizeProvider, parseAgentLine, prepareOpencodeConfig, supportsEffort, type AgentProvider, type AgentStep } from "../agents/providers";
 import { settingsStore } from "../settings/settingsStore";
 import { serviceStore, type ServiceEntry } from "../services/serviceStore";
 import { taskJournal } from "../tasks/taskJournal";
+import { contractStore, formatChanges, normCwd } from "../agents/contracts";
 import { projectConfigStore } from "../projects/projectConfig";
 import { ReviewAgentController, buildReviewPrompt, fetchReviewOverview } from "../review/ReviewAgentController";
 
@@ -23,16 +24,26 @@ const MAX_PERSISTED_BLOCKS = 80;
  *  Their calls drive the trace progress bar and are hidden from the feed. */
 const TASK_TOOLS = new Set(["TaskCreate", "TaskUpdate", "TaskList", "TaskGet"]);
 
-/** Injected on every Claude turn so the app gets a reliable task-step signal: the
- *  agent breaks the task into an ordered task list (TaskCreate) up front and keeps
- *  it updated (TaskUpdate) as it goes. OctoShell renders that as the trace bar. */
+/** Our own progress tool (octo_services). The call itself is noise in the feed --
+ *  the trace bar above it IS the result -- so it is consumed and not rendered. */
+const PROGRESS_TOOL = "mcp__octo_services__set_task_steps";
+
+/** Injected on every Claude turn so the app gets a reliable task-step signal.
+ *
+ *  This used to ask for the CLI's own task list (TaskCreate/TaskUpdate). Those
+ *  tools turned out not to be offered in the sessions we launch -- across the
+ *  whole stored history not one call to them exists -- so the trace bar simply
+ *  never filled. It now asks for OUR tool, which comes from the MCP server we
+ *  attach ourselves and is therefore always there. */
 const STEP_PROTOCOL = [
   "<<OCTOSHELL TASK STEPS — MANDATORY>>",
   "This applies to EVERY task you are given (typed directly or dispatched by the orchestrator), including ones already phrased as \"do these steps\".",
-  "1. Before doing anything else, use the TaskCreate tool to lay out the task as a short ordered list of concrete, user-meaningful steps (aim for 3–7) — one TaskCreate call per step. Do this even if the task looks simple or sequential — do NOT just describe the steps in prose.",
-  "2. Use TaskUpdate to mark EXACTLY ONE step `in_progress` at a time. The moment a step is finished, immediately call TaskUpdate to set it `completed` and the next one `in_progress`.",
-  "3. Phrase each step's subject as a short outcome (e.g. \"Create todo.txt\", \"Write the tests\"), not internal chatter.",
-  "This task list is the ONLY thing that drives the user's live progress bar, so it must exist and stay accurate from the first action to the last.",
+  "1. Before doing anything else, call the set_task_steps tool (from the octo_services MCP server) with an ordered list of 3–7 concrete, user-meaningful steps, and current = 1. Do this even if the task looks simple or sequential — do NOT just describe the steps in prose.",
+  "2. Each time you finish a step, call set_task_steps again with the SAME steps array and current set to the step you have just moved on to.",
+  "3. When everything is done, call it once more with current set to steps.length + 1.",
+  "4. Phrase each step as a short outcome (e.g. \"Create todo.txt\", \"Write the tests\"), not internal chatter.",
+  "This is the ONLY thing that drives the user's live progress bar, so it must exist and stay accurate from the first action to the last.",
+  "If set_task_steps is genuinely not available to you, fall back to the CLI's own task list (TaskCreate/TaskUpdate) if you have it.",
   "<</OCTOSHELL TASK STEPS>>",
 ].join("\n");
 
@@ -41,6 +52,19 @@ const STEP_PROTOCOL = [
 // us as ACP `plan` session updates (parseAcp → e.steps → the trace bar). So we ask
 // for a plan in tool-agnostic terms; the agent's native plan tool then lights the
 // same trace bar / nodes / percentage the native path drives.
+/** One worktree this session's work is tied to. Resolved when the orchestrator
+ *  dispatches, so the agent gets a real path rather than a name to guess at. */
+export interface PeerLink {
+  /** Label shown to the agent (the worktree/project name). */
+  name: string;
+  /** Its working directory, when that worktree is open in OctoShell. */
+  cwd?: string;
+  branch?: string;
+  /** The repo the orchestrator named, kept so a link to a worktree that did not
+   *  exist yet at dispatch time can be filled in once it does. */
+  project?: string;
+}
+
 /** Dev servers go through OctoShell, never a background shell job: a server an
  *  agent starts in Bash is invisible, unstoppable from the UI, and its port a
  *  guess for everyone else. The octo_services tool descriptions carry the details. */
@@ -246,6 +270,10 @@ export class ShellController {
    *  and run this one once it ends (so the user can always take over the agent,
    *  without two concurrent turns racing the backend). */
   private pendingUserPrompt: string | null = null;
+  /** Worktrees this task is tied to (from the orchestrator's dispatch). */
+  private peers: PeerLink[] = [];
+  /** The newest contract change already shown to this session. */
+  private declSeen = 0;
   /** claude session id, for `--resume` across turns. */
   private agentSessionId: string | null = null;
   /** The last prompt sent to the agent — replayed if a `--resume` turns out stale. */
@@ -263,6 +291,9 @@ export class ShellController {
   private agentConfigDir: string | null = null;
   /** Per-tool approval mode (Claude only). */
   private agentApproval = false;
+  /** Whether the stored session state has been read back yet. Until it has,
+   *  saving would persist this object's field defaults over it (see `persist`). */
+  private hydrated = false;
   /** Running token total for this session's agent (null = none reported yet). */
   private agentTokens: { input: number; output: number; costUsd: number } | null = null;
   /** Latest context-window occupancy reported by the agent. */
@@ -293,6 +324,12 @@ export class ShellController {
   private rowHeightPx = 17;
   private resizeQueued = false;
   private unlisteners: UnlistenFn[] = [];
+  /** Set by dispose(): a `pty://exit` that follows our own close_tab must not
+   *  restart the shell. */
+  private disposed = false;
+  /** Timestamps of recent automatic shell restarts, to stop a shell that dies
+   *  on startup (a broken rc file, say) from being respawned forever. */
+  private respawns: number[] = [];
   private saveTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Height is monotonic within a command (high-water mark) so an interactive TUI
@@ -482,6 +519,41 @@ export class ShellController {
     // renders, and an empty cwd reaches the ACP adapter as "." — which claude/codex
     // reject ("cwd must be an absolute path"), killing the turn before it starts.
     if (cwd) this.cwd = cwd;
+
+    this.unlisteners.push(
+      await listen<{ id: string; data: string }>("agent://event", (e) => {
+        if (e.payload.id === this.sessionId) this.onAgentEvent(e.payload.data);
+      }),
+      await listen<{ id: string; code: number; error?: string }>("agent://done", (e) => {
+        if (e.payload.id === this.sessionId) this.onAgentDone(e.payload.error, e.payload.code);
+      }),
+      await listen<{ id: string; requestId: string; toolName: string; input: unknown; toolUseId: string }>(
+        "approval://request",
+        (e) => {
+          if (e.payload.id === this.sessionId) this.onApprovalRequest(e.payload);
+        },
+      ),
+      await listen<{ id: string }>("pty://exit", (e) => {
+        if (e.payload.id === this.sessionId) void this.onShellExit();
+      }),
+      await listen<{ id: string; requestId: string; op: string; args: Record<string, unknown> }>(
+        "services://request",
+        (e) => {
+          if (e.payload.id !== this.sessionId) return;
+          const { requestId, op, args } = e.payload;
+          void this.answerServices(op, args ?? {}).then((result) =>
+            invoke("services_respond", { requestId, result }).catch(() => {}),
+          );
+        },
+      ),
+    );
+    await this.spawnShell(cwd);
+    this.hydrate();
+  }
+
+  /** Open this session's PTY and wire its event stream. Called once from
+   *  `init`, and again by `onShellExit` when the shell ends. */
+  private async spawnShell(cwd: string): Promise<void> {
     // One channel carries everything for this session, IN ORDER: raw output
     // bytes (ArrayBuffer) on the hot path — no base64 — and the control markers
     // (JSON objects) that delimit commands. Routing them together means a
@@ -501,43 +573,82 @@ export class ShellController {
           this.emit();
           break;
         case "ready":
-          this.busy = false;
-          this.emit();
+          // The shell is idle — but if the previous block is still being frozen
+          // (see finishCurrent), hold `busy` until that lands, so the next
+          // command can't start on top of an unfrozen block.
+          if (this.freezing) {
+            this.readyPending = true;
+          } else {
+            this.busy = false;
+            this.emit();
+          }
           break;
       }
     };
 
-    this.unlisteners.push(
-      await listen<{ id: string; data: string }>("agent://event", (e) => {
-        if (e.payload.id === this.sessionId) this.onAgentEvent(e.payload.data);
-      }),
-      await listen<{ id: string; code: number; error?: string }>("agent://done", (e) => {
-        if (e.payload.id === this.sessionId) this.onAgentDone(e.payload.error, e.payload.code);
-      }),
-      await listen<{ id: string; requestId: string; toolName: string; input: unknown; toolUseId: string }>(
-        "approval://request",
-        (e) => {
-          if (e.payload.id === this.sessionId) this.onApprovalRequest(e.payload);
-        },
-      ),
-      await listen<{ id: string; requestId: string; op: string; args: Record<string, unknown> }>(
-        "services://request",
-        (e) => {
-          if (e.payload.id !== this.sessionId) return;
-          const { requestId, op, args } = e.payload;
-          void this.answerServices(op, args ?? {}).then((result) =>
-            invoke("services_respond", { requestId, result }).catch(() => {}),
-          );
-        },
-      ),
-    );
     await invoke("open_new_tab", {
       id: this.sessionId,
       cwd,
       shell: settingsStore.getSnapshot().workspace.defaultShell,
       onOutput: stream,
     });
-    this.hydrate();
+  }
+
+  /** The shell process ended (`exit`, a crash, `kill`). Before this, the tab
+   *  just sat "running" forever with a dead PTY behind it. Now: settle whatever
+   *  block was running, then start a fresh shell in the same directory — the
+   *  way a terminal app reopens its prompt — unless the shell keeps dying on
+   *  startup, in which case stop and say so instead of looping. */
+  private async onShellExit(): Promise<void> {
+    if (this.disposed) return;
+    if (this.current) {
+      const block = this.current;
+      // The shell died before sending the end marker, so there is no exit code.
+      this.finishCurrent(0);
+      // The freeze is queued behind xterm's write queue; queue the note after it
+      // (xterm runs write callbacks in order) so the freeze doesn't overwrite it.
+      this.liveTerm.write("", () => {
+        block.outputText = `${block.outputText}\n[shell exited]`.trim();
+        this.emit();
+      });
+    }
+    this.freezing = false;
+    this.readyPending = false;
+    this.busy = true; // until the new shell's first prompt reports `ready`
+
+    const now = Date.now();
+    this.respawns = this.respawns.filter((t) => now - t < 10_000);
+    this.respawns.push(now);
+    if (this.respawns.length > 3) {
+      this.busy = false;
+      this.blocks.push({
+        id: crypto.randomUUID(),
+        kind: "command",
+        command: "shell",
+        status: "error",
+        cwd: this.cwd,
+        outputText: "The shell keeps exiting right after it starts. Check its startup files, then close and reopen this project.",
+        startedAt: now,
+      });
+      this.emit();
+      return;
+    }
+    this.emit();
+    try {
+      await this.spawnShell(this.cwd);
+    } catch (e) {
+      this.busy = false;
+      this.blocks.push({
+        id: crypto.randomUUID(),
+        kind: "command",
+        command: "shell",
+        status: "error",
+        cwd: this.cwd,
+        outputText: `Could not restart the shell: ${e}`,
+        startedAt: Date.now(),
+      });
+      this.emit();
+    }
   }
 
   /** Restore persisted agent prefs (sync, small) + history (async, from SQLite).
@@ -545,6 +656,8 @@ export class ShellController {
    *  agent defaults (Settings), so new agents start on the configured account. */
   private hydrate(): void {
     const d = settingsStore.getSnapshot().agent;
+    this.peers = loadJSON<PeerLink[]>(KEY.peers(this.sessionId), []);
+    this.declSeen = loadJSON<number>(KEY.declSeen(this.sessionId), 0);
     this.agentSessionId = loadJSON<string | null>(KEY.agent(this.sessionId), null);
     this.agentModel = loadJSON<string | null>(KEY.model(this.sessionId), d.model);
     this.agentEffort = loadJSON<string | null>(KEY.effort(this.sessionId), null);
@@ -559,6 +672,15 @@ export class ShellController {
 
   /** Load settled history from SQLite, migrating any old localStorage history. */
   private async hydrateBlocks(): Promise<void> {
+    try {
+      await this.loadBlocks();
+    } finally {
+      // Only now is it safe to write: see `persist`.
+      this.hydrated = true;
+    }
+  }
+
+  private async loadBlocks(): Promise<void> {
     let saved: Block[] | null = null;
     const data = await loadBlocksDb(this.sessionId);
     if (data) {
@@ -600,6 +722,15 @@ export class ShellController {
   }
 
   private persist(): void {
+    // Never write before the stored values have been read back. A save is on a
+    // 400ms debounce and the first shell output can trigger one while `init` is
+    // still awaiting the PTY, i.e. before `hydrate` runs — which wrote this
+    // session's untouched field defaults over its saved prefs. `agentConfigDir`
+    // is the one that hurt: its default is null, null is also the legitimate
+    // value for "Default (home)", so hydrate then read it back as a deliberate
+    // choice and pinned the tab to an account that was never logged in. Every
+    // turn in that tab answered "Not logged in · Please run /login".
+    if (!this.hydrated) return;
     // Blocks → SQLite (async, off the UI thread). Prefs → localStorage.
     void saveBlocksDb(this.sessionId, JSON.stringify(this.settledBlocks()), Date.now());
     saveJSON(KEY.agent(this.sessionId), this.agentSessionId);
@@ -618,6 +749,43 @@ export class ShellController {
   }
 
   /** A pending tool-approval arrived from the agent — show it for a decision. */
+  /** The related worktrees, with real paths so the agent can check an assumption
+   *  by reading the other side's file instead of guessing what it does. */
+  private peerRoster(): string {
+    const lines = this.peers.map((p) => {
+      const where = p.cwd ?? "(not open in OctoShell — ask the orchestrator if you need it)";
+      return `- ${p.name}${p.branch ? ` (branch ${p.branch})` : ""}: ${where}`;
+    });
+    return [
+      "<<RELATED WORK>>",
+      "You are not working alone. These worktrees are part of the same effort:",
+      ...lines,
+      "You may READ their files to check an assumption (an API route, a field name, a shared type) instead of guessing.",
+      "NEVER edit, commit or run commands inside another worktree — its own agent owns it. Adapt your own side instead.",
+      "If YOU change anything they could depend on (an endpoint, a GraphQL field, a shared type, a DB column, a config key),",
+      "call declare_contract_change immediately, so their next turn is told before they build on the old shape.",
+      "list_related_work shows what they have been doing.",
+      "<</RELATED WORK>>",
+    ].join("\n");
+  }
+
+  /** Contract changes from related worktrees that this session hasn't been told
+   *  about yet. Marked as seen once handed over, so they are never repeated. */
+  private contractNews(): string {
+    const peerCwds = this.peers.map((p) => p.cwd ?? "").filter(Boolean);
+    const list = contractStore.since(this.cwd, this.declSeen, peerCwds);
+    if (!list.length) return "";
+    this.declSeen = Math.max(...list.map((c) => c.at));
+    saveJSON(KEY.declSeen(this.sessionId), this.declSeen);
+    return [
+      "<<CHANGES FROM RELATED WORK — READ BEFORE CONTINUING>>",
+      "Another agent changed something your side may depend on:",
+      formatChanges(list),
+      "Check your code against these before writing anything that uses them. If one breaks work you have already done, fix that first.",
+      "<</CHANGES FROM RELATED WORK>>",
+    ].join("\n");
+  }
+
   /** This project's label for services it starts: the folder name, which for a
    *  worktree is its branch -- the same thing you see in the sidebar. */
   private serviceLabel(): string {
@@ -708,6 +876,60 @@ export class ShellController {
         return { ok: true, id: e.id, status: e.status, lines: e.logs.slice(-n) };
       }
 
+      if (op === "declare") {
+        const str = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : undefined);
+        const summary = str(args.summary);
+        if (!summary) return { ok: false, error: "summary is required" };
+        const entry = contractStore.add({
+          project: this.serviceLabel(),
+          cwd: this.cwd,
+          peers: this.peers.map((p) => p.cwd ?? "").filter(Boolean),
+          summary,
+          surface: str(args.surface),
+          breaking: args.breaking === true,
+          migration: str(args.migration),
+        });
+        if (!entry) return { ok: false, error: "nothing to record" };
+        // A declaration with no links reaches nobody. Say so, rather than letting
+        // the agent believe it has warned someone.
+        const told = this.peers.filter((p) => p.cwd).length;
+        return {
+          ok: true,
+          declared: entry.id,
+          delivering_to: told,
+          ...(told === 0
+            ? { note: "No related worktrees are linked to this one, so nobody will be told. Put it in your final report instead." }
+            : {}),
+        };
+      }
+
+      if (op === "related") {
+        const peers = this.peers.map((p) => ({
+          project: p.name,
+          branch: p.branch ?? null,
+          cwd: p.cwd ?? null,
+          journal: p.cwd ? taskJournal.textFor(p.cwd).slice(-1500) : "",
+          declared: p.cwd ? contractStore.byCwd(p.cwd).map((c) => c.summary) : [],
+        }));
+        return { ok: true, peers, ...(peers.length ? {} : { note: "Nothing is linked to this worktree." }) };
+      }
+
+      if (op === "steps") {
+        const steps = (Array.isArray(args.steps) ? args.steps : [])
+          .filter((s): s is string => typeof s === "string" && !!s.trim())
+          .map((s) => s.trim());
+        if (!steps.length) return { ok: false, error: "steps must be a non-empty array of strings" };
+        // `current` is 1-based and may point past the end, which means "all done".
+        const raw = typeof args.current === "number" ? Math.floor(args.current) : 1;
+        const current = Math.min(Math.max(raw, 1), steps.length + 1);
+        this.agentProgress = steps.map((text, i) => ({
+          text,
+          status: i < current - 1 ? "completed" : i === current - 1 ? "in_progress" : "pending",
+        }));
+        this.emit();
+        return { ok: true, showing: steps.length, current };
+      }
+
       if (op === "task") {
         const str = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : undefined);
         const summary = str(args.summary);
@@ -772,13 +994,15 @@ export class ShellController {
     this.emit();
   }
 
-  /** How hard this project's agent should think (null = don't pass --effort).
-   *
-   *  Unlike the model, this needs no ACP teardown: it is only ever sent on the
-   *  native path, where every turn spawns a fresh process anyway. */
+  /** How hard this project's agent should think (null = don't pass one).
+   *  Native claude takes it per turn; an ACP adapter (Codex) takes it when its
+   *  session starts, so a running one is torn down like on a model change. */
   setAgentEffort(effort: string | null): void {
     this.agentEffort = effort;
     saveJSON(KEY.effort(this.sessionId), effort);
+    // An ACP adapter (Codex) takes its effort when the session starts, like its
+    // model, so a running one is torn down.
+    if (isAcp(this.agentProvider)) this.resetAcpSession();
     this.emit();
   }
 
@@ -818,6 +1042,14 @@ export class ShellController {
     // Tear down a running ACP adapter before switching, or the next prompt would
     // hit the OLD agent (backend keys sessions by id, not provider).
     if (isAcp(this.agentProvider)) this.resetAcpSession();
+    // A profile is a folder handed to the CLI through ITS env var, so a Claude
+    // profile (CLAUDE_CONFIG_DIR) means nothing to Codex (CODEX_HOME): carried
+    // over, Codex looked for its login inside the Claude folder and failed with
+    // "Authentication required". Keep it only when the variable is the same.
+    if (configDirEnvFor(provider) !== configDirEnvFor(this.agentProvider) && this.agentConfigDir) {
+      this.agentConfigDir = null;
+      saveJSON(KEY.agentCfgDir(this.sessionId), null);
+    }
     this.agentProvider = provider;
     this.agentSessionId = null;
     this.agentModel = null; // model names are provider-specific
@@ -929,29 +1161,67 @@ export class ShellController {
   }
 
   private onOutput(bytes: Uint8Array): void {
-    if (!this.current) return; // stray output between commands
+    // Feed the emulator even between commands. xterm is what ANSWERS terminal
+    // queries, and ConPTY asks for the cursor position the moment the shell
+    // starts — before any command exists. Dropping that byte range left the
+    // shell waiting for a reply that never came, so it never printed its first
+    // prompt and the tab looked dead. `clear()` at the start of each command
+    // keeps anything that arrives between commands out of the block.
     this.liveTerm.write(bytes);
+    if (!this.current) return; // stray output between commands
     this.scheduleResize();
   }
+
+  /** True between a command's end marker and the moment its output is frozen
+   *  into the block (an async hop through xterm's write queue). */
+  private freezing = false;
+  /** A `ready` that arrived mid-freeze; applied once the freeze lands. */
+  private readyPending = false;
 
   private finishCurrent(code: number): void {
     const block = this.current;
     if (!block) return;
+    this.freezing = true;
 
-    const ansi = this.serializer.serialize({ scrollback: MAX_ROWS * 50 });
-    block.frozenHtml = ansiToHtml(ansi);
-    block.outputText = stripAnsi(ansi).replace(/\s+$/, "");
-    block.status = code === 0 ? "success" : "error";
-    block.exitCode = code;
+    // xterm parses `write()` data asynchronously, so the bytes of a command that
+    // finished a moment ago may not be in the buffer yet — and a fast command
+    // (`ls` on macOS) delivers its output and its end marker in the SAME frame.
+    // Serializing here, synchronously, froze an empty block. An empty write with
+    // a callback is xterm's "everything before this has been processed" hook, so
+    // the freeze waits for exactly that and nothing more. PowerShell's prompt
+    // latency hid this race on Windows; it was there all along.
+    this.liveTerm.write("", () => {
+      this.freezing = false;
+      const releaseReady = () => {
+        if (this.readyPending) {
+          this.readyPending = false;
+          this.busy = false;
+        }
+      };
+      // `ready` is held back while freezing, so this can't be another block —
+      // but never freeze the wrong one regardless.
+      if (this.current !== block) {
+        releaseReady();
+        this.emit();
+        return;
+      }
 
-    // Reclaim the live terminal for the next command.
-    this.liveHost.appendChild(this.liveTerm.element!);
-    this.liveTerm.clear();
-    this.liveTerm.blur(); // let the InputBar take focus back
-    this.current = null;
-    this.altScreen = false;
-    this.lockedCols = 0; // free the width again until the next command starts
-    this.emit();
+      const ansi = this.serializer.serialize({ scrollback: MAX_ROWS * 50 });
+      block.frozenHtml = ansiToHtml(ansi);
+      block.outputText = stripAnsi(ansi).replace(/\s+$/, "");
+      block.status = code === 0 ? "success" : "error";
+      block.exitCode = code;
+
+      // Reclaim the live terminal for the next command.
+      this.liveHost.appendChild(this.liveTerm.element!);
+      this.liveTerm.clear();
+      this.liveTerm.blur(); // let the InputBar take focus back
+      this.current = null;
+      this.altScreen = false;
+      this.lockedCols = 0; // free the width again until the next command starts
+      releaseReady();
+      this.emit();
+    });
   }
 
   // ---- auto-height (grow the live term to its content, capped) ----
@@ -1079,6 +1349,31 @@ export class ShellController {
   /** Send a prompt to the local `claude` agent; render its stream as blocks.
    *  `orchestrated` marks turns the assistant dispatched (vs. the user typing),
    *  so the board can light the whole tentacle route to this agent. */
+  /** Tell this session which worktrees its work is tied to. Replaces any previous
+   *  set: the newest dispatch describes the current task, not the last one. */
+  setPeers(peers: PeerLink[]): void {
+    this.peers = peers.filter((p) => p.name);
+    saveJSON(KEY.peers(this.sessionId), this.peers);
+    this.emit();
+  }
+
+  getPeers(): PeerLink[] {
+    return this.peers;
+  }
+
+  /** Link one more worktree without dropping the rest. `pending` picks out a link
+   *  that was named before its worktree existed (so it has no path yet): that one
+   *  is filled in rather than listed twice. */
+  addPeer(link: PeerLink, pending?: (p: PeerLink) => boolean): void {
+    if (!link.cwd) return;
+    const key = normCwd(link.cwd);
+    if (this.peers.some((p) => p.cwd && normCwd(p.cwd) === key)) return;
+    const i = pending ? this.peers.findIndex((p) => !p.cwd && pending(p)) : -1;
+    this.peers = i >= 0 ? this.peers.map((p, j) => (j === i ? { ...p, ...link } : p)) : [...this.peers, link];
+    saveJSON(KEY.peers(this.sessionId), this.peers);
+    this.emit();
+  }
+
   runAgent(prompt: string, opts?: { orchestrated?: boolean; via?: "phone" }): boolean {
     const text = prompt.trim();
     if (!text) return false;
@@ -1149,7 +1444,12 @@ export class ShellController {
     // The dev-server rule only reaches agents that actually get the tools (native
     // claude and ACP), and only once per session like the global rules.
     const devRule = resume === null && (this.agentProvider === "claude" || isAcp(this.agentProvider)) ? DEV_SERVER_RULE : "";
-    const preamble = [rulesBlock, stepRule, devRule].filter(Boolean).join("\n\n");
+    // Who else is working on this, and what they changed since our last turn. The
+    // roster goes in once per session; the changes go in on EVERY turn, because a
+    // change that lands mid-task is exactly the one that breaks an assumption.
+    const peerBlock = resume === null && this.peers.length ? this.peerRoster() : "";
+    const newsBlock = this.contractNews();
+    const preamble = [rulesBlock, stepRule, devRule, peerBlock, newsBlock].filter(Boolean).join("\n\n");
     const full = preamble ? `${preamble}\n\n${prompt}` : prompt;
 
     // ACP path: one long-lived session drives the chosen ACP agent over the
@@ -1172,12 +1472,13 @@ export class ShellController {
             opencodeConfig: cfg,
             configDir: this.agentConfigDir,
           }),
+          sessionConfig: acpSessionConfigFor(this.agentProvider, this.agentModel, this.agentEffort),
           sandboxImage: sandbox?.image ?? null,
           sandboxCommand: sandbox?.command ?? null,
           // 🛡 Approve = prompt per tool; ⚡ Auto = approve without prompting.
           autoApprove: !this.agentApproval,
         }).catch((err) => {
-          this.onAgentDone(String(err));
+          this.onAgentDone(String(err), 1);
         });
       });
       return;
@@ -1196,8 +1497,11 @@ export class ShellController {
       // Read at dispatch time, not cached: toggling a skill in Settings should
       // apply to the next turn without restarting anything.
       skillsOff: settingsStore.getSnapshot().skillsOff,
+      guardProtectedFolders: settingsStore.getSnapshot().workspace.guardProtectedFolders,
     }).catch((err) => {
-      this.onAgentDone(String(err));
+      // A spawn failure (CLI not on PATH, bad cwd) is a failed turn: report it
+      // with a non-zero code so the error block actually renders.
+      this.onAgentDone(String(err), 1);
     });
   }
 
@@ -1249,6 +1553,9 @@ export class ShellController {
         // and DON'T render them as feed blocks — the trace represents them.
         if (TASK_TOOLS.has(e.tool.name)) {
           this.applyTaskOp(e.tool.name, e.tool.input);
+        } else if (e.tool.name === PROGRESS_TOOL) {
+          // Handled over the services bridge (answerServices), which has the
+          // parsed arguments; nothing to render here.
         } else {
           const id = crypto.randomUUID();
           this.agentTools.set(e.tool.id, id);
@@ -1454,6 +1761,7 @@ export class ShellController {
   }
 
   dispose(): void {
+    this.disposed = true;
     if (this.saveTimer) clearTimeout(this.saveTimer);
     this.unlisteners.forEach((u) => u());
     invoke("close_tab", { id: this.sessionId }).catch(() => {});

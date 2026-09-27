@@ -3,8 +3,16 @@
 // JSON block in its reply; we parse that out, hide it from the rendered text, and
 // surface each action as a confirmation card. Only the user's click runs them.
 
+/** A worktree (or base checkout) whose work this task depends on, or which
+ *  depends on it. Several, because one backend can feed many frontends. */
+export interface PeerRef {
+  project: string;
+  /** The peer's branch. Absent means its base checkout. */
+  branch?: string;
+}
+
 export type OrchestratorAction =
-  | { kind: "dispatch"; project: string; prompt: string; branch?: string }
+  | { kind: "dispatch"; project: string; prompt: string; branch?: string; peers?: PeerRef[] }
   // `branch` disambiguates: one ticket can have same-named worktrees in several
   // repos, so project alone can't say which agent to hit.
   | { kind: "cancel"; project: string; branch?: string }
@@ -39,6 +47,30 @@ export function parseActions(text: string): { clean: string; actions: Orchestrat
   return { clean, actions };
 }
 
+/** The related worktrees on a dispatch. Objects ({project, branch}) are the
+ *  documented shape; the "project#branch" shorthand a model sometimes reaches for
+ *  is accepted too, because a dropped link is worse than a sloppily written one. */
+function normalizePeers(raw: any): PeerRef[] {
+  const list = Array.isArray(raw) ? raw : raw ? [raw] : [];
+  const out: PeerRef[] = [];
+  for (const it of list) {
+    if (typeof it === "string") {
+      const [project, branch] = it.split("#");
+      if (project?.trim()) {
+        out.push(branch?.trim() ? { project: project.trim(), branch: branch.trim() } : { project: project.trim() });
+      }
+      continue;
+    }
+    if (!it || typeof it !== "object") continue;
+    const project = typeof it.project === "string" ? it.project.trim() : "";
+    if (!project) continue;
+    const b = it.branch ?? it.worktree;
+    const branch = typeof b === "string" && b.trim() ? b.trim() : undefined;
+    out.push(branch ? { project, branch } : { project });
+  }
+  return out;
+}
+
 /** Validate one parsed item into a typed action (or null if it's malformed). */
 function normalize(item: any): OrchestratorAction | null {
   if (!item || typeof item !== "object") return null;
@@ -53,7 +85,11 @@ function normalize(item: any): OrchestratorAction | null {
   if (verb === "dispatch" || verb === "send" || verb === "run") {
     const prompt = typeof item.prompt === "string" ? item.prompt.trim() : "";
     if (!prompt) return null;
-    return branch ? { kind: "dispatch", project, prompt, branch } : { kind: "dispatch", project, prompt };
+    const peers = normalizePeers(item.peers ?? item.related);
+    const base = branch
+      ? { kind: "dispatch" as const, project, prompt, branch }
+      : { kind: "dispatch" as const, project, prompt };
+    return peers.length ? { ...base, peers } : base;
   }
   if (verb === "cancel" || verb === "stop") {
     return branch ? { kind: "cancel", project, branch } : { kind: "cancel", project };

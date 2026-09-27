@@ -108,8 +108,11 @@ const TOOLS = [
   { name: "stop_dev_server", description: "Stop a dev server this project owns, by id from list_dev_servers.", inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] } },
   { name: "dev_server_logs", description: "Recent output of a managed dev server, by id from list_dev_servers. Use it to see why a server failed or which URL it printed.", inputSchema: { type: "object", properties: { id: { type: "string" }, lines: { type: "number", description: "How many trailing lines (default 60, max 300)." } }, required: ["id"] } },
   { name: "update_task_progress", description: "Record progress on the task you were given, in OctoShell's task journal for this project. Call it when you finish a meaningful step, when you are blocked, and ONCE AT THE END. The user's QA for this work is built from this journal, so the final call must say concretely what changed and how a person can verify it.", inputSchema: { type: "object", properties: { summary: { type: "string", description: "What you just did or found, in a sentence or two." }, status: { type: "string", enum: ["in_progress", "blocked", "done"] }, changed: { type: "string", description: "What changed: features, behaviour, files (on the final call)." }, how_to_verify: { type: "string", description: "Concrete steps a person can follow to check it works: where to click, what to expect (on the final call)." } }, required: ["summary"] } },
+  { name: "set_task_steps", description: "Show the user your plan for this task as a live progress bar in OctoShell. Call this FIRST, before any other work, with the ordered steps. Call it again every time you move on to the next step, with the SAME steps and `current` updated. Call it once more with current past the last step when everything is finished.", inputSchema: { type: "object", properties: { steps: { type: "array", items: { type: "string" }, description: "3-7 ordered steps, each a short user-meaningful outcome (\"Create the migration\", \"Write the tests\") -- not internal chatter." }, current: { type: "number", description: "1-based index of the step you are working on NOW. Pass steps.length + 1 when all of them are done." } }, required: ["steps"] } },
+  { name: "declare_contract_change", description: "Tell the agents working on related worktrees that you changed something they depend on -- an API route or response, a GraphQL field, a shared type, a database column, a config key. Call it the moment you make the change, not at the end: they are told at the start of their next turn, so an early declaration is the difference between them adapting and them building on the old shape.", inputSchema: { type: "object", properties: { summary: { type: "string", description: "One sentence: what changed, old shape -> new shape." }, surface: { type: "string", description: "Where exactly: the route, field, type or column by name." }, breaking: { type: "boolean", description: "True when code written against the old shape stops working." }, migration: { type: "string", description: "What the other side should do about it." } }, required: ["summary"] } },
+  { name: "list_related_work", description: "The worktrees your task is tied to: where they are on disk, what their agents have been doing, and what they have declared changed. Use it before assuming how another side behaves -- and you may READ their files, but never edit them.", inputSchema: { type: "object", properties: {} } },
 ];
-const OPS = { list_dev_servers: "list", start_dev_server: "start", stop_dev_server: "stop", dev_server_logs: "logs", update_task_progress: "task" };
+const OPS = { list_dev_servers: "list", start_dev_server: "start", stop_dev_server: "stop", dev_server_logs: "logs", update_task_progress: "task", set_task_steps: "steps", declare_contract_change: "declare", list_related_work: "related" };
 function handle(m) {
   if (m.method === "initialize") send({ jsonrpc: "2.0", id: m.id, result: { protocolVersion: (m.params && m.params.protocolVersion) || "2024-11-05", capabilities: { tools: {} }, serverInfo: { name: "octo_services", version: "1.0.0" } } });
   else if (m.method === "tools/list") send({ jsonrpc: "2.0", id: m.id, result: { tools: TOOLS } });
@@ -213,25 +216,19 @@ impl ApprovalBridge {
     }
 }
 
-/// Generate an unpredictable token for the approval bridge. Uses the OS-seeded
-/// `RandomState` as the entropy source (no extra crate) — enough to stop a local
-/// process from guessing it and spoofing approval prompts.
+/// Generate an unpredictable token for the approval bridge.
+///
+/// Straight from OS entropy. It used to be built from `RandomState` plus the
+/// clock, to avoid a dependency — but `RandomState` is a hash seed, not a CSPRNG,
+/// and its guarantee is collision resistance, not unpredictability. This token is
+/// the only thing standing between a local process and a spoofed approval prompt
+/// on a machine where agents may run with `--dangerously-skip-permissions`, so it
+/// should not rest on "probably hard to guess". `getrandom` is already a
+/// dependency (the mobile server's access code uses it), so this costs nothing.
 fn random_token() -> String {
-    use std::collections::hash_map::RandomState;
-    use std::hash::{BuildHasher, Hasher};
-    let mut out = String::with_capacity(32);
-    for i in 0..2u8 {
-        let mut h = RandomState::new().build_hasher();
-        h.write_u8(i);
-        h.write_u128(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0),
-        );
-        out.push_str(&format!("{:016x}", h.finish()));
-    }
-    out
+    let mut buf = [0u8; 16];
+    getrandom::fill(&mut buf).expect("OS entropy unavailable");
+    buf.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 #[derive(Clone, Serialize)]
@@ -277,7 +274,7 @@ struct WireReq {
 impl ApprovalBridge {
     /// Write the sidecar to disk and bind the localhost listener. Call once.
     pub fn start(&self, app: AppHandle) {
-        let dir = std::env::temp_dir().join("octoshell");
+        let dir = crate::platform::scratch_dir();
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("permission-mcp.cjs");
         if std::fs::write(&path, SIDECAR_JS).is_ok() {

@@ -38,9 +38,9 @@ export interface Journal {
 }
 
 /** Old entries go first; a long-running worktree should not grow without bound. */
-const MAX_ENTRIES = 60;
+const MAX_ENTRIES = 30;
 /** A pasted log in a prompt should not be what fills localStorage. */
-const MAX_TEXT = 4000;
+const MAX_TEXT = 1200;
 
 /** Paths from different tools disagree about slashes and case. */
 function norm(cwd: string): string {

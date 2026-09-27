@@ -40,7 +40,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
     ContentBlock, CreateTerminalRequest, CreateTerminalResponse, EnvVariable, InitializeRequest,
-    McpServer, McpServerStdio,
+    McpServer, McpServerStdio, SessionConfigValueId, SetSessionConfigOptionRequest,
     KillTerminalRequest, KillTerminalResponse, NewSessionRequest, PermissionOptionKind,
     PromptRequest, ReleaseTerminalRequest, ReleaseTerminalResponse, RequestPermissionOutcome,
     RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome,
@@ -55,6 +55,7 @@ use tokio::sync::{mpsc, oneshot, watch, Notify};
 
 use crate::approval::ApprovalBridge;
 use crate::docker::{SandboxConfig, SandboxManager, SandboxOptions};
+use crate::platform;
 
 /// Base image for sandboxed ACP terminal commands. `node:20` carries a POSIX
 /// shell plus node/npm — the common case; swap per-project later if needed.
@@ -260,6 +261,8 @@ fn create_terminal(req: &CreateTerminalRequest, terminals: &Terminals) -> String
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     #[cfg(windows)]
     cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW (tokio Command inherent)
+    // Its own process group, so `kill` ends whatever the command spawned too.
+    platform::own_process_group_tokio(&mut cmd);
 
     let pid = match cmd.spawn() {
         Ok(mut child) => {
@@ -377,18 +380,11 @@ fn exit_status(code: Option<i32>) -> TerminalExitStatus {
     }
 }
 
-/// Kill a terminal's process tree (best-effort, Windows taskkill).
+/// Kill a terminal's process tree (best-effort).
 fn kill_pid(pid: Option<u32>) {
-    #[cfg(windows)]
     if let Some(pid) = pid {
-        use std::os::windows::process::CommandExt;
-        let _ = std::process::Command::new("taskkill")
-            .args(["/T", "/F", "/PID", &pid.to_string()])
-            .creation_flags(0x0800_0000)
-            .output();
+        platform::kill_tree(pid);
     }
-    #[cfg(not(windows))]
-    let _ = pid;
 }
 
 #[derive(Clone, Serialize)]
@@ -450,6 +446,7 @@ impl AcpManager {
         sandbox_image: Option<String>,
         sandbox_command: Option<String>,
         auto_approve: bool,
+        session_config: Vec<(String, String)>,
     ) {
         let want_sandbox = app.state::<SandboxConfig>().enabled()
             && sandbox_image.is_some()
@@ -487,7 +484,7 @@ impl AcpManager {
         let sessions = self.sessions.clone();
         let my_tx = tx;
         tauri::async_runtime::spawn(async move {
-            let err = run_session(app.clone(), id.clone(), cwd, command, sandbox_image, sandbox_command, rx, cancel_rx, auto_approve_flag)
+            let err = run_session(app.clone(), id.clone(), cwd, command, sandbox_image, sandbox_command, rx, cancel_rx, auto_approve_flag, session_config)
                 .await
                 .err()
                 .map(|e| e.to_string());
@@ -541,14 +538,16 @@ type BoxError = Box<dyn std::error::Error + Send + Sync>;
 /// Normalise a session cwd to an absolute path. The ACP adapters (claude, codex)
 /// reject "." or any relative path with `cwd must be an absolute path`, and an
 /// empty cwd reaches us whenever a project is dispatched to before its shell has
-/// reported one (e.g. a just-created worktree). Resolve against the app's working
-/// directory rather than failing the turn.
+/// reported one (e.g. a just-created worktree). An empty one gets
+/// `platform::neutral_dir` rather than failing the turn, and never the app's own
+/// working directory, which is `/` for a Dock launch on macOS.
 fn absolute_start_dir(cwd: &str) -> String {
     let raw = cwd.trim();
     let here = || {
-        std::env::current_dir()
+        crate::platform::neutral_dir()
+            .or_else(|| std::env::current_dir().ok())
             .map(|d| d.to_string_lossy().to_string())
-            .unwrap_or_else(|_| ".".to_string())
+            .unwrap_or_else(|| ".".to_string())
     };
     if raw.is_empty() || raw == "." {
         here()
@@ -573,6 +572,7 @@ async fn run_session(
     mut rx: mpsc::UnboundedReceiver<String>,
     mut cancel_rx: watch::Receiver<bool>,
     auto_approve: Arc<AtomicBool>,
+    session_config: Vec<(String, String)>,
 ) -> Result<(), BoxError> {
     let start_dir = absolute_start_dir(&cwd);
 
@@ -791,6 +791,19 @@ async fn run_session(
                 .block_task()
                 .await?;
             let session_id = session.session_id;
+            // Session options the adapter takes after the session exists rather
+            // than on its command line (Codex: `model`, `reasoning_effort`). A
+            // rejected one is not fatal: the agent runs on its default instead.
+            for (key, value) in &session_config {
+                let req = SetSessionConfigOptionRequest::new(
+                    session_id.clone(),
+                    key.clone(),
+                    SessionConfigValueId::new(value.clone()),
+                );
+                if let Err(e) = conn.send_request(req).block_task().await {
+                    eprintln!("acp: session option {key}={value} rejected: {e}");
+                }
+            }
 
             // Long-lived: process prompts as they arrive. The loop ends when the
             // channel closes (app exit / respawn) OR the cancel switch flips — the
@@ -844,23 +857,9 @@ pub async fn run_oneshot(
     cancel: oneshot::Receiver<()>,
 ) -> Result<String, BoxError> {
     // The ACP session cwd MUST be absolute (the claude/codex adapters reject "."
-    // or any relative path). The one-shot planner does no file ops, so resolve a
-    // relative/empty cwd against the app's working directory to a real absolute
-    // path rather than failing the turn.
-    let start_dir = {
-        let raw = cwd.trim();
-        if raw.is_empty() || raw == "." {
-            std::env::current_dir()
-                .map(|d| d.to_string_lossy().to_string())
-                .unwrap_or_else(|_| ".".to_string())
-        } else if std::path::Path::new(raw).is_absolute() {
-            raw.to_string()
-        } else {
-            std::env::current_dir()
-                .map(|d| d.join(raw).to_string_lossy().to_string())
-                .unwrap_or_else(|_| raw.to_string())
-        }
-    };
+    // or any relative path). The one-shot planner does no file ops, so a
+    // relative/empty cwd resolves the same way a session's does.
+    let start_dir = absolute_start_dir(&cwd);
     let agent = AcpAgent::from_str(&command)?;
 
     // Accumulate assistant text from `agent_message_chunk` notifications. We parse
@@ -947,8 +946,10 @@ pub fn acp_send(
     sandbox_image: Option<String>,
     sandbox_command: Option<String>,
     auto_approve: bool,
+    // `[[key, value], …]` set on the new session (see run_session).
+    session_config: Option<Vec<(String, String)>>,
 ) -> Result<(), String> {
-    manager.send(app, id, prompt, cwd, command, sandbox_image, sandbox_command, auto_approve);
+    manager.send(app, id, prompt, cwd, command, sandbox_image, sandbox_command, auto_approve, session_config.unwrap_or_default());
     Ok(())
 }
 

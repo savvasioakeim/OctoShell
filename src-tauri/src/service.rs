@@ -25,6 +25,8 @@ use std::thread;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
+use crate::platform;
+
 /// A running managed service: its process plus the port we assigned it.
 struct Service {
     child: Child,
@@ -88,10 +90,9 @@ fn free_port(port: u16) -> Vec<String> {
         return notes; // already free
     }
     for pid in pids_on_port(port) {
-        #[cfg(windows)]
-        let killed = capture("taskkill", &["/F", "/T", "/PID", &pid.to_string()]).is_some();
-        #[cfg(not(windows))]
-        let killed = Command::new("kill").arg("-9").arg(pid.to_string()).status().is_ok();
+        // The whole tree: a `npm run dev` holds the port via a grandchild.
+        platform::kill_tree(pid);
+        let killed = !pids_on_port(port).contains(&pid);
         notes.push(if killed {
             format!("octoshell: port {port} was in use by pid {pid} — stopped it to free the port")
         } else {
@@ -362,13 +363,8 @@ impl ServiceManager {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            cmd.creation_flags(CREATE_NO_WINDOW);
-        }
+        // No console window; its own process group so `stop` can end the tree.
+        platform::background(&mut cmd);
 
         let mut child = cmd
             .spawn()
@@ -424,23 +420,22 @@ impl ServiceManager {
     }
 
     pub fn stop(&self, id: &str) {
-        if let Some(mut s) = self.services.lock().unwrap().remove(id) {
+        // Take the entry OUT under the lock and let the guard go BEFORE killing.
+        // `if let Some(s) = lock().remove(..)` would hold the lock for the whole
+        // body — across kill_tree and wait() — and the service's own stdout reader
+        // needs this same lock to reap the process the moment its pipe closes.
+        // Held that way, the two block on each other, and when the caller is the
+        // UI thread (starting a server over a port a managed one already holds)
+        // the window freezes.
+        let entry = self.services.lock().unwrap().remove(id);
+        if let Some(mut s) = entry {
             // The service runs as `cmd /c <command>` (or `sh -c`), so `child` is the
             // WRAPPER shell — killing only it leaves the real server (node/etc.) alive
             // and still holding its port. Kill the whole process TREE by pid, then
-            // reap the handle. (Windows: taskkill /T; Unix: negative-pid group kill.)
-            let pid = s.child.id();
-            #[cfg(windows)]
-            {
-                let _ = capture("taskkill", &["/F", "/T", "/PID", &pid.to_string()]);
-            }
-            #[cfg(not(windows))]
-            {
-                // Best-effort: kill the process group if we're its leader, else the pid.
-                let _ = Command::new("kill").arg("-TERM").arg(format!("-{pid}")).status();
-                let _ = Command::new("kill").arg("-TERM").arg(pid.to_string()).status();
-            }
+            // reap the handle. (Windows: taskkill /T; Unix: process-group kill.)
+            platform::kill_tree(s.child.id());
             let _ = s.child.kill();
+            let _ = s.child.wait();
             self.reserved.lock().unwrap().remove(&s.port);
         }
     }
@@ -529,7 +524,9 @@ fn spawn_stdout_reader(
         }
         // stdout closed → process is finishing. Reap it (unless already stopped)
         // and release every port it held (the injected one and any refined one).
-        let code = match services.lock().unwrap().remove(&id) {
+        // Same rule as `stop`: out of the map first, lock released, then wait.
+        let entry = services.lock().unwrap().remove(&id);
+        let code = match entry {
             Some(mut s) => {
                 reserved.lock().unwrap().remove(&s.port);
                 s.child.wait().ok().and_then(|st| st.code()).unwrap_or(-1)
@@ -545,8 +542,12 @@ fn spawn_stdout_reader(
     });
 }
 
+// Both of these block: freeing a port shells out to netstat and taskkill, and
+// stopping waits for a process tree to die. A SYNCHRONOUS tauri command runs on
+// the main thread, so that wait would be paid by the window. `async` puts them
+// on the async runtime instead, where a slow kill costs nothing on screen.
 #[tauri::command]
-pub fn service_start(
+pub async fn service_start(
     app: AppHandle,
     manager: State<'_, ServiceManager>,
     id: String,
@@ -558,7 +559,7 @@ pub fn service_start(
 }
 
 #[tauri::command]
-pub fn service_stop(manager: State<'_, ServiceManager>, id: String) -> Result<(), String> {
+pub async fn service_stop(manager: State<'_, ServiceManager>, id: String) -> Result<(), String> {
     manager.stop(&id);
     Ok(())
 }
@@ -573,16 +574,7 @@ pub struct PortInfo {
 
 /// Run a command with no console window (Windows), capturing stdout.
 fn capture(program: &str, args: &[&str]) -> Option<String> {
-    let mut cmd = Command::new(program);
-    cmd.args(args);
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
-    let out = cmd.output().ok()?;
-    Some(String::from_utf8_lossy(&out.stdout).into_owned())
+    platform::capture(program, args)
 }
 
 /// PIDs currently LISTENING on `port` (Windows: parsed from `netstat -ano`).
@@ -606,9 +598,12 @@ fn pids_on_port(port: u16) -> Vec<u32> {
     pids
 }
 
+/// PIDs currently LISTENING on `port` (Unix: `lsof`, which macOS ships in
+/// `/usr/sbin`). One `-i` filter — several are OR'd together by lsof, which
+/// would list every listener on the machine.
 #[cfg(not(windows))]
 fn pids_on_port(port: u16) -> Vec<u32> {
-    let Some(text) = capture("lsof", &["-tiTCP", &format!("-sTCP:LISTEN"), "-P", "-n", &format!("-i:{port}")]) else { return vec![] };
+    let Some(text) = capture("lsof", &["-nP", "-t", &format!("-iTCP:{port}"), "-sTCP:LISTEN"]) else { return vec![] };
     text.lines().filter_map(|l| l.trim().parse::<u32>().ok()).collect()
 }
 
@@ -683,13 +678,47 @@ pub fn kill_port(port: u16) -> Result<u32, String> {
     }
     let mut killed = 0;
     for pid in pids {
-        #[cfg(windows)]
-        let ok = capture("taskkill", &["/F", "/PID", &pid.to_string()]).is_some();
-        #[cfg(not(windows))]
-        let ok = Command::new("kill").arg("-9").arg(pid.to_string()).status().map(|s| s.success()).unwrap_or(false);
-        if ok {
+        if platform::kill_pid(pid) {
             killed += 1;
         }
     }
     Ok(killed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The Ports panel and `free_port` both rely on the platform's port→pid
+    /// lookup (`netstat` on Windows, `lsof` elsewhere). Bind a real socket and
+    /// make sure both paths find THIS process on it.
+    #[test]
+    fn finds_the_process_listening_on_a_port() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        let me = std::process::id();
+
+        assert!(pids_on_port(port).contains(&me), "pids_on_port({port}) missed pid {me}");
+        let listed = list_ports();
+        assert!(
+            listed.iter().any(|p| p.port == port && p.pid == me),
+            "list_ports() has no ({port}, {me}) entry: {:?}",
+            listed.iter().map(|p| (p.port, p.pid)).collect::<Vec<_>>()
+        );
+        drop(listener);
+    }
+
+    #[test]
+    fn port_hints_are_read_from_scripts_and_env() {
+        let dir = std::env::temp_dir().join(format!("octoshell-port-hints-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("package.json"), r#"{"scripts":{"dev":"next dev -p 3007","start":"node s.js"}}"#).unwrap();
+        std::fs::write(dir.join(".env"), "PORT=4321\n").unwrap();
+        let cwd = dir.to_string_lossy().to_string();
+        assert_eq!(script_port_hint(&cwd, "npm run dev"), Some(3007));
+        assert_eq!(script_port_hint(&cwd, "npm start"), None);
+        assert_eq!(env_port_hint(&cwd), Some(4321));
+        assert_eq!(fix_npm_script(&cwd, "npm run serve"), "npm run dev");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

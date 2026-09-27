@@ -29,8 +29,12 @@ export interface OrchestratorDefaults {
 
 /** When OctoShell auto-removes a worktree (and its local folder). */
 export type AutoCleanMode = "off" | "onApprove" | "onMerge";
-/** Which native shell the PTY launches. */
-export type DefaultShell = "powershell" | "cmd" | "wsl";
+/** Which native shell the PTY launches — an id from the backend's shell table
+ *  (`platform().shells`): "powershell" | "cmd" | "wsl" on Windows, "zsh" |
+ *  "bash" | "powershell" on macOS/Linux. The backend resolves an id this
+ *  platform doesn't have to its default, so a workspace moved between machines
+ *  keeps working. */
+export type DefaultShell = string;
 /** How fast the PCB trace animations flow while agents work. */
 export type TraceSpeed = "fast" | "normal" | "stealth" | "static";
 /** Speech-to-text backend: the browser's free Web Speech API, or Whisper. */
@@ -81,6 +85,12 @@ export interface WorkspaceSettings {
   trackedPorts: number[];
   /** Which native shell the terminal launches. */
   defaultShell: DefaultShell;
+  /** macOS: tell agents to stay out of the folders the OS guards (other apps'
+   *  containers, Mail, Music, Pictures). OctoShell is the responsible process for
+   *  everything it spawns, so an agent wandering in there makes the OS show a
+   *  permission prompt with OctoShell's name on it, once per folder. Off: the
+   *  agent may go anywhere and you answer the prompts. */
+  guardProtectedFolders: boolean;
 }
 export interface AppearanceSettings {
   /** Monospace font family for the terminal/feed ("" = theme default). */
@@ -162,6 +172,10 @@ export interface SettingsState {
   memory: MemorySettings;
   /** Phone companion exposure. */
   mobile: MobileSettings;
+  /** Extra environment variable NAMES to take from the login shell, beyond the
+   *  built-in infrastructure allowlist. Names only; the values never leave the
+   *  shell. This is how a token an MCP server needs gets in, as a decision. */
+  envVars: string[];
 }
 
 export interface MemorySettings {
@@ -194,6 +208,7 @@ const DEFAULT_WORKSPACE: WorkspaceSettings = {
   copyDeps: true,
   trackedPorts: [3000, 5173, 1420, 8080, 4000],
   defaultShell: "powershell",
+  guardProtectedFolders: true,
 };
 const DEFAULT_APPEARANCE: AppearanceSettings = {
   fontFamily: "",
@@ -243,14 +258,24 @@ class SettingsStore {
       orchestratorReadonly: loadJSON<boolean>(KEY.orchestratorReadonly, true),
       memory: { ...DEFAULT_MEMORY, ...loadJSON<Partial<MemorySettings>>(KEY.memorySettings, {}) },
       mobile: { ...DEFAULT_MOBILE, ...loadJSON<Partial<MobileSettings>>(KEY.mobileSettings, {}) },
+      envVars: loadJSON<string[]>(KEY.envVars, []),
     };
     // Push the persisted sandbox flag to the backend once at startup so the ACP
     // terminal routing matches the UI from the first turn (fire-and-forget).
     this.pushSandbox();
+    this.pushEnvVars();
   }
 
   /** Mirror the global sandbox flag to the Rust `SandboxConfig` so acp.rs routes
    *  terminal commands accordingly. Fire-and-forget (harmless before Tauri is up). */
+  /** Ask the backend to take these named variables from the login shell. Startup
+   *  adoption only covers the built-in allowlist (no credentials), so this runs
+   *  as soon as settings load — still long before anything is spawned. */
+  private pushEnvVars(): void {
+    if (!this.state.envVars.length) return;
+    invoke("adopt_env_vars", { names: this.state.envVars }).catch(() => {});
+  }
+
   private pushSandbox(): void {
     invoke("set_sandbox_enabled", { enabled: this.state.system.sandboxAgentCommands }).catch(() => {});
   }
@@ -263,6 +288,7 @@ class SettingsStore {
 
   private commit(next: SettingsState): void {
     this.state = next;
+    saveJSON(KEY.envVars, next.envVars);
     saveJSON(KEY.aiProfiles, next.profiles);
     saveJSON(KEY.agentDefaults, next.agent);
     saveJSON(KEY.orchestratorDefaults, next.orchestrator);
@@ -289,6 +315,15 @@ class SettingsStore {
 
   setMobile(patch: Partial<MobileSettings>): void {
     this.commit({ ...this.state, mobile: { ...this.state.mobile, ...patch } });
+  }
+
+  /** Replace the opt-in variable list. Adoption is additive within a run: a name
+   *  removed here stops being taken at the NEXT launch, because a variable
+   *  already in this process cannot be un-inherited by the children it spawned. */
+  setEnvVars(names: string[]): void {
+    const clean = [...new Set(names.map((n) => n.trim()).filter(Boolean))];
+    this.commit({ ...this.state, envVars: clean });
+    this.pushEnvVars();
   }
 
   setMemory(patch: Partial<MemorySettings>): void {
