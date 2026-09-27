@@ -142,6 +142,18 @@ fn powershell_command(shell: &str) -> CommandBuilder {
     cmd
 }
 
+/// The per-user execution alias for a Store-installed app, when there is one.
+/// These live in `%LOCALAPPDATA%\Microsoft\WindowsApps` as zero-byte reparse
+/// points and are how such apps are meant to be launched.
+#[cfg(windows)]
+fn store_alias(exe: &str) -> Option<String> {
+    let p = PathBuf::from(std::env::var_os("LOCALAPPDATA")?)
+        .join("Microsoft")
+        .join("WindowsApps")
+        .join(exe);
+    p.exists().then(|| p.to_string_lossy().into_owned())
+}
+
 /// Every shell this platform offers, in picker order.
 pub fn list() -> Vec<ShellInfo> {
     #[cfg(windows)]
@@ -217,7 +229,19 @@ pub fn commands(id: &str, start_dir: &str) -> Result<Vec<CommandBuilder>, String
         // "powershell": prefer pwsh 7, fall back to Windows PowerShell.
         _ => {
             if cfg!(windows) {
-                vec![powershell_command("pwsh.exe"), powershell_command("powershell.exe")]
+                let mut v = Vec::new();
+                // The Store build of PowerShell 7 puts the packaged binary itself
+                // on PATH, ahead of the execution alias. Launching that binary
+                // directly hands the work to a NEWLY activated process and the one
+                // we spawned exits at once — so the PTY sees EOF immediately, the
+                // terminal stays empty, and an orphaned pwsh is left behind. The
+                // alias is the supported entry point, so try it first.
+                if let Some(alias) = store_alias("pwsh.exe") {
+                    v.push(powershell_command(&alias));
+                }
+                v.push(powershell_command("pwsh.exe"));
+                v.push(powershell_command("powershell.exe"));
+                v
             } else {
                 vec![powershell_command("pwsh")]
             }

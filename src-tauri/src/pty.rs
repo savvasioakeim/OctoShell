@@ -106,9 +106,24 @@ impl PtyManager {
         let mut last_err = String::from("no shell to try");
         for builder in shells::commands(shell_id, &start_dir)? {
             match pair.slave.spawn_command(builder) {
-                Ok(c) => {
-                    child = Some(c);
-                    break;
+                Ok(mut c) => {
+                    // Spawning is not the same as running. A Store-packaged shell
+                    // launched by its packaged path hands off to a freshly
+                    // activated process and dies immediately, which looks like a
+                    // successful spawn and then an instantly dead terminal. Give
+                    // it a moment and check, so a candidate that cannot stay up
+                    // falls through to the next one instead of becoming the tab.
+                    std::thread::sleep(Duration::from_millis(250));
+                    match c.try_wait() {
+                        Ok(Some(status)) => {
+                            last_err = format!("exited immediately ({status:?})");
+                            continue;
+                        }
+                        _ => {
+                            child = Some(c);
+                            break;
+                        }
+                    }
                 }
                 Err(e) => last_err = e.to_string(),
             }
@@ -238,6 +253,9 @@ fn run_reader(
     // markers split across read boundaries are reassembled correctly.
     {
         let id = id.clone();
+        // The reader answers terminal queries itself (see below), which needs the
+        // session's writer.
+        let sessions_q = sessions.clone();
         // Optional raw-stream dump for debugging (set OCTO_PTY_LOG to enable).
         let dbg_path =
             std::env::var_os("OCTO_PTY_LOG").map(|_| std::env::temp_dir().join("octoshell_pty.log"));
@@ -252,6 +270,22 @@ fn run_reader(
                     Ok(n) => {
                         if let Some(p) = &dbg_path {
                             debug_dump(p, &id, &buf[..n]);
+                        }
+                        // Answer the cursor-position query (DSR, `ESC [ 6 n`).
+                        //
+                        // ConPTY asks it the moment the shell starts, and
+                        // PSReadLine will not draw its first prompt until it has
+                        // the answer. Normally the terminal emulator replies —
+                        // but the parser below only forwards bytes BETWEEN a
+                        // command's start and end markers, so a query that
+                        // arrives before the first command never reaches it.
+                        // Every tab sat there waiting, empty. One canned reply
+                        // costs nothing and unblocks the prompt.
+                        if buf[..n].windows(4).any(|w| w == b"[6n") {
+                            if let Some(sess) = sessions_q.lock().unwrap().get_mut(&id) {
+                                let _ = sess.writer.write_all(b"[1;1R");
+                                let _ = sess.writer.flush();
+                            }
                         }
                         for ev in parser.feed(&buf[..n]) {
                             let msg = match ev {

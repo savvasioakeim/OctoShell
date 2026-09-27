@@ -1150,8 +1150,14 @@ export class ShellController {
   }
 
   private onOutput(bytes: Uint8Array): void {
-    if (!this.current) return; // stray output between commands
+    // Feed the emulator even between commands. xterm is what ANSWERS terminal
+    // queries, and ConPTY asks for the cursor position the moment the shell
+    // starts — before any command exists. Dropping that byte range left the
+    // shell waiting for a reply that never came, so it never printed its first
+    // prompt and the tab looked dead. `clear()` at the start of each command
+    // keeps anything that arrives between commands out of the block.
     this.liveTerm.write(bytes);
+    if (!this.current) return; // stray output between commands
     this.scheduleResize();
   }
 
