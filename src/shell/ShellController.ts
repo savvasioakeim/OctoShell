@@ -13,7 +13,7 @@ import { acpCommandFor, acpSandboxCommandFor, acpSessionConfigFor, isAcp, normal
 import { settingsStore } from "../settings/settingsStore";
 import { serviceStore, type ServiceEntry } from "../services/serviceStore";
 import { taskJournal } from "../tasks/taskJournal";
-import { contractStore, formatChanges } from "../agents/contracts";
+import { contractStore, formatChanges, normCwd } from "../agents/contracts";
 import { projectConfigStore } from "../projects/projectConfig";
 import { ReviewAgentController, buildReviewPrompt, fetchReviewOverview } from "../review/ReviewAgentController";
 
@@ -60,6 +60,9 @@ export interface PeerLink {
   /** Its working directory, when that worktree is open in OctoShell. */
   cwd?: string;
   branch?: string;
+  /** The repo the orchestrator named, kept so a link to a worktree that did not
+   *  exist yet at dispatch time can be filled in once it does. */
+  project?: string;
 }
 
 /** Dev servers go through OctoShell, never a background shell job: a server an
@@ -1348,6 +1351,19 @@ export class ShellController {
 
   getPeers(): PeerLink[] {
     return this.peers;
+  }
+
+  /** Link one more worktree without dropping the rest. `pending` picks out a link
+   *  that was named before its worktree existed (so it has no path yet): that one
+   *  is filled in rather than listed twice. */
+  addPeer(link: PeerLink, pending?: (p: PeerLink) => boolean): void {
+    if (!link.cwd) return;
+    const key = normCwd(link.cwd);
+    if (this.peers.some((p) => p.cwd && normCwd(p.cwd) === key)) return;
+    const i = pending ? this.peers.findIndex((p) => !p.cwd && pending(p)) : -1;
+    this.peers = i >= 0 ? this.peers.map((p, j) => (j === i ? { ...p, ...link } : p)) : [...this.peers, link];
+    saveJSON(KEY.peers(this.sessionId), this.peers);
+    this.emit();
   }
 
   runAgent(prompt: string, opts?: { orchestrated?: boolean; via?: "phone" }): boolean {

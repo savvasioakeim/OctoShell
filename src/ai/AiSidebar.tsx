@@ -9,6 +9,7 @@ import { WorkingNode } from "../blocks/WorkingNode";
 import strategyIcon from "../assets/strategy.png";
 import { parseActions, type OrchestratorAction } from "./actions";
 import type { PeerLink } from "../shell/ShellController";
+import { normCwd } from "../agents/contracts";
 import { parseQa, stepsOf } from "../qa/parseQa";
 import { qaHistory, qaKey } from "../qa/qaHistory";
 import { QaHistoryButton } from "../qa/QaHistoryButton";
@@ -138,6 +139,17 @@ function norm(s: string): string {
  *  worktree — the silent version of that fallback made QA test stale code. */
 function isWorktreeCwd(cwd: string): boolean {
   return /\.octoshell[\\/]worktrees[\\/]/i.test(cwd);
+}
+
+/** Is this tab the worktree of `project` on `branch`? Worktree tabs are named
+ *  after the sanitized branch, and never the base checkout. */
+function isWorktreeOf(p: ProjectRef, project: string, branch: string): boolean {
+  const proj = project.toLowerCase().trim();
+  const b = norm(branch);
+  if (!proj || !b) return false;
+  const cwd = p.controller.getCwd().toLowerCase();
+  const n = norm(p.name);
+  return (n === b || n.includes(b)) && isWorktreeCwd(cwd) && cwd.includes(proj);
 }
 
 /** A compact, model-readable digest of a project's recent activity. */
@@ -908,18 +920,18 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
    *  a branch dispatch can't silently land on dev. Worktree tabs are named after the
    *  sanitized branch (slashes → dashes), hence norm(). */
   const findWorktreeTab = useCallback(
-    (project: string, branch: string): ProjectRef | undefined => {
-      const proj = project.toLowerCase().trim();
-      const b = norm(branch);
-      if (!proj || !b) return undefined;
-      return tabs.find((p) => {
-        const cwd = p.controller.getCwd().toLowerCase();
-        const n = norm(p.name);
-        return (n === b || n.includes(b)) && isWorktreeCwd(cwd) && cwd.includes(proj);
-      });
-    },
+    (project: string, branch: string): ProjectRef | undefined => tabs.find((p) => isWorktreeOf(p, project, branch)),
     [tabs],
   );
+
+  // Peer links need the tabs as they are NOW, not as this render saw them: "Run
+  // all" fires every dispatch from one closure, so a worktree created by the
+  // first is invisible to the second through `tabs` until React re-renders.
+  const tabsRef = useRef(tabs);
+  tabsRef.current = tabs;
+  const createdRef = useRef<ProjectRef[]>([]);
+  createdRef.current = createdRef.current.filter((c) => !tabs.some((t) => t.id === c.id));
+  const openTabs = (): ProjectRef[] => [...tabsRef.current, ...createdRef.current];
 
   /** EVERY open tab an action could mean, in the same match order as the single
    *  resolvers above. A cancel has to reach all of them: when several tabs sat on
@@ -974,13 +986,46 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
         if (a.kind !== "dispatch" || !a.peers?.length) return [];
         return a.peers.map((p) => {
           // A peer is looked up by name only; whether its agent is busy is irrelevant here.
-          const tab = p.branch ? findWorktreeTab(p.project, p.branch) : resolveProject(p.project, "idle");
+          const tab = p.branch
+            ? openTabs().find((t) => isWorktreeOf(t, p.project, p.branch!))
+            : resolveProject(p.project, "idle");
           return {
             name: tab?.name ?? (p.branch ? `${p.project} (${p.branch})` : p.project),
             cwd: tab?.controller.getCwd(),
             branch: p.branch,
+            project: p.project,
           };
         });
+      };
+      /** Give `target` its peers, then make every link run both ways. An open
+       *  peer named here learns about `target`, and a tab dispatched earlier that
+       *  named `target` before its worktree existed (what "Run all" does when it
+       *  creates both sides) gets the path now. Without that, a declared contract
+       *  change reached nobody. */
+      const linkPeers = (target: ProjectRef) => {
+        if (a.kind !== "dispatch") return;
+        const mine = resolvePeers();
+        target.controller.setPeers(mine);
+        const cwd = target.controller.getCwd();
+        if (!cwd) return;
+        const self: PeerLink = { name: target.name, cwd, branch: a.branch, project: a.project };
+        const isTarget = (l: PeerLink) =>
+          !!l.project &&
+          (l.branch && a.branch
+            ? isWorktreeOf(target, l.project, l.branch)
+            : !l.branch && !a.branch && l.project.toLowerCase().trim() === target.name.toLowerCase().trim());
+        for (const t of openTabs()) {
+          if (t.id === target.id) continue;
+          const theirs = t.controller.getCwd();
+          if (!theirs) continue;
+          const namedByMe = mine.some((l) => l.cwd && normCwd(l.cwd) === normCwd(theirs));
+          const namesMe = t.controller
+            .getPeers()
+            .some((l) => (l.cwd ? normCwd(l.cwd) === normCwd(cwd) : isTarget(l)));
+          if (!namedByMe && !namesMe) continue;
+          t.controller.addPeer(self, isTarget);
+          target.controller.addPeer({ name: t.name, cwd: theirs });
+        }
       };
       const rememberDispatch = (target: string, cwd: string) => {
         if (a.kind !== "dispatch") return;
@@ -1007,7 +1052,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
         const open = findWorktreeTab(a.project, a.branch);
         if (open) {
           open.controller.setMode("agent");
-          open.controller.setPeers(resolvePeers());
+          linkPeers(open);
           if (!open.controller.runAgent(a.prompt, { orchestrated: true })) {
             fail(`the agent in worktree "${open.name}" is still busy — stop it, then retry.`);
             return;
@@ -1032,8 +1077,9 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
           fail(`couldn't create worktree "${a.branch}" in ${src.name}: ${wt ? wt.error : "unknown error"}`);
           return;
         }
+        createdRef.current = [...createdRef.current, wt];
         wt.controller.setMode("agent");
-        wt.controller.setPeers(resolvePeers());
+        linkPeers(wt);
         wt.controller.runAgent(a.prompt, { orchestrated: true });
         watchDispatched(wt.id);
         onSelect(wt.id);
@@ -1058,7 +1104,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
       }
       if (a.kind === "dispatch") {
         p.controller.setMode("agent");
-        p.controller.setPeers(resolvePeers());
+        linkPeers(p);
         // runAgent refuses (returns false) when that agent is already busy — an
         // orchestrated dispatch never preempts. Surface it instead of dropping it
         // silently (that's how QA fixes went missing before).
