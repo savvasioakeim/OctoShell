@@ -145,7 +145,10 @@ fn powershell_command(shell: &str) -> CommandBuilder {
 /// The per-user execution alias for a Store-installed app, when there is one.
 /// These live in `%LOCALAPPDATA%\Microsoft\WindowsApps` as zero-byte reparse
 /// points and are how such apps are meant to be launched.
-#[cfg(windows)]
+///
+/// Compiled on every platform on purpose: the caller sits behind `cfg!(windows)`,
+/// which is a runtime test, so both arms still have to compile. Off Windows there
+/// is no LOCALAPPDATA and this simply answers None.
 fn store_alias(exe: &str) -> Option<String> {
     let p = PathBuf::from(std::env::var_os("LOCALAPPDATA")?)
         .join("Microsoft")
