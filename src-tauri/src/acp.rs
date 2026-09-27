@@ -40,7 +40,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
     ContentBlock, CreateTerminalRequest, CreateTerminalResponse, EnvVariable, InitializeRequest,
-    McpServer, McpServerStdio,
+    McpServer, McpServerStdio, SessionConfigValueId, SetSessionConfigOptionRequest,
     KillTerminalRequest, KillTerminalResponse, NewSessionRequest, PermissionOptionKind,
     PromptRequest, ReleaseTerminalRequest, ReleaseTerminalResponse, RequestPermissionOutcome,
     RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome,
@@ -446,6 +446,7 @@ impl AcpManager {
         sandbox_image: Option<String>,
         sandbox_command: Option<String>,
         auto_approve: bool,
+        session_config: Vec<(String, String)>,
     ) {
         let want_sandbox = app.state::<SandboxConfig>().enabled()
             && sandbox_image.is_some()
@@ -483,7 +484,7 @@ impl AcpManager {
         let sessions = self.sessions.clone();
         let my_tx = tx;
         tauri::async_runtime::spawn(async move {
-            let err = run_session(app.clone(), id.clone(), cwd, command, sandbox_image, sandbox_command, rx, cancel_rx, auto_approve_flag)
+            let err = run_session(app.clone(), id.clone(), cwd, command, sandbox_image, sandbox_command, rx, cancel_rx, auto_approve_flag, session_config)
                 .await
                 .err()
                 .map(|e| e.to_string());
@@ -569,6 +570,7 @@ async fn run_session(
     mut rx: mpsc::UnboundedReceiver<String>,
     mut cancel_rx: watch::Receiver<bool>,
     auto_approve: Arc<AtomicBool>,
+    session_config: Vec<(String, String)>,
 ) -> Result<(), BoxError> {
     let start_dir = absolute_start_dir(&cwd);
 
@@ -787,6 +789,19 @@ async fn run_session(
                 .block_task()
                 .await?;
             let session_id = session.session_id;
+            // Session options the adapter takes after the session exists rather
+            // than on its command line (Codex: `model`, `reasoning_effort`). A
+            // rejected one is not fatal: the agent runs on its default instead.
+            for (key, value) in &session_config {
+                let req = SetSessionConfigOptionRequest::new(
+                    session_id.clone(),
+                    key.clone(),
+                    SessionConfigValueId::new(value.clone()),
+                );
+                if let Err(e) = conn.send_request(req).block_task().await {
+                    eprintln!("acp: session option {key}={value} rejected: {e}");
+                }
+            }
 
             // Long-lived: process prompts as they arrive. The loop ends when the
             // channel closes (app exit / respawn) OR the cancel switch flips — the
@@ -943,8 +958,10 @@ pub fn acp_send(
     sandbox_image: Option<String>,
     sandbox_command: Option<String>,
     auto_approve: bool,
+    // `[[key, value], …]` set on the new session (see run_session).
+    session_config: Option<Vec<(String, String)>>,
 ) -> Result<(), String> {
-    manager.send(app, id, prompt, cwd, command, sandbox_image, sandbox_command, auto_approve);
+    manager.send(app, id, prompt, cwd, command, sandbox_image, sandbox_command, auto_approve, session_config.unwrap_or_default());
     Ok(())
 }
 

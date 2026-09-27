@@ -53,6 +53,15 @@ export const OLLAMA_MODELS: ModelOption[] = [
   { label: "Gemma 3 4B", value: "ollama/gemma3:4b" },
 ];
 
+/** Models offered for Codex, set on the ACP session as its `model` option
+ *  (the ones a ChatGPT login accepts as of 2026-09-27). */
+export const CODEX_MODELS: ModelOption[] = [
+  { label: "Default", value: null },
+  { label: "GPT-6 Sol", value: "gpt-6-sol" },
+  { label: "GPT-6 Luna", value: "gpt-6-luna" },
+  { label: "GPT-6 Astra", value: "gpt-6-astra" },
+];
+
 /** For providers whose model selection isn't plumbed through their adapter yet —
  *  they run their own default. Stops e.g. Codex from offering Claude's aliases. */
 const DEFAULT_ONLY: ModelOption[] = [{ label: "Default", value: null }];
@@ -67,6 +76,10 @@ export interface AcpAgentDef {
    *  `NAME=value` (ACP parses leading NAME=value tokens as env vars). Null when
    *  the agent doesn't take a model via env — then it gets a trailing `-m`. */
   modelEnv: string | null;
+  /** Model and effort are set on the ACP session after it starts, as these
+   *  config options, instead of on the command line. Absent = command line
+   *  (and no effort at all). */
+  sessionOptions?: { model: string; effort: string };
   /** Docker image to run the WHOLE adapter inside when the sandbox setting is on
    *  (host isolation for every command the agent runs — not just delegated
    *  terminals). Null = no sandbox support (the adapter needs a host-installed
@@ -137,16 +150,17 @@ export const PROVIDER_DEFS = {
   "acp-codex": {
     label: "Codex (ACP)",
     transport: "acp",
-    models: DEFAULT_ONLY,
+    models: CODEX_MODELS,
     configDirEnv: "CODEX_HOME",
     acp: {
-      // OpenAI Codex over ACP. Was @zed-industries/codex-acp, which npm now
-      // marks deprecated ("replaced by @agentclientprotocol/codex-acp") and
-      // which last shipped in June; the new package is maintained. Model
-      // selection through the adapter isn't confirmed, so it runs the agent's
-      // default (no modelEnv).
+      // OpenAI Codex via the ACP adapter. The old @zed-industries package is
+      // deprecated, and its bundled Codex rejects the GPT-6 models on a ChatGPT
+      // login ("model is not supported when using Codex with a ChatGPT
+      // account"). This one takes model and effort as session options
+      // (verified 2026-09-27: `model`, `reasoning_effort`).
       command: "npx -y @agentclientprotocol/codex-acp@latest",
       modelEnv: null,
+      sessionOptions: { model: "model", effort: "reasoning_effort" },
       dockerImage: "node:22",
       dockerCommand: "npx -y @agentclientprotocol/codex-acp@latest",
       // The adapter wraps the codex CLI; its interactive run offers the login.
@@ -197,7 +211,8 @@ export const PROVIDER_DEFS = {
       // point — so neither can be added as an adapter here yet. Revisit once
       // `agy` ships either --acp or a stream-json headless mode.
       // `--acp`, not `--experimental-acp`: the CLI's own help marks the
-      // latter "deprecated, use --acp instead".
+      // latter "deprecated, use --acp instead" (verified against 0.61.0,
+      // which answers `initialize` on the new flag).
       command: "npx -y -- @google/gemini-cli@latest --acp",
       modelEnv: null,
       dockerImage: "node:22",
@@ -265,11 +280,28 @@ export const EFFORT_LEVELS: { value: string | null; label: string }[] = [
 
 /** True if an effort picker means anything for this provider.
  *
- *  Only native `claude`: `--effort` is a claude-code CLI flag, and the ACP
- *  adapters take their own arguments that we do not control. Showing the picker
- *  anywhere else would be a control that quietly does nothing. */
+ *  Native `claude` takes `--effort`; an ACP adapter only when it takes effort as
+ *  a session option (Codex). Showing the picker anywhere else would be a control
+ *  that quietly does nothing. */
 export function supportsEffort(provider: AgentProvider): boolean {
-  return provider === "claude";
+  return provider === "claude" || !!providerDef(provider).acp?.sessionOptions;
+}
+
+/** The model part of an ACP launch command: an env prefix or `-m`. Adapters
+ *  that take it as a session option get nothing here. */
+function withModel(def: AcpAgentDef, cmd: string, model: string | null): string {
+  if (!model || def.sessionOptions) return cmd;
+  return def.modelEnv ? `${def.modelEnv}=${model} ${cmd}` : `${cmd} -m ${model}`;
+}
+
+/** Options to set on a new ACP session (`acp_send`'s sessionConfig). */
+export function acpSessionConfigFor(provider: AgentProvider, model: string | null, effort: string | null): [string, string][] {
+  const o = providerDef(provider).acp?.sessionOptions;
+  if (!o) return [];
+  return [
+    ...(model ? [[o.model, model] as [string, string]] : []),
+    ...(effort ? [[o.effort, effort] as [string, string]] : []),
+  ];
 }
 
 /** The model list for a provider.
@@ -294,8 +326,7 @@ export function acpCommandFor(
   const def = providerDef(provider).acp;
   if (!def) return "";
   // `cmd /c …` on Windows (npm shims), the plain command elsewhere.
-  let cmd = hostCommand(def.command);
-  if (model) cmd = def.modelEnv ? `${def.modelEnv}=${model} ${cmd}` : `${cmd} -m ${model}`;
+  let cmd = withModel(def, hostCommand(def.command), model);
   // Profile selection: point the CLI's config/account dir env var at the chosen
   // folder (forward-slashed so backslashes don't confuse the ACP tokeniser). NOTE:
   // the tokeniser is whitespace-split, so a profile path containing spaces won't
@@ -354,11 +385,7 @@ export function acpSandboxCommandFor(
 ): { image: string; command: string } | null {
   const def = providerDef(provider).acp;
   if (!def || !def.dockerImage || !def.dockerCommand) return null;
-  let command = def.dockerCommand;
-  if (model) {
-    command = def.modelEnv ? `${def.modelEnv}=${model} ${command}` : `${command} -m ${model}`;
-  }
-  return { image: def.dockerImage, command };
+  return { image: def.dockerImage, command: withModel(def, def.dockerCommand, model) };
 }
 
 /** True for any provider that runs over ACP (acp.rs). Reads the table rather
