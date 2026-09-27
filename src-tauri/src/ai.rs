@@ -515,6 +515,17 @@ fn chat_via_cli(
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    // The planner has no project of its own: run it somewhere empty rather than
+    // wherever the app was started from (see platform::neutral_dir).
+    if let Some(dir) = crate::platform::neutral_dir() {
+        cmd.current_dir(dir);
+    }
+    // And keep its read-only Grep/Glob out of the folders macOS guards, the same
+    // rules the agents get (platform::TCC_DENY_RULES).
+    #[cfg(target_os = "macos")]
+    if !is_gemini {
+        cmd.arg("--settings").arg(crate::platform::TCC_DENY_RULES);
+    }
 
     if is_gemini {
         // A planning turn runs no tools, but yolo + skip-trust stop gemini from

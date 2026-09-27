@@ -60,6 +60,17 @@ pub const TCC_DENY_RULES: &str = r#"{"permissions":{"deny":[
     "Read(~/Movies/**)"
 ]}}"#;
 
+/// A working directory of our own, for a CLI that has no project to run in (the
+/// orchestrator) or has not been given one yet. Without it the child inherits the
+/// app's, which on macOS is `/` when the app starts from the Dock or Finder: a
+/// Glob, Grep or `find` with no path then walked the whole disk, and macOS asked
+/// for Music, network volumes and every other guarded folder in turn. `None` if
+/// the folder can't be created; the caller then leaves the cwd alone.
+pub fn neutral_dir() -> Option<PathBuf> {
+    let dir = cache_dir().join("workdir");
+    std::fs::create_dir_all(&dir).ok().map(|_| dir)
+}
+
 /// Where large, regenerable files live (the ~90 MB embedding model). Each OS has
 /// a conventional spot: `%LOCALAPPDATA%`, `~/Library/Caches`, `$XDG_CACHE_HOME`.
 pub fn cache_dir() -> PathBuf {

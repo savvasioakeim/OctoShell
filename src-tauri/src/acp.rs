@@ -538,14 +538,16 @@ type BoxError = Box<dyn std::error::Error + Send + Sync>;
 /// Normalise a session cwd to an absolute path. The ACP adapters (claude, codex)
 /// reject "." or any relative path with `cwd must be an absolute path`, and an
 /// empty cwd reaches us whenever a project is dispatched to before its shell has
-/// reported one (e.g. a just-created worktree). Resolve against the app's working
-/// directory rather than failing the turn.
+/// reported one (e.g. a just-created worktree). An empty one gets
+/// `platform::neutral_dir` rather than failing the turn, and never the app's own
+/// working directory, which is `/` for a Dock launch on macOS.
 fn absolute_start_dir(cwd: &str) -> String {
     let raw = cwd.trim();
     let here = || {
-        std::env::current_dir()
+        crate::platform::neutral_dir()
+            .or_else(|| std::env::current_dir().ok())
             .map(|d| d.to_string_lossy().to_string())
-            .unwrap_or_else(|_| ".".to_string())
+            .unwrap_or_else(|| ".".to_string())
     };
     if raw.is_empty() || raw == "." {
         here()
@@ -855,23 +857,9 @@ pub async fn run_oneshot(
     cancel: oneshot::Receiver<()>,
 ) -> Result<String, BoxError> {
     // The ACP session cwd MUST be absolute (the claude/codex adapters reject "."
-    // or any relative path). The one-shot planner does no file ops, so resolve a
-    // relative/empty cwd against the app's working directory to a real absolute
-    // path rather than failing the turn.
-    let start_dir = {
-        let raw = cwd.trim();
-        if raw.is_empty() || raw == "." {
-            std::env::current_dir()
-                .map(|d| d.to_string_lossy().to_string())
-                .unwrap_or_else(|_| ".".to_string())
-        } else if std::path::Path::new(raw).is_absolute() {
-            raw.to_string()
-        } else {
-            std::env::current_dir()
-                .map(|d| d.join(raw).to_string_lossy().to_string())
-                .unwrap_or_else(|_| raw.to_string())
-        }
-    };
+    // or any relative path). The one-shot planner does no file ops, so a
+    // relative/empty cwd resolves the same way a session's does.
+    let start_dir = absolute_start_dir(&cwd);
     let agent = AcpAgent::from_str(&command)?;
 
     // Accumulate assistant text from `agent_message_chunk` notifications. We parse

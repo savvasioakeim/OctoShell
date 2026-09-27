@@ -263,6 +263,8 @@ impl AgentManager {
 
         if !cwd.is_empty() {
             cmd.current_dir(&cwd);
+        } else if let Some(dir) = platform::neutral_dir() {
+            cmd.current_dir(dir);
         }
         // Profile selection (claude): point this agent at the chosen account's
         // config dir. With none, CLEAR the var so we don't inherit whatever account
