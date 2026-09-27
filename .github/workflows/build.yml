@@ -1,0 +1,59 @@
+# Build the app on every pull request, on both operating systems it ships on.
+#
+# Without this, a build that no longer compiles is discovered when a version tag
+# is pushed, which is the one moment it costs the most. Nothing is signed and
+# nothing is published here: this only answers whether the thing still builds.
+name: Build
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+# A new push to the same PR makes the previous run pointless.
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: Windows
+          - os: macos-latest
+            name: macOS
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: ${{ matrix.os }}
+
+      - run: npm ci
+
+      # The frontend first: a TypeScript error shows up here in seconds rather
+      # than after a full Rust build.
+      - run: npm run build
+
+      # Clippy reports, it does not block: the crate has 19 existing warnings,
+      # and failing every PR on them would only teach us to ignore this job.
+      # Turn it into `-D warnings` once that list is at zero.
+      - name: Lint the Rust side
+        working-directory: src-tauri
+        run: cargo clippy --all-targets
+        continue-on-error: true
+
+      - name: Build the app
+        run: npm run tauri build -- --no-bundle

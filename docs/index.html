@@ -172,17 +172,22 @@
           <span class="text-gray-200">You use your own accounts and keys.</span>
         </p>
         <div class="mt-8 flex flex-wrap items-center gap-4">
-          <a href="https://github.com/savvasioakeim/OctoShell/releases" target="_blank" rel="noopener"
+          <a href="https://github.com/savvasioakeim/OctoShell/releases/latest" target="_blank" rel="noopener"
              class="glow-purple inline-flex items-center gap-2 rounded-lg bg-neonpurple px-6 py-3 text-sm font-semibold text-white transition-all hover:-translate-y-0.5">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0l-4-4m4 4l4-4M5 21h14"/></svg>
-            Download for Windows (.exe)
+            <span class="dl-label">Download for Windows</span>
           </a>
           <a href="https://github.com/savvasioakeim/OctoShell" target="_blank" rel="noopener"
              class="inline-flex items-center gap-2 rounded-lg border border-edge bg-card/40 px-6 py-3 text-sm font-semibold text-gray-200 transition-all hover:border-neoncyan/60 hover:text-white">
             View Source on GitHub
           </a>
         </div>
-        <p class="mt-4 font-mono text-xs text-muted/80">// Use your existing Claude Code or Gemini login, or bring your own API key.</p>
+        <p class="mt-4 text-xs leading-relaxed text-muted/80">
+          Windows installer, and macOS builds for Apple Silicon and Intel. Neither is code signed
+          yet, so the first launch needs one extra click past the warning; the release notes say
+          exactly which one.
+        </p>
+        <p class="mt-2 font-mono text-xs text-muted/80">// Use your existing Claude Code or Gemini login, or bring your own API key.</p>
       </div>
 
       <!-- Hero artwork -->
@@ -359,7 +364,7 @@
     <div class="grid items-center gap-12 md:grid-cols-2">
       <div class="reveal">
         <span class="font-mono text-xs tracking-widest text-neonpurple">SERVERS AND PORTS</span>
-        <h2 class="mt-3 text-3xl font-bold tracking-tight text-white md:text-4xl">05 &middot; The dev servers stay in one list</h2>
+        <h2 class="mt-3 text-3xl font-bold tracking-tight text-white md:text-4xl">06 &middot; The dev servers stay in one list</h2>
         <p class="mt-4 leading-relaxed text-slate-400">
           Agents do not start dev servers on their own. They ask OctoShell, which starts the server,
           keeps its log, and puts it in the same list as the ones you started, marked with who asked
@@ -382,7 +387,7 @@
     <div class="reveal rounded-2xl border border-edge bg-gradient-to-b from-card/50 to-chrome/30 p-6 md:p-10">
       <div class="mx-auto mb-8 max-w-3xl text-center">
         <span class="font-mono text-xs tracking-widest text-neoncyan">AWAY FROM THE DESK</span>
-        <h2 class="mt-3 text-3xl font-bold tracking-tight text-white md:text-4xl">06 &middot; Answer from your phone</h2>
+        <h2 class="mt-3 text-3xl font-bold tracking-tight text-white md:text-4xl">07 &middot; Answer from your phone</h2>
         <p class="mt-4 leading-relaxed text-slate-400">
           You can share the workspace with your phone for as long as you choose, to read what the
           agents are doing and answer an approval. Nothing is reachable until you press Start, the
@@ -506,9 +511,9 @@
       <h2 class="text-3xl font-bold tracking-tight text-white md:text-4xl">Try it on one repository.</h2>
       <p class="mx-auto mt-3 max-w-xl text-muted">Open one project, give an agent a small task, and watch what it does. MIT licensed.</p>
       <div class="mt-8 flex flex-wrap justify-center gap-4">
-        <a href="https://github.com/savvasioakeim/OctoShell/releases" target="_blank" rel="noopener"
+        <a href="https://github.com/savvasioakeim/OctoShell/releases/latest" target="_blank" rel="noopener"
            class="glow-purple inline-flex items-center gap-2 rounded-lg bg-neonpurple px-6 py-3 text-sm font-semibold text-white transition-all hover:-translate-y-0.5">
-          Download for Windows (.exe)
+          <span class="dl-label">Download for Windows</span>
         </a>
         <a href="https://github.com/savvasioakeim/OctoShell" target="_blank" rel="noopener"
            class="inline-flex items-center gap-2 rounded-lg border border-edge bg-card/40 px-6 py-3 text-sm font-semibold text-gray-200 transition-all hover:border-neoncyan/60 hover:text-white">
@@ -801,6 +806,19 @@
 
     render();
     setInterval(() => { active = (active + 1) % (PHASES + 1); if (active === PHASES) active = 0; render(); }, 1400);
+  </script>
+  <script>
+    // Name the platform the visitor is actually on. The link is the same either
+    // way (the release page carries every build), so a wrong guess costs nothing
+    // and the markup already reads "Windows" if this never runs.
+    (function () {
+      var ua = navigator.userAgent || "";
+      var name = /Mac/i.test(ua) ? "macOS" : /Windows/i.test(ua) ? "Windows" : "";
+      if (!name) return;
+      document.querySelectorAll(".dl-label").forEach(function (el) {
+        el.textContent = "Download for " + name;
+      });
+    })();
   </script>
 </body>
 </html>
