@@ -54,6 +54,8 @@ export const KEY = {
   orchestratorMcp: "octoshell.settings.orchestratorMcp",
   skillsOff: "octoshell.settings.skillsOff",
   autoUpdateCheck: "octoshell.settings.autoUpdateCheck",
+  taskJournal: "octoshell.tasks.journal",
+  qaHistory: "octoshell.qa.history",
   updateLastCheck: "octoshell.updates.lastCheck",
   orchestratorReadonly: "octoshell.settings.orchestratorReadonly",
   memorySettings: "octoshell.settings.memory",

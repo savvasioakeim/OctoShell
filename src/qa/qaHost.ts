@@ -29,7 +29,12 @@ export interface QaHandlers {
 // One QA session at a time; tear down the previous wiring before a new open.
 let active: (() => void) | null = null;
 
-export async function openQaWindow(items: QaItem[], handlers: QaHandlers): Promise<void> {
+export async function openQaWindow(
+  items: QaItem[],
+  handlers: QaHandlers,
+  /** Earlier verdicts to restore (reopening from QA history). */
+  results?: QaResult[],
+): Promise<void> {
   active?.();
   const unsubs: Array<() => void> = [];
   const cleanup = () => {
@@ -39,7 +44,7 @@ export async function openQaWindow(items: QaItem[], handlers: QaHandlers): Promi
   active = cleanup;
 
   // The window asks for its items on mount.
-  unsubs.push(await listen(QA.ready, () => void emitTo("qa", QA.load, { items })));
+  unsubs.push(await listen(QA.ready, () => void emitTo("qa", QA.load, { items, results })));
 
   // Relay a "start server" click to the managed-service layer, echoing status.
   unsubs.push(
@@ -84,7 +89,7 @@ export async function openQaWindow(items: QaItem[], handlers: QaHandlers): Promi
   const existing = await WebviewWindow.getByLabel("qa");
   if (existing) {
     await existing.setFocus();
-    void emitTo("qa", QA.load, { items });
+    void emitTo("qa", QA.load, { items, results });
     return;
   }
   const w = Math.max(320, Math.round((window.screen.availWidth || 1280) / 3));
@@ -99,6 +104,9 @@ export async function openQaWindow(items: QaItem[], handlers: QaHandlers): Promi
     resizable: true,
     alwaysOnTop: true,
     decorations: false,
+    // Like the main window: without this Tauri claims every file drop natively
+    // and the page never sees it, so a dropped screenshot would silently vanish.
+    dragDropEnabled: false,
   });
   void win.once("tauri://error", (e) => {
     console.error("QA window failed:", e);

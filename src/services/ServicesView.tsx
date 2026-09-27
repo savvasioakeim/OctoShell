@@ -55,6 +55,14 @@ function ServiceRow({ s, open, onToggle }: { s: ServiceEntry; open: boolean; onT
           {s.name}
           {s.port ? <span className="text-muted"> :{s.port}</span> : null}
         </button>
+        {s.startedBy && (
+          <span
+            title={`Started by the ${s.startedBy} agent`}
+            className="shrink-0 rounded bg-accent/15 px-1 text-[9px] font-medium uppercase tracking-wide text-accent"
+          >
+            agent
+          </span>
+        )}
         <button
           onClick={() => void serviceStore.restart(s.id)}
           title="Restart"

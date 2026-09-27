@@ -29,6 +29,10 @@ export interface ServiceEntry {
   pid?: number;
   exitCode?: number;
   logs: string[];
+  /** The agent (project name) that asked for this server, when one did. Unset
+   *  for servers you started yourself. Shown on the row, and reported back to
+   *  agents so they can tell their own servers from everyone else's. */
+  startedBy?: string;
 }
 
 /** Keep at most this many log lines per service (a dev server is chatty). */
@@ -69,7 +73,7 @@ class ServiceStore {
 
   /** Start a managed service and track it. Returns its id and (once the backend
    *  assigns one) the base URL. */
-  async start(meta: { name: string; cwd: string; command: string; portHint?: number }): Promise<{ id: string; url?: string }> {
+  async start(meta: { name: string; cwd: string; command: string; portHint?: number; startedBy?: string }): Promise<{ id: string; url?: string }> {
     const id = crypto.randomUUID();
     this.map.set(id, {
       id,
@@ -78,6 +82,7 @@ class ServiceStore {
       cwd: meta.cwd,
       status: "starting",
       logs: [],
+      startedBy: meta.startedBy,
     });
     this.emit();
     try {

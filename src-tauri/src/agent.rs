@@ -91,6 +91,7 @@ impl AgentManager {
         effort: Option<String>,
         skills_off: Vec<String>,
         guard_protected_folders: bool,
+        services_script: Option<String>,
     ) -> Result<(), String> {
         // One active turn per session: replace any in-flight run.
         if let Some(mut old) = self.runs.lock().unwrap().remove(&id) {
@@ -172,21 +173,37 @@ impl AgentManager {
             if guard_protected_folders {
                 merge_settings(&mut settings, platform::TCC_DENY_RULES);
             }
+            // MCP servers OctoShell itself provides, added to the resolved set
+            // above. The dev-server tools ride along on every run (a sandboxed
+            // run excepted: the sidecar is a host path the container cannot
+            // see); the approval server only in approval mode.
+            let octo_env = serde_json::json!({
+                "OCTO_PORT": approval_port.to_string(),
+                "OCTO_SESSION": id.clone(),
+                "OCTO_TOKEN": approval_token.clone(),
+            });
+            if let Some(script) = services_script.as_ref().filter(|_| !sandboxed) {
+                servers.insert(
+                    "octo_services".into(),
+                    serde_json::json!({ "command": "node", "args": [script], "env": octo_env }),
+                );
+            }
             if approval && approval_script.is_some() {
                 let script = approval_script.unwrap();
                 servers.insert(
                     "octo".into(),
-                    serde_json::json!({
-                        "command": "node",
-                        "args": [script],
-                        "env": { "OCTO_PORT": approval_port.to_string(), "OCTO_SESSION": id.clone(), "OCTO_TOKEN": approval_token.clone() }
-                    }),
+                    serde_json::json!({ "command": "node", "args": [script], "env": octo_env }),
                 );
                 args.extend([
                     "--permission-mode".into(), "default".into(),
                     "--permission-prompt-tool".into(), "mcp__octo__approve".into(),
                 ]);
                 merge_settings(&mut settings, crate::approval::ASK_TOOLS);
+                // Asking before an agent may LIST or START a managed server would
+                // prompt for the one route we want agents to take instead of Bash.
+                if let Some(serde_json::Value::Object(perms)) = settings.get_mut("permissions") {
+                    perms.insert("allow".into(), serde_json::json!(["mcp__octo_services"]));
+                }
             } else {
                 args.push("--dangerously-skip-permissions".into());
             }
@@ -367,6 +384,7 @@ pub fn agent_send(
         // Default ON: a new client that does not send the flag still gets the
         // protection, which is the safe way round for a permission guard.
         guard_protected_folders.unwrap_or(true),
+        bridge.services_script_path(),
     )
 }
 
