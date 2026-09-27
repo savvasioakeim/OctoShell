@@ -2,11 +2,13 @@ import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { AiClient, type ChatMessage } from "./AiClient";
 import type { Block, CommandBlock, ShellController, ShellSnapshot } from "../shell/ShellController";
-import { KEY, loadJSON, saveJSON } from "../util/persist";
+import { KEY, loadJSON, removeKey, saveJSON } from "../util/persist";
+import { deleteChatDb, loadChatsDb, saveChatDb } from "../util/db";
 import { Markdown } from "../blocks/Markdown";
 import { WorkingNode } from "../blocks/WorkingNode";
 import strategyIcon from "../assets/strategy.png";
 import { parseActions, type OrchestratorAction } from "./actions";
+import type { PeerLink } from "../shell/ShellController";
 import { parseQa, stepsOf } from "../qa/parseQa";
 import { qaHistory, qaKey } from "../qa/qaHistory";
 import { QaHistoryButton } from "../qa/QaHistoryButton";
@@ -218,6 +220,10 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
   // Chat sessions: the active session's content IS the live messages/actionState,
   // so "New chat" clears the view without losing history.
   const [sessions, setSessions] = useState<ChatSession[]>(loadSessions);
+  // Chats are stored in SQLite (see loadChatsDb). Until that read comes back we
+  // show whatever localStorage still has, and we do NOT write: an empty first
+  // render must never overwrite a richer stored chat.
+  const hydrated = useRef(false);
   const [chatId, setChatId] = useState<string>(() => sessions[0].id);
   const [sessionMenu, setSessionMenu] = useState(false);
   const [chatSearch, setChatSearch] = useState("");
@@ -393,14 +399,81 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
     el.style.height = `${Math.min(el.scrollHeight, 220)}px`;
   }, [input]);
 
-  // Sync the live messages/actionState into the active session and persist the
-  // whole session list (replaces the old single-chat persistence).
+  // Load the chats from SQLite once, and move any localStorage copy into it.
+  // Merging per id and keeping the longer conversation means a half-written
+  // localStorage copy can never truncate what the database already holds.
   useEffect(() => {
+    let live = true;
+    void (async () => {
+      const rows = await loadChatsDb();
+      if (!live) return;
+      if (rows === null) {
+        hydrated.current = true; // database unavailable — carry on with what we have
+        return;
+      }
+      const stored: ChatSession[] = [];
+      for (const r of rows) {
+        try {
+          const s = JSON.parse(r.data) as ChatSession;
+          if (s && typeof s.id === "string") stored.push(s);
+        } catch {
+          /* a corrupt row is skipped, not fatal */
+        }
+      }
+      if (stored.length) {
+        const byId = new Map(stored.map((s) => [s.id, s]));
+        for (const local of sessionsRef.current) {
+          const db = byId.get(local.id);
+          if (!db || local.messages.length > db.messages.length) byId.set(local.id, local);
+        }
+        const merged = [...byId.values()].sort((a, b) => b.updatedAt - a.updatedAt);
+        setSessions(merged);
+        // Write every chat back, then drop the localStorage copy. Without this the
+        // old copy stays behind for good once the database has rows -- and since it
+        // is what filled localStorage to its cap, leaving it there means every
+        // OTHER setItem in the app keeps failing silently.
+        void (async () => {
+          const ok = await Promise.all(merged.map((s) => saveChatDb(s)));
+          if (ok.every(Boolean)) {
+            removeKey(KEY.assistantSessions);
+            removeKey(KEY.assistant); // the pre-sessions single chat, if any
+          }
+        })();
+        const active = merged.find((s) => s.id === chatIdRef.current) ?? merged[0];
+        if (active) {
+          setChatId(active.id);
+          // Only adopt the stored messages when this chat is still untouched, so a
+          // message typed during the read is never thrown away.
+          if (messagesRef.current.length < active.messages.length) {
+            setMessages(active.messages);
+            setActionState(active.actionState ?? {});
+          }
+        }
+      } else {
+        // First run on the database: carry the localStorage chats over, and only
+        // drop the old copy once every row is confirmed written.
+        const ok = await Promise.all(sessionsRef.current.map((s) => saveChatDb(s)));
+        if (ok.every(Boolean)) removeKey(KEY.assistantSessions);
+      }
+      hydrated.current = true;
+    })();
+    return () => {
+      live = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Sync the live messages/actionState into the active session and store that one
+  // chat. Only the active row is written, so a long conversation costs one small
+  // upsert per message instead of rewriting every chat.
+  useEffect(() => {
+    if (!hydrated.current) return;
     setSessions((prev) => {
       const next = prev.map((s) =>
         s.id === chatId ? { ...s, messages, actionState, updatedAt: Date.now(), title: chatTitle(messages) } : s,
       );
-      saveJSON(KEY.assistantSessions, next);
+      const active = next.find((s) => s.id === chatId);
+      if (active) void saveChatDb(active);
       return next;
     });
   }, [messages, actionState, chatId]);
@@ -417,11 +490,8 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
   /** Start a fresh conversation (the current one stays saved in the list). */
   const newChat = useCallback(() => {
     const s: ChatSession = { id: crypto.randomUUID(), title: "New chat", updatedAt: Date.now(), messages: [], actionState: {} };
-    setSessions((prev) => {
-      const next = [s, ...prev];
-      saveJSON(KEY.assistantSessions, next);
-      return next;
-    });
+    void saveChatDb(s);
+    setSessions((prev) => [s, ...prev]);
     setChatId(s.id);
     setMessages([]);
     setActionState({});
@@ -451,12 +521,13 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
   /** Delete a session; if it was active, fall back to the newest remaining one. */
   const deleteChat = useCallback(
     (id: string) => {
+      void deleteChatDb(id);
       setSessions((prev) => {
         let next = prev.filter((s) => s.id !== id);
         if (next.length === 0) {
           next = [{ id: crypto.randomUUID(), title: "New chat", updatedAt: Date.now(), messages: [], actionState: {} }];
+          void saveChatDb(next[0]);
         }
-        saveJSON(KEY.assistantSessions, next);
         if (id === chatId) {
           const f = next[0];
           setChatId(f.id);
@@ -575,6 +646,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
         "Rules:",
         "- Use the EXACT project names from the list below. Available projects: " + names + ".",
         '- "dispatch" sends a fresh prompt to that project\'s agent. Write the prompt as a complete instruction (the agent only sees that text, not this chat).',
+        '- RELATED WORK: add "peers" to a dispatch — the OTHER worktrees this task is tied to: [{"project":"<repo>","branch":"<its branch>"}, …]. Omit "branch" when that side has no worktree and runs from its base checkout. You already work this out for QA (a frontend feature and the backend that serves it); state it here too, and list ALL of them — one backend can feed several frontends. OctoShell then tells that agent where the others live (read-only), and when one of them declares a change to a shared contract (an endpoint, a field, a type, a column) the others are told at the start of their next turn. State the link once, on either dispatch: it works both ways.',
         ...(settings.workspace.orchestratorWorktrees
           ? ['- ISOLATED WORK → add a "branch": {"action":"dispatch","project":"<repo>","branch":"<branch-name>","prompt":"…"}. OctoShell then creates a git worktree off that repo as its OWN project (visible in the sidebar) with its OWN dedicated agent, and runs the prompt there. Use this for any task that should be isolated or run in parallel (e.g. a PR/feature per branch). Then DO NOT instruct the agent to run `git worktree add` itself — that makes an invisible folder handled by the wrong agent; let the "branch" field do it. Fan out parallel work as several branch-dispatches off the same repo, one per branch.']
           : ['- WORKTREES ARE DISABLED in settings: do NOT use the "branch" field. Dispatch every task directly to the named project\'s own agent. If two tasks target the same project, run them sequentially (don\'t interrupt a busy agent).']),
@@ -846,6 +918,20 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
       /** Record what was asked for. The agent's own report (stored separately when
        *  its turn ends) says what happened; this says what the intent was — which
        *  is what "why did we do this?" questions are actually asking about. */
+      /** Resolve the orchestrator's peer list to real worktrees, so the agent gets
+       *  paths it can actually read. A peer that isn't open stays listed by name. */
+      const resolvePeers = (): PeerLink[] => {
+        if (a.kind !== "dispatch" || !a.peers?.length) return [];
+        return a.peers.map((p) => {
+          // A peer is looked up by name only; whether its agent is busy is irrelevant here.
+          const tab = p.branch ? findWorktreeTab(p.project, p.branch) : resolveProject(p.project, "idle");
+          return {
+            name: tab?.name ?? (p.branch ? `${p.project} (${p.branch})` : p.project),
+            cwd: tab?.controller.getCwd(),
+            branch: p.branch,
+          };
+        });
+      };
       const rememberDispatch = (target: string, cwd: string) => {
         if (a.kind !== "dispatch") return;
         memoryStore.remember({
@@ -871,6 +957,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
         const open = findWorktreeTab(a.project, a.branch);
         if (open) {
           open.controller.setMode("agent");
+          open.controller.setPeers(resolvePeers());
           if (!open.controller.runAgent(a.prompt, { orchestrated: true })) {
             fail(`the agent in worktree "${open.name}" is still busy — stop it, then retry.`);
             return;
@@ -896,6 +983,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
           return;
         }
         wt.controller.setMode("agent");
+        wt.controller.setPeers(resolvePeers());
         wt.controller.runAgent(a.prompt, { orchestrated: true });
         watchDispatched(wt.id);
         onSelect(wt.id);
@@ -920,6 +1008,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
       }
       if (a.kind === "dispatch") {
         p.controller.setMode("agent");
+        p.controller.setPeers(resolvePeers());
         // runAgent refuses (returns false) when that agent is already busy — an
         // orchestrated dispatch never preempts. Surface it instead of dropping it
         // silently (that's how QA fixes went missing before).

@@ -103,3 +103,49 @@ export async function vacuumDb(resultCap = 6000): Promise<VacuumResult> {
   }
   return { sessions: rows.length, trimmed, before, after };
 }
+
+// ---------------------------------------------------------------------------
+// Orchestrator chats.
+//
+// These lived in localStorage until it quietly filled up: `setItem` throws on
+// quota, our helper swallows it, and the app happily carried on with writes that
+// never landed — so a restart reopened the last state small enough to fit, and
+// every conversation since appeared to vanish. Chat history grows without bound,
+// so it belongs here next to the block history.
+
+/** Every stored chat, newest first. Null means the read failed (keep whatever
+ *  the caller already had rather than showing an empty list). */
+export async function loadChatsDb(): Promise<{ id: string; data: string }[] | null> {
+  try {
+    return await (await db()).select<{ id: string; data: string }[]>(
+      "SELECT id, data FROM chats ORDER BY updated_at DESC",
+    );
+  } catch (e) {
+    console.warn("loadChatsDb failed", e);
+    return null;
+  }
+}
+
+/** Upsert one chat. Returns true on success — a migration must only drop the
+ *  localStorage copy once this confirms the row is really stored. */
+export async function saveChatDb(session: { id: string; updatedAt?: number }): Promise<boolean> {
+  try {
+    await (await db()).execute(
+      "INSERT INTO chats (id, data, updated_at) VALUES ($1, $2, $3) " +
+        "ON CONFLICT(id) DO UPDATE SET data = $2, updated_at = $3",
+      [session.id, JSON.stringify(session), session.updatedAt ?? Date.now()],
+    );
+    return true;
+  } catch (e) {
+    console.warn("saveChatDb failed", e);
+    return false;
+  }
+}
+
+export async function deleteChatDb(id: string): Promise<void> {
+  try {
+    await (await db()).execute("DELETE FROM chats WHERE id = $1", [id]);
+  } catch (e) {
+    console.warn("deleteChatDb failed", e);
+  }
+}

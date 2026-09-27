@@ -950,6 +950,17 @@ function ContextMenu({
             </button>
             <button
               className="w-full px-3 py-1.5 text-left text-gray-200 hover:bg-edge"
+              title="Open this folder in VS Code (needs `code` on PATH)"
+              onClick={() => {
+                const cwd = projTab?.controller.getCwd();
+                if (cwd) void invoke("open_editor", { path: cwd });
+                close();
+              }}
+            >
+              🧩 Open in VS Code
+            </button>
+            <button
+              className="w-full px-3 py-1.5 text-left text-gray-200 hover:bg-edge"
               onClick={() => {
                 const cwd = projTab?.controller.getCwd();
                 if (cwd) onOpenProjectScripts(cwd);

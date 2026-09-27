@@ -40,6 +40,15 @@ fn db_migrations() -> Vec<Migration> {
                 updated_at INTEGER NOT NULL);",
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 3,
+            description: "create chats table",
+            sql: "CREATE TABLE IF NOT EXISTS chats (\
+                id TEXT PRIMARY KEY, \
+                data TEXT NOT NULL, \
+                updated_at INTEGER NOT NULL);",
+            kind: MigrationKind::Up,
+        },
         // Workspace memory: what happened, across sessions. Deliberately separate
         // from `blocks` — that table is the live conversation and is DELETED when a
         // project closes (see deleteBlocksDb), which is exactly the history we need
@@ -186,6 +195,7 @@ pub fn run() {
             pty::shell_complete,
             pty::open_editor,
             pty::open_in_file_manager,
+            pty::open_editor,
             pty::health_check,
             ai::ai_chat,
             ai::ai_cancel,

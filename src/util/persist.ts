@@ -56,6 +56,7 @@ export const KEY = {
   autoUpdateCheck: "octoshell.settings.autoUpdateCheck",
   taskJournal: "octoshell.tasks.journal",
   qaHistory: "octoshell.qa.history",
+  contracts: "octoshell.contracts",
   updateLastCheck: "octoshell.updates.lastCheck",
   orchestratorReadonly: "octoshell.settings.orchestratorReadonly",
   memorySettings: "octoshell.settings.memory",
@@ -76,4 +77,6 @@ export const KEY = {
   provider: (id: string) => `octoshell.provider.${id}`,
   approval: (id: string) => `octoshell.approval.${id}`,
   pr: (id: string) => `octoshell.pr.${id}`,
+  peers: (id: string) => `octoshell.peers.${id}`,
+  declSeen: (id: string) => `octoshell.declseen.${id}`,
 };

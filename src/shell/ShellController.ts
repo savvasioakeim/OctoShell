@@ -13,6 +13,7 @@ import { acpCommandFor, acpSandboxCommandFor, isAcp, normalizeProvider, parseAge
 import { settingsStore } from "../settings/settingsStore";
 import { serviceStore, type ServiceEntry } from "../services/serviceStore";
 import { taskJournal } from "../tasks/taskJournal";
+import { contractStore, formatChanges } from "../agents/contracts";
 import { projectConfigStore } from "../projects/projectConfig";
 import { ReviewAgentController, buildReviewPrompt, fetchReviewOverview } from "../review/ReviewAgentController";
 
@@ -23,16 +24,26 @@ const MAX_PERSISTED_BLOCKS = 80;
  *  Their calls drive the trace progress bar and are hidden from the feed. */
 const TASK_TOOLS = new Set(["TaskCreate", "TaskUpdate", "TaskList", "TaskGet"]);
 
-/** Injected on every Claude turn so the app gets a reliable task-step signal: the
- *  agent breaks the task into an ordered task list (TaskCreate) up front and keeps
- *  it updated (TaskUpdate) as it goes. OctoShell renders that as the trace bar. */
+/** Our own progress tool (octo_services). The call itself is noise in the feed --
+ *  the trace bar above it IS the result -- so it is consumed and not rendered. */
+const PROGRESS_TOOL = "mcp__octo_services__set_task_steps";
+
+/** Injected on every Claude turn so the app gets a reliable task-step signal.
+ *
+ *  This used to ask for the CLI's own task list (TaskCreate/TaskUpdate). Those
+ *  tools turned out not to be offered in the sessions we launch -- across the
+ *  whole stored history not one call to them exists -- so the trace bar simply
+ *  never filled. It now asks for OUR tool, which comes from the MCP server we
+ *  attach ourselves and is therefore always there. */
 const STEP_PROTOCOL = [
   "<<OCTOSHELL TASK STEPS — MANDATORY>>",
   "This applies to EVERY task you are given (typed directly or dispatched by the orchestrator), including ones already phrased as \"do these steps\".",
-  "1. Before doing anything else, use the TaskCreate tool to lay out the task as a short ordered list of concrete, user-meaningful steps (aim for 3–7) — one TaskCreate call per step. Do this even if the task looks simple or sequential — do NOT just describe the steps in prose.",
-  "2. Use TaskUpdate to mark EXACTLY ONE step `in_progress` at a time. The moment a step is finished, immediately call TaskUpdate to set it `completed` and the next one `in_progress`.",
-  "3. Phrase each step's subject as a short outcome (e.g. \"Create todo.txt\", \"Write the tests\"), not internal chatter.",
-  "This task list is the ONLY thing that drives the user's live progress bar, so it must exist and stay accurate from the first action to the last.",
+  "1. Before doing anything else, call the set_task_steps tool (from the octo_services MCP server) with an ordered list of 3–7 concrete, user-meaningful steps, and current = 1. Do this even if the task looks simple or sequential — do NOT just describe the steps in prose.",
+  "2. Each time you finish a step, call set_task_steps again with the SAME steps array and current set to the step you have just moved on to.",
+  "3. When everything is done, call it once more with current set to steps.length + 1.",
+  "4. Phrase each step as a short outcome (e.g. \"Create todo.txt\", \"Write the tests\"), not internal chatter.",
+  "This is the ONLY thing that drives the user's live progress bar, so it must exist and stay accurate from the first action to the last.",
+  "If set_task_steps is genuinely not available to you, fall back to the CLI's own task list (TaskCreate/TaskUpdate) if you have it.",
   "<</OCTOSHELL TASK STEPS>>",
 ].join("\n");
 
@@ -41,6 +52,16 @@ const STEP_PROTOCOL = [
 // us as ACP `plan` session updates (parseAcp → e.steps → the trace bar). So we ask
 // for a plan in tool-agnostic terms; the agent's native plan tool then lights the
 // same trace bar / nodes / percentage the native path drives.
+/** One worktree this session's work is tied to. Resolved when the orchestrator
+ *  dispatches, so the agent gets a real path rather than a name to guess at. */
+export interface PeerLink {
+  /** Label shown to the agent (the worktree/project name). */
+  name: string;
+  /** Its working directory, when that worktree is open in OctoShell. */
+  cwd?: string;
+  branch?: string;
+}
+
 /** Dev servers go through OctoShell, never a background shell job: a server an
  *  agent starts in Bash is invisible, unstoppable from the UI, and its port a
  *  guess for everyone else. The octo_services tool descriptions carry the details. */
@@ -246,6 +267,10 @@ export class ShellController {
    *  and run this one once it ends (so the user can always take over the agent,
    *  without two concurrent turns racing the backend). */
   private pendingUserPrompt: string | null = null;
+  /** Worktrees this task is tied to (from the orchestrator's dispatch). */
+  private peers: PeerLink[] = [];
+  /** The newest contract change already shown to this session. */
+  private declSeen = 0;
   /** claude session id, for `--resume` across turns. */
   private agentSessionId: string | null = null;
   /** The last prompt sent to the agent — replayed if a `--resume` turns out stale. */
@@ -545,6 +570,8 @@ export class ShellController {
    *  agent defaults (Settings), so new agents start on the configured account. */
   private hydrate(): void {
     const d = settingsStore.getSnapshot().agent;
+    this.peers = loadJSON<PeerLink[]>(KEY.peers(this.sessionId), []);
+    this.declSeen = loadJSON<number>(KEY.declSeen(this.sessionId), 0);
     this.agentSessionId = loadJSON<string | null>(KEY.agent(this.sessionId), null);
     this.agentModel = loadJSON<string | null>(KEY.model(this.sessionId), d.model);
     this.agentEffort = loadJSON<string | null>(KEY.effort(this.sessionId), null);
@@ -618,6 +645,43 @@ export class ShellController {
   }
 
   /** A pending tool-approval arrived from the agent — show it for a decision. */
+  /** The related worktrees, with real paths so the agent can check an assumption
+   *  by reading the other side's file instead of guessing what it does. */
+  private peerRoster(): string {
+    const lines = this.peers.map((p) => {
+      const where = p.cwd ?? "(not open in OctoShell — ask the orchestrator if you need it)";
+      return `- ${p.name}${p.branch ? ` (branch ${p.branch})` : ""}: ${where}`;
+    });
+    return [
+      "<<RELATED WORK>>",
+      "You are not working alone. These worktrees are part of the same effort:",
+      ...lines,
+      "You may READ their files to check an assumption (an API route, a field name, a shared type) instead of guessing.",
+      "NEVER edit, commit or run commands inside another worktree — its own agent owns it. Adapt your own side instead.",
+      "If YOU change anything they could depend on (an endpoint, a GraphQL field, a shared type, a DB column, a config key),",
+      "call declare_contract_change immediately, so their next turn is told before they build on the old shape.",
+      "list_related_work shows what they have been doing.",
+      "<</RELATED WORK>>",
+    ].join("\n");
+  }
+
+  /** Contract changes from related worktrees that this session hasn't been told
+   *  about yet. Marked as seen once handed over, so they are never repeated. */
+  private contractNews(): string {
+    const peerCwds = this.peers.map((p) => p.cwd ?? "").filter(Boolean);
+    const list = contractStore.since(this.cwd, this.declSeen, peerCwds);
+    if (!list.length) return "";
+    this.declSeen = Math.max(...list.map((c) => c.at));
+    saveJSON(KEY.declSeen(this.sessionId), this.declSeen);
+    return [
+      "<<CHANGES FROM RELATED WORK — READ BEFORE CONTINUING>>",
+      "Another agent changed something your side may depend on:",
+      formatChanges(list),
+      "Check your code against these before writing anything that uses them. If one breaks work you have already done, fix that first.",
+      "<</CHANGES FROM RELATED WORK>>",
+    ].join("\n");
+  }
+
   /** This project's label for services it starts: the folder name, which for a
    *  worktree is its branch -- the same thing you see in the sidebar. */
   private serviceLabel(): string {
@@ -706,6 +770,60 @@ export class ShellController {
         if (!e) return { ok: false, error: "no managed server with that id -- call list_dev_servers" };
         const n = Math.min(300, Math.max(1, typeof args.lines === "number" ? Math.floor(args.lines) : 60));
         return { ok: true, id: e.id, status: e.status, lines: e.logs.slice(-n) };
+      }
+
+      if (op === "declare") {
+        const str = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : undefined);
+        const summary = str(args.summary);
+        if (!summary) return { ok: false, error: "summary is required" };
+        const entry = contractStore.add({
+          project: this.serviceLabel(),
+          cwd: this.cwd,
+          peers: this.peers.map((p) => p.cwd ?? "").filter(Boolean),
+          summary,
+          surface: str(args.surface),
+          breaking: args.breaking === true,
+          migration: str(args.migration),
+        });
+        if (!entry) return { ok: false, error: "nothing to record" };
+        // A declaration with no links reaches nobody. Say so, rather than letting
+        // the agent believe it has warned someone.
+        const told = this.peers.filter((p) => p.cwd).length;
+        return {
+          ok: true,
+          declared: entry.id,
+          delivering_to: told,
+          ...(told === 0
+            ? { note: "No related worktrees are linked to this one, so nobody will be told. Put it in your final report instead." }
+            : {}),
+        };
+      }
+
+      if (op === "related") {
+        const peers = this.peers.map((p) => ({
+          project: p.name,
+          branch: p.branch ?? null,
+          cwd: p.cwd ?? null,
+          journal: p.cwd ? taskJournal.textFor(p.cwd).slice(-1500) : "",
+          declared: p.cwd ? contractStore.byCwd(p.cwd).map((c) => c.summary) : [],
+        }));
+        return { ok: true, peers, ...(peers.length ? {} : { note: "Nothing is linked to this worktree." }) };
+      }
+
+      if (op === "steps") {
+        const steps = (Array.isArray(args.steps) ? args.steps : [])
+          .filter((s): s is string => typeof s === "string" && !!s.trim())
+          .map((s) => s.trim());
+        if (!steps.length) return { ok: false, error: "steps must be a non-empty array of strings" };
+        // `current` is 1-based and may point past the end, which means "all done".
+        const raw = typeof args.current === "number" ? Math.floor(args.current) : 1;
+        const current = Math.min(Math.max(raw, 1), steps.length + 1);
+        this.agentProgress = steps.map((text, i) => ({
+          text,
+          status: i < current - 1 ? "completed" : i === current - 1 ? "in_progress" : "pending",
+        }));
+        this.emit();
+        return { ok: true, showing: steps.length, current };
       }
 
       if (op === "task") {
@@ -1079,6 +1197,18 @@ export class ShellController {
   /** Send a prompt to the local `claude` agent; render its stream as blocks.
    *  `orchestrated` marks turns the assistant dispatched (vs. the user typing),
    *  so the board can light the whole tentacle route to this agent. */
+  /** Tell this session which worktrees its work is tied to. Replaces any previous
+   *  set: the newest dispatch describes the current task, not the last one. */
+  setPeers(peers: PeerLink[]): void {
+    this.peers = peers.filter((p) => p.name);
+    saveJSON(KEY.peers(this.sessionId), this.peers);
+    this.emit();
+  }
+
+  getPeers(): PeerLink[] {
+    return this.peers;
+  }
+
   runAgent(prompt: string, opts?: { orchestrated?: boolean; via?: "phone" }): boolean {
     const text = prompt.trim();
     if (!text) return false;
@@ -1149,7 +1279,12 @@ export class ShellController {
     // The dev-server rule only reaches agents that actually get the tools (native
     // claude and ACP), and only once per session like the global rules.
     const devRule = resume === null && (this.agentProvider === "claude" || isAcp(this.agentProvider)) ? DEV_SERVER_RULE : "";
-    const preamble = [rulesBlock, stepRule, devRule].filter(Boolean).join("\n\n");
+    // Who else is working on this, and what they changed since our last turn. The
+    // roster goes in once per session; the changes go in on EVERY turn, because a
+    // change that lands mid-task is exactly the one that breaks an assumption.
+    const peerBlock = resume === null && this.peers.length ? this.peerRoster() : "";
+    const newsBlock = this.contractNews();
+    const preamble = [rulesBlock, stepRule, devRule, peerBlock, newsBlock].filter(Boolean).join("\n\n");
     const full = preamble ? `${preamble}\n\n${prompt}` : prompt;
 
     // ACP path: one long-lived session drives the chosen ACP agent over the
@@ -1249,6 +1384,9 @@ export class ShellController {
         // and DON'T render them as feed blocks — the trace represents them.
         if (TASK_TOOLS.has(e.tool.name)) {
           this.applyTaskOp(e.tool.name, e.tool.input);
+        } else if (e.tool.name === PROGRESS_TOOL) {
+          // Handled over the services bridge (answerServices), which has the
+          // parsed arguments; nothing to render here.
         } else {
           const id = crypto.randomUUID();
           this.agentTools.set(e.tool.id, id);

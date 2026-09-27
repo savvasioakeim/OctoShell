@@ -8,7 +8,6 @@ import { Feed, pendingMountCount, setMountBudget } from "./blocks/Feed";
 import { ReviewPanel, ReviewSwitch, useReview, type CenterView } from "./review/ReviewView";
 import { InputBar } from "./blocks/InputBar";
 import { AiSidebar } from "./ai/AiSidebar";
-import { MacroBar } from "./macros/MacroBar";
 import { TraceProgress } from "./blocks/TraceProgress";
 import { ProjectSidebar } from "./projects/ProjectSidebar";
 import { Titlebar } from "./chrome/Titlebar";
@@ -936,7 +935,6 @@ const CenterPanel = memo(function CenterPanel({
         <div className="min-w-0 flex-1">
           {agentProgress && agentProgress.length > 0 && <TraceProgress steps={agentProgress} />}
         </div>
-        <MacroBar controller={controller} active={active} />
       </div>
       {/* Chat panel — the conversation feed with the command input pinned below.
           In Review view it swaps to the review agent's feed + reviewer input. When a
