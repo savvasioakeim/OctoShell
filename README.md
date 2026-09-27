@@ -1,6 +1,6 @@
 # 🐙 OctoShell
 
-**Mission control for coding agents — Windows-native.**
+**Mission control for coding agents — for Windows and macOS.**
 
 OctoShell is a power-user terminal workspace where an AI **orchestrator** fans your tickets out to multiple coding agents, each working in its **own isolated git worktree**, while you watch every terminal, agent trace, and dev server from one window.
 
@@ -22,30 +22,59 @@ Built with **Tauri v2 + Rust** (backend) and **React + TypeScript + Tailwind + x
 
 ## Prerequisites
 
+**Windows**
 - Windows 10/11 with **PowerShell 7** (`pwsh`)
-- **Node.js 18+**, **Rust 1.85+**, [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) (WebView2 + MSVC build tools)
+- [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) (WebView2 + MSVC build tools)
+
+**macOS**
+- macOS 12+ with Xcode Command Line Tools (`xcode-select --install`)
+- The terminal runs your login shell: **zsh** (default) or **bash**; `pwsh` works too if installed
+
+**Both**
+- **Node.js 18+**, **Rust 1.85+**
 - For agents: [Claude Code](https://claude.com/claude-code) (`claude`) and/or Gemini CLI on PATH — or any ACP agent CLI
-- Optional: `gh` CLI (Smart PR), Docker Desktop (sandbox)
+- Optional: `gh` CLI (Smart PR), Docker Desktop (sandbox), `cloudflared` (phone companion over the internet)
 
 ## Setup & Run
 
 ```powershell
+# Windows
 npm install
 # Optional: $env:ANTHROPIC_API_KEY = "sk-ant-..."
 # Without a key, agents & orchestrator use your local `claude` CLI login.
 npm run tauri dev
 ```
 
-Release build: `npm run tauri build` (installer under `src-tauri/target/release/bundle/`).
+```bash
+# macOS
+npm install
+# Optional: export ANTHROPIC_API_KEY="sk-ant-..."
+npm run tauri dev
+```
 
-> **SmartScreen note:** unsigned builds trigger "Windows protected your PC" — click *More info → Run anyway*, or build from source.
+Release build: `npm run tauri build` (Windows: NSIS installer, macOS: `.app` + `.dmg`, under `src-tauri/target/release/bundle/`).
+
+> **Windows SmartScreen:** unsigned builds trigger "Windows protected your PC" — click *More info → Run anyway*, or build from source.
+>
+> **macOS Gatekeeper:** an unsigned `.app` is blocked as "damaged" or "from an unidentified developer". Right-click → *Open* once, or clear the quarantine flag: `xattr -dr com.apple.quarantine /Applications/OctoShell.app`. Or build from source.
+
+## macOS notes
+
+- **Shell integration for zsh and bash.** The same OSC 133 command markers that PowerShell emits on Windows are injected into zsh (via a `ZDOTDIR` shim that first sources your own `.zshrc`) and bash (via `--rcfile`), so command blocks, exit codes and cwd tracking work identically. Your prompt, aliases and plugins are untouched.
+- **PATH.** An app launched from Finder or the Dock normally gets a bare PATH. OctoShell adopts your login shell's PATH at startup, so Homebrew, nvm/fnm and `~/.local/bin` tools (`claude`, `node`, `gh`) are found just like in Terminal.
+- **Tab completion** is served natively (commands on PATH + file paths) instead of by a PowerShell runspace.
+- **Process cleanup.** Windows ties every child to a Job Object; on macOS each dev server and agent runs in its own process group, so stopping one ends its whole tree, and a clean exit sweeps them all.
+- **Shortcuts** use ⌘ instead of Ctrl (⌘T new project, ⌘W close project, ⌘1–9 switch, ⌘⇧K clear). Ctrl+C in the input still interrupts the running command.
+- **Worktree dependency copies** use APFS clones (`cp -c`), so copying a large `node_modules` into a new worktree is instant.
+
+How the platform layer is organised (and how to add a shell or an OS): [docs/platforms.md](docs/platforms.md).
 
 ## Architecture (short version)
 
 ```
 Frontend (React/Vite)                          Backend (Rust)
 ─────────────────────                          ──────────────
-InputBar ──submit──► ShellController ──write──► pty.rs    PtyManager (pwsh + OSC 133 injection)
+InputBar ──submit──► ShellController ──write──► pty.rs    PtyManager (pwsh / zsh / bash + OSC 133 injection)
    Feed ◄── snapshot ─────┤◄── pty://events ──            SemanticParser (command boundaries/exit codes)
 AiSidebar ──ai_chat──────────────────────────► ai.rs      orchestrator (Anthropic API or claude CLI)
 ShellController ──agent_send/acp_send────────► agent.rs   claude/gemini stream-json
@@ -54,7 +83,7 @@ serviceStore ──service_start────────────────
                                                docker.rs  sandbox containers (bollard)
 ```
 
-All child processes are tied to a kill-on-close Windows Job Object (`jobctl.rs`) — closing OctoShell never orphans a shell, agent, or dev server.
+All child processes are tied to a kill-on-close Windows Job Object, or to per-child process groups on macOS/Linux (`jobctl.rs`, `platform.rs`) — closing OctoShell never orphans a shell, agent, or dev server.
 
 ## Security posture — read this
 

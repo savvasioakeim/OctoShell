@@ -1,0 +1,630 @@
+//! The one place OS differences live.
+//!
+//! OctoShell grew up on Windows, and every module that spawned a process used to
+//! carry its own `#[cfg(windows)]` block: hide the console window, find the home
+//! directory, kill a process tree. Those blocks are now functions here, each with
+//! a macOS/Linux implementation beside the Windows one, so a caller asks for what
+//! it needs ("hide the console", "kill the tree") and never has to know how a
+//! given platform does it.
+//!
+//! The Windows behaviour is unchanged: the same flags and the same commands, just
+//! called from one place.
+
+use std::path::PathBuf;
+use std::process::Command;
+
+/// The OS name the frontend keys platform-specific copy and scripts on.
+pub const OS: &str = if cfg!(windows) {
+    "windows"
+} else if cfg!(target_os = "macos") {
+    "macos"
+} else {
+    "linux"
+};
+
+/// The user's home directory, without pulling in the `dirs` crate:
+/// `USERPROFILE` on Windows, `HOME` elsewhere.
+pub fn home_dir() -> Option<PathBuf> {
+    #[cfg(windows)]
+    let var = "USERPROFILE";
+    #[cfg(not(windows))]
+    let var = "HOME";
+    std::env::var_os(var).map(PathBuf::from)
+}
+
+/// Folders macOS guards with TCC, as Claude Code `permissions.deny` rules.
+///
+/// OctoShell is a terminal, so macOS holds IT responsible for whatever its
+/// children touch: an agent that walks `~/Library/Containers` puts OctoShell's
+/// name on a permission prompt, once PER container, so one home-wide search can
+/// fire dozens in a row. None of these paths is anything a coding agent needs,
+/// so the agent is told to stay out rather than the user being worn down into
+/// handing over the whole disk.
+///
+/// Desktop/Documents/Downloads are deliberately NOT here: projects live there.
+/// Those three are asked for once and explained by the usage strings in
+/// `Info.plist`.
+///
+/// Covers the Read tool, and best-effort Glob/Grep. It canNOT cover a walk the
+/// agent does through Bash (`find ~`), which has no permission rule to match.
+#[cfg(target_os = "macos")]
+pub const TCC_DENY_RULES: &str = r#"{"permissions":{"deny":[
+    "Read(~/Library/Containers/**)",
+    "Read(~/Library/Group Containers/**)",
+    "Read(~/Library/Mail/**)",
+    "Read(~/Library/Messages/**)",
+    "Read(~/Library/Safari/**)",
+    "Read(~/Library/Cookies/**)",
+    "Read(~/Music/**)",
+    "Read(~/Pictures/**)",
+    "Read(~/Movies/**)"
+]}}"#;
+
+/// Where large, regenerable files live (the ~90 MB embedding model). Each OS has
+/// a conventional spot: `%LOCALAPPDATA%`, `~/Library/Caches`, `$XDG_CACHE_HOME`.
+pub fn cache_dir() -> PathBuf {
+    #[cfg(windows)]
+    let base = std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .or_else(|| home_dir().map(|h| h.join(".cache")));
+    #[cfg(target_os = "macos")]
+    let base = home_dir().map(|h| h.join("Library").join("Caches"));
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let base = std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| home_dir().map(|h| h.join(".cache")));
+    base.unwrap_or_else(std::env::temp_dir).join("OctoShell")
+}
+
+/// A scratch directory OctoShell owns for files it regenerates on every launch
+/// (the approval sidecar, shell-integration rc files). Under the OS temp dir,
+/// which on macOS is per-user and space-free.
+pub fn scratch_dir() -> PathBuf {
+    std::env::temp_dir().join("octoshell")
+}
+
+// ───────────────────────────── spawning ─────────────────────────────
+
+/// Stop a spawned console program from flashing a window. Windows only; a no-op
+/// elsewhere, where there is no console window to flash.
+pub fn hide_console(cmd: &mut Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = cmd;
+    }
+}
+
+/// Make the child the leader of its own process group, so [`kill_tree`] can end
+/// it together with everything it spawns (`sh -c npm run dev` → npm → node). On
+/// Windows the Job Object plays this role (see `jobctl.rs`), so this is a no-op.
+pub fn own_process_group(cmd: &mut Command) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = cmd;
+    }
+}
+
+/// [`own_process_group`] for a tokio command.
+pub fn own_process_group_tokio(cmd: &mut tokio::process::Command) {
+    #[cfg(unix)]
+    cmd.process_group(0);
+    #[cfg(not(unix))]
+    {
+        let _ = cmd;
+    }
+}
+
+/// Configure a long-lived helper (a dev server, an agent CLI): no console window,
+/// and its own process group so it can be stopped as a tree.
+pub fn background(cmd: &mut Command) {
+    hide_console(cmd);
+    own_process_group(cmd);
+}
+
+/// Run a short helper and return its stdout, or None if it couldn't be run.
+pub fn capture(program: &str, args: &[&str]) -> Option<String> {
+    let mut cmd = Command::new(program);
+    cmd.args(args);
+    hide_console(&mut cmd);
+    let out = cmd.output().ok()?;
+    Some(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+// ───────────────────────────── killing ─────────────────────────────
+
+/// Terminate a process AND its descendants.
+///
+/// Windows: `taskkill /T /F`, the only reliable tree kill without extra job
+/// plumbing. Unix: the process was spawned as a group leader (see
+/// [`own_process_group`]), so signal the whole group: TERM first, a short grace
+/// period for servers that clean up on exit, then KILL for whatever ignored it.
+pub fn kill_tree(pid: u32) {
+    kill_trees(&[pid]);
+}
+
+/// [`kill_tree`] for several processes at once, sharing one grace period so app
+/// exit doesn't pay it per process.
+pub fn kill_trees(pids: &[u32]) {
+    #[cfg(windows)]
+    for pid in pids {
+        let _ = capture("taskkill", &["/T", "/F", "/PID", &pid.to_string()]);
+    }
+    #[cfg(unix)]
+    {
+        let groups: Vec<i32> = pids.iter().filter_map(|&p| signal_target(p)).collect();
+        if groups.is_empty() {
+            return;
+        }
+        for &g in &groups {
+            unsafe {
+                libc::kill(g, libc::SIGTERM);
+            }
+        }
+        // Grace: poll for the leaders to go away, up to ~500ms.
+        for _ in 0..25 {
+            let alive = groups.iter().any(|&g| unsafe { libc::kill(g, 0) } == 0);
+            if !alive {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        for &g in &groups {
+            unsafe {
+                libc::kill(g, libc::SIGKILL);
+            }
+        }
+    }
+}
+
+/// Force-kill ONE process (no descendants) — for a foreign process we merely
+/// found holding a port, which is not ours to tree-kill.
+pub fn kill_pid(pid: u32) -> bool {
+    #[cfg(windows)]
+    {
+        capture("taskkill", &["/F", "/PID", &pid.to_string()]).is_some()
+    }
+    #[cfg(unix)]
+    {
+        unsafe { libc::kill(pid as i32, libc::SIGKILL) == 0 }
+    }
+}
+
+/// What to signal for `pid`: its whole process group when it leads one of its
+/// own, else just the process. Never our own group — a child that was NOT put in
+/// its own group shares ours, and signalling that would kill OctoShell itself.
+#[cfg(unix)]
+fn signal_target(pid: u32) -> Option<i32> {
+    let pid = pid as i32;
+    let pgid = unsafe { libc::getpgid(pid) };
+    if pgid < 0 {
+        return None; // already gone
+    }
+    let ours = unsafe { libc::getpgrp() };
+    Some(if pgid == pid && pgid != ours { -pgid } else { pid })
+}
+
+/// PIDs of the direct children of `pid` — i.e. whatever a shell is currently
+/// running. Empty when the shell is idle at its prompt.
+pub fn child_pids(pid: u32) -> Vec<u32> {
+    #[cfg(windows)]
+    let out = {
+        let script = format!(
+            "Get-CimInstance Win32_Process -Filter 'ParentProcessId={pid}' | Select-Object -ExpandProperty ProcessId"
+        );
+        capture("powershell", &["-NoProfile", "-NonInteractive", "-Command", &script]).unwrap_or_default()
+    };
+    #[cfg(not(windows))]
+    let out = capture("pgrep", &["-P", &pid.to_string()]).unwrap_or_default();
+    out.lines().filter_map(|l| l.trim().parse::<u32>().ok()).collect()
+}
+
+// ───────────────────────────── PATH lookups ─────────────────────────────
+
+/// True if `exe` (an exact file name) is on PATH.
+pub fn which(exe: &str) -> bool {
+    std::env::var_os("PATH")
+        .map(|paths| std::env::split_paths(&paths).any(|dir| dir.join(exe).is_file()))
+        .unwrap_or(false)
+}
+
+/// PATH lookup for a *command* by bare name, matching however it's actually
+/// installed. On Windows a CLI shipped via npm is a shim — `foo`, `foo.cmd`,
+/// `foo.ps1` — not `foo.exe`, so a plain `which("foo.exe")` misses it (this is
+/// exactly why the Gemini CLI showed up as "not found"). We try the bare name
+/// plus every extension in PATHEXT (falling back to the common shim set).
+pub fn which_cmd(name: &str) -> bool {
+    if which(name) {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        let exts = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD;.PS1".into());
+        for ext in exts.split(';').filter(|e| !e.is_empty()) {
+            // PATHEXT entries include the leading dot, e.g. ".CMD".
+            if which(&format!("{name}{}", ext.to_ascii_lowercase())) {
+                return true;
+            }
+        }
+        // .ps1 shims (npm) aren't in the default PATHEXT — check explicitly.
+        which(&format!("{name}.ps1"))
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
+/// Variables adopted from the login shell by default.
+///
+/// An allowlist, not "everything the shell has". The broad version worked, but
+/// it also carried every exported secret into OctoShell and into every child it
+/// spawns — an MCP server that only needed PATH could read the user's Slack
+/// tokens out of its own environment. What is here is infrastructure: where
+/// tools live, which toolchain to use, how to reach the network, and the agent
+/// that answers for SSH keys. Nothing here is a credential.
+///
+/// Anything else is opt-in by name (Settings → Environment, see
+/// [`adopt_env_vars`]), so carrying a token into the app is a decision someone
+/// made rather than a side effect.
+#[cfg(unix)]
+const ADOPTED_PREFIXES: &[&str] = &[
+    // Toolchain and version managers: where node/python/ruby/go/rust live.
+    "FNM_", "NVM_", "VOLTA_", "ASDF_", "PYENV_", "RBENV_", "NODENV_", "SDKMAN_",
+    "HOMEBREW_", "CARGO_", "RUSTUP_", "GOPATH", "GOROOT", "GOBIN", "JAVA_HOME",
+    "BUN_INSTALL", "PNPM_HOME", "DENO_INSTALL", "COREPACK_",
+    // Locale: without it, tools that print non-ASCII mangle it.
+    "LANG", "LC_",
+    // Proxies: on a corporate network, nothing reaches the internet without them.
+    "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY",
+    "http_proxy", "https_proxy", "no_proxy", "all_proxy",
+];
+
+/// Exact names adopted by default, where a prefix would be too broad.
+#[cfg(unix)]
+const ADOPTED_EXACT: &[&str] = &[
+    // git push over SSH needs the agent; without it every push prompts or fails.
+    "SSH_AUTH_SOCK",
+    "EDITOR", "VISUAL", "PAGER",
+];
+
+/// True when the default allowlist covers `key`.
+#[cfg(unix)]
+fn is_adopted_by_default(key: &str) -> bool {
+    ADOPTED_EXACT.contains(&key) || ADOPTED_PREFIXES.iter().any(|p| key.starts_with(p))
+}
+
+/// The login shell's environment, probed at most once per run.
+#[cfg(unix)]
+static LOGIN_ENV: std::sync::OnceLock<Vec<(String, String)>> = std::sync::OnceLock::new();
+
+#[cfg(unix)]
+fn login_env() -> &'static [(String, String)] {
+    LOGIN_ENV.get_or_init(|| login_shell_env().unwrap_or_default())
+}
+
+/// Set `key` from the login shell, but never over a value we already have — a
+/// launcher that set one deliberately must win over the dotfiles.
+#[cfg(unix)]
+fn adopt_one(key: &str, value: &str) {
+    if std::env::var_os(key).is_none() {
+        std::env::set_var(key, value);
+    }
+}
+
+/// Give a GUI-launched OctoShell the parts of the user's terminal environment it
+/// needs to run their tools.
+///
+/// On macOS an app opened from Finder, the Dock or Spotlight inherits launchd's
+/// environment — PATH is `/usr/bin:/bin:/usr/sbin:/sbin` and nothing else the
+/// user set up in their shell survives. Two things break as a result. Every CLI
+/// OctoShell drives (`claude`, `node`, `gh`, `git` from Homebrew) is "not found"
+/// even though it works fine in Terminal. And anything configured through an
+/// exported variable starts up unconfigured and dies, which reads as "the server
+/// is down" rather than "a variable is missing".
+///
+/// So, before anything is spawned, ask the user's login shell what it ends up
+/// with and adopt PATH (as a union, never losing an entry a launcher added) plus
+/// the allowlist above. This is what VS Code and other editors do, minus the
+/// part where they take the secrets too. A no-op on Windows and when launched
+/// from a terminal that already has a real environment.
+pub fn adopt_login_shell_env() {
+    #[cfg(unix)]
+    {
+        for (key, value) in login_env() {
+            if key == "PATH" {
+                adopt_path(value);
+            } else if is_adopted_by_default(key) {
+                adopt_one(key, value);
+            }
+        }
+    }
+}
+
+/// Adopt named variables the user has opted into (Settings → Environment).
+///
+/// Called once the webview has loaded its settings, which is after startup but
+/// long before anything is spawned. Names are matched exactly: a prefix rule
+/// here would quietly re-admit the whole class of secrets the allowlist exists
+/// to keep out. Returns the names that were actually found and set, so the UI
+/// can show which ones the login shell does not define (a typo in a variable
+/// name is otherwise invisible).
+#[tauri::command]
+pub fn adopt_env_vars(names: Vec<String>) -> Vec<String> {
+    #[cfg(unix)]
+    {
+        let mut applied = Vec::new();
+        for name in names {
+            if name.trim().is_empty() || name == "PATH" {
+                continue;
+            }
+            if let Some((k, v)) = login_env().iter().find(|(k, _)| *k == name) {
+                adopt_one(k, v);
+                applied.push(k.clone());
+            }
+        }
+        applied
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = names;
+        Vec::new()
+    }
+}
+
+/// Union the login shell's PATH with ours: its entries first, then anything we
+/// already had that it lacks (never lose an entry a launcher deliberately added).
+#[cfg(unix)]
+fn adopt_path(path: &str) {
+    let mut entries: Vec<PathBuf> = std::env::split_paths(path).collect();
+    if let Some(cur) = std::env::var_os("PATH") {
+        for p in std::env::split_paths(&cur) {
+            if !entries.contains(&p) {
+                entries.push(p);
+            }
+        }
+    }
+    if let Ok(joined) = std::env::join_paths(entries) {
+        std::env::set_var("PATH", joined);
+    }
+}
+
+/// Ask the user's login shell for its whole environment. `-l` runs the login
+/// files (where PATH is usually set), `-i` the rc file (nvm/fnm hooks and most
+/// `export`s live there). `env -0` NUL-separates the entries so a value
+/// containing newlines can't be read as two variables, and the sentinel isolates
+/// the block from any banner the rc files print. None when the shell can't be
+/// run, hangs, or prints nothing usable.
+#[cfg(unix)]
+fn login_shell_env() -> Option<Vec<(String, String)>> {
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+    let mut cmd = Command::new(&shell);
+    cmd.args(["-lic", "printf '__OCTO_ENV__'; env -0; printf '__OCTO_ENV__'"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    own_process_group(&mut cmd);
+    let out = run_with_timeout(cmd, std::time::Duration::from_secs(4))?;
+    let start = out.find("__OCTO_ENV__")?;
+    let rest = &out[start + "__OCTO_ENV__".len()..];
+    let end = rest.find("__OCTO_ENV__")?;
+    let vars: Vec<(String, String)> = rest[..end]
+        .split('\0')
+        .filter_map(|entry| entry.split_once('='))
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .filter(|(k, _)| !k.is_empty())
+        .collect();
+    (!vars.is_empty()).then_some(vars)
+}
+
+/// Run `cmd` to completion, returning its stdout — or None if it didn't finish
+/// within `timeout` (it is killed) or couldn't be started. Used for the one
+/// startup probe that must never be able to hang the app.
+#[cfg(unix)]
+fn run_with_timeout(mut cmd: Command, timeout: std::time::Duration) -> Option<String> {
+    use std::io::Read;
+    let mut child = cmd.spawn().ok()?;
+    let mut stdout = child.stdout.take()?;
+    // Read on a helper thread: a pipe that fills would otherwise block the child.
+    let reader = std::thread::spawn(move || {
+        let mut s = String::new();
+        let _ = stdout.read_to_string(&mut s);
+        s
+    });
+    let began = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if began.elapsed() < timeout => {
+                std::thread::sleep(std::time::Duration::from_millis(15));
+            }
+            _ => {
+                kill_tree(child.id());
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+    reader.join().ok()
+}
+
+/// Explain why spawning `program` failed, naming the RIGHT culprit.
+///
+/// `std::process::Command::spawn` reports a missing program and an unusable
+/// working directory with the same `NotFound`, so "could not launch the CLI (is
+/// it installed and on PATH?)" was printed for both. It sent at least one person
+/// hunting a PATH problem that did not exist while the real cause was a working
+/// directory that was never created. Check the directory first: it is the claim
+/// we can actually test.
+pub fn spawn_error(program: &str, cwd: Option<&str>, e: &std::io::Error) -> String {
+    if let Some(dir) = cwd.filter(|d| !d.is_empty()) {
+        let path = std::path::Path::new(dir);
+        if !path.exists() {
+            return format!("working directory does not exist: {dir}");
+        }
+        if !path.is_dir() {
+            return format!("working directory is not a directory: {dir}");
+        }
+        if std::fs::read_dir(path).is_err() {
+            return format!(
+                "working directory cannot be read: {dir} \
+                 (on macOS this is usually the app missing permission for that folder \
+                 — System Settings → Privacy & Security → Files and Folders)"
+            );
+        }
+    }
+    if e.kind() == std::io::ErrorKind::NotFound {
+        return format!("could not launch `{program}` — is it installed and on PATH? ({e})");
+    }
+    format!("could not launch `{program}`: {e}")
+}
+
+// ───────────────────────────── script shell ─────────────────────────────
+
+/// The shell one-shot scripts run through (`run_capture`): PowerShell on
+/// Windows, POSIX `sh` elsewhere. The frontend's `shellScripts.ts` writes each
+/// script for both, so a caller never has to know which one it got.
+pub fn script_command(script: &str) -> Command {
+    #[cfg(windows)]
+    {
+        let shell = if which("pwsh.exe") { "pwsh.exe" } else { "powershell.exe" };
+        let mut cmd = Command::new(shell);
+        cmd.args(["-NoProfile", "-NonInteractive", "-Command", script]);
+        cmd
+    }
+    #[cfg(not(windows))]
+    {
+        let mut cmd = Command::new("/bin/sh");
+        cmd.args(["-c", script]);
+        cmd
+    }
+}
+
+/// How to install a missing external tool on this OS, for error messages.
+pub fn install_hint(tool: &str) -> String {
+    match (OS, tool) {
+        ("windows", "cloudflared") => "winget install --id Cloudflare.cloudflared".into(),
+        ("macos", "cloudflared") => "brew install cloudflared".into(),
+        (_, "cloudflared") => "see https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/install-and-setup/installation".into(),
+        ("windows", t) => format!("winget install {t}"),
+        ("macos", t) => format!("brew install {t}"),
+        (_, t) => format!("install `{t}` with your package manager"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn which_finds_a_real_binary() {
+        #[cfg(windows)]
+        assert!(which("cmd.exe"));
+        #[cfg(unix)]
+        assert!(which("sh"));
+        assert!(!which("definitely-not-a-binary-octoshell"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn kill_tree_ends_the_whole_group() {
+        // A shell that spawns a grandchild: killing only the shell would orphan
+        // the sleeper, which is exactly the Windows-Job-Object gap this closes.
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "sleep 30 & wait"]);
+        background(&mut cmd);
+        let child = cmd.spawn().expect("spawn");
+        let shell_pid = child.id();
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        let kids = child_pids(shell_pid);
+        assert!(!kids.is_empty(), "the shell should have started its sleeper");
+
+        kill_tree(shell_pid);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        for k in kids {
+            // Signal 0 = "does it exist"; ESRCH means it is gone.
+            assert_ne!(unsafe { libc::kill(k as i32, 0) }, 0, "grandchild {k} survived kill_tree");
+        }
+    }
+
+    /// One test for the whole adoption, not several: every case here mutates the
+    /// process environment, and cargo runs tests in the same process on parallel
+    /// threads — split up, they would race each other's `set_var`.
+    #[cfg(unix)]
+    #[test]
+    fn adopting_the_login_env() {
+        let probe = login_shell_env().expect("the login shell should answer");
+        assert!(probe.iter().any(|(k, _)| k == "HOME"), "probe returned no HOME");
+
+        // Our own value wins over the dotfiles: a launcher that set one
+        // deliberately must not be silently overruled.
+        let ours = "OCTOSHELL_ENV_ADOPTION_PROBE";
+        std::env::set_var(ours, "ours");
+
+        let before: Vec<PathBuf> = std::env::split_paths(&std::env::var_os("PATH").unwrap()).collect();
+        adopt_login_shell_env();
+        let after: Vec<PathBuf> = std::env::split_paths(&std::env::var_os("PATH").unwrap()).collect();
+
+        assert_eq!(std::env::var(ours).unwrap(), "ours");
+        std::env::remove_var(ours);
+
+        eprintln!("PATH before: {} entries, after: {} entries", before.len(), after.len());
+        for p in before {
+            assert!(after.contains(&p), "{} was dropped from PATH", p.display());
+        }
+        for (key, value) in probe {
+            if key == "PATH" {
+                // What the login shell reports must be in there too (this is the
+                // point). Version managers such as fnm mint a fresh per-shell
+                // directory on every start, so those entries legitimately differ
+                // between two probes.
+                for p in std::env::split_paths(&value) {
+                    if p.to_string_lossy().contains("multishells") {
+                        continue;
+                    }
+                    assert!(after.contains(&p), "{} from the login shell was not adopted", p.display());
+                }
+            } else if is_adopted_by_default(&key) && !value.is_empty() {
+                assert!(std::env::var_os(&key).is_some(), "allowlisted {key} was not adopted");
+            }
+        }
+    }
+
+    /// The allowlist has to actually withhold things, or it is decoration. A
+    /// variable the login shell exports but the list does not name must NOT
+    /// arrive in the process just because the shell had it.
+    #[cfg(unix)]
+    #[test]
+    fn the_allowlist_withholds_what_it_does_not_name() {
+        assert!(is_adopted_by_default("HOMEBREW_PREFIX"));
+        assert!(is_adopted_by_default("SSH_AUTH_SOCK"));
+        assert!(is_adopted_by_default("LC_ALL"));
+        // The class this exists for: credentials.
+        assert!(!is_adopted_by_default("SLACK_MCP_XOXC_TOKEN"));
+        assert!(!is_adopted_by_default("ANTHROPIC_API_KEY"));
+        assert!(!is_adopted_by_default("AWS_SECRET_ACCESS_KEY"));
+        assert!(!is_adopted_by_default("GITHUB_TOKEN"));
+    }
+
+    /// Opting a name in is exact, never a prefix: `adopt_env_vars(["FOO"])` must
+    /// not also admit `FOO_TOKEN`.
+    #[cfg(unix)]
+    #[test]
+    fn opting_in_is_by_exact_name() {
+        // PATH is managed as a union and must never be settable this way.
+        assert!(adopt_env_vars(vec!["PATH".into()]).is_empty());
+        // A name the login shell does not define is reported as not applied,
+        // rather than silently succeeding.
+        assert!(adopt_env_vars(vec!["OCTOSHELL_DEFINITELY_NOT_SET_XYZ".into()]).is_empty());
+    }
+}

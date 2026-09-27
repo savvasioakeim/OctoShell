@@ -1,10 +1,12 @@
 // Move a workspace between the dev build and the installed app.
 //
 // The two are ONE app in every way that matters — same identifier, so the SQLite
-// file (`%APPDATA%\com.octoshell.app\octoshell.db`) holding all block history and
-// workspace memory is literally the same file. What does NOT carry over is
-// localStorage: WebView2 scopes it per ORIGIN, and dev serves from
-// http://localhost:1420 while the bundled app serves from http://tauri.localhost.
+// file (`%APPDATA%\com.octoshell.app\octoshell.db` on Windows, `~/Library/
+// Application Support/com.octoshell.app/octoshell.db` on macOS) holding all block
+// history and workspace memory is literally the same file. What does NOT carry
+// over is localStorage: the webview scopes it per ORIGIN, and dev serves from
+// http://localhost:1420 while the bundled app serves from its own origin
+// (http://tauri.localhost on Windows, tauri://localhost on macOS).
 //
 // That split is worse than it sounds. localStorage holds the project list and the
 // per-project session ids, and those session ids are the ONLY link between a
