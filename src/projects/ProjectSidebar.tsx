@@ -542,6 +542,14 @@ export function ProjectSidebar(props: Props) {
             >
               {groups.length > 0 ? "Ungrouped" : ""}
             </div>
+            {tabs.length === 0 && (
+              // Without this the panel is a bare trace line hanging in the dark,
+              // which reads as broken rather than empty.
+              <p className="px-3 py-2 text-[11px] leading-relaxed text-muted/80">
+                No projects yet. Add a folder below and it appears here, with its branches and
+                worktrees underneath it.
+              </p>
+            )}
             {ungrouped.map((t) => renderProject(t, 1))}
 
             {groups.map((g) => {

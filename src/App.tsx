@@ -284,6 +284,15 @@ export function App({ initial }: { initial: ShellController }) {
   }, [hydrated, preloading]);
 
   const active = tabs.find((t) => t.id === activeId) ?? tabs[0];
+  // Everything except the scratch session that exists before any project is
+  // opened. It points at the home folder and leads nowhere, so it is not a
+  // project and is never shown as one.
+  const projects = tabs.filter((t) => t.id !== initial.sessionId);
+  // Land on a real project as soon as there is one, so the scratch session is
+  // never what the user is looking at.
+  useEffect(() => {
+    if (projects.length && activeId === initial.sessionId) setActiveId(projects[0].id);
+  }, [projects, activeId, initial.sessionId]);
 
   // Keep each controller's display name in sync (used in agent notifications).
   useEffect(() => {
@@ -750,7 +759,7 @@ export function App({ initial }: { initial: ShellController }) {
       <div className="relative flex flex-1 flex-col overflow-hidden bg-well">
         <div className="relative flex flex-1 overflow-hidden p-2">
         <ProjectSidebar
-          tabs={tabs.map((t) => ({ id: t.id, name: t.name, parentId: t.worktree?.parentId, controller: t.controller }))}
+          tabs={projects.map((t) => ({ id: t.id, name: t.name, parentId: t.worktree?.parentId, controller: t.controller }))}
           activeId={active.id}
           onSelect={setActiveId}
           onClose={closeProject}
@@ -794,9 +803,13 @@ export function App({ initial }: { initial: ShellController }) {
             any DOM change, which froze the UI. Each panel virtualizes its own
             feed, so the live laid-out DOM stays ≈ one viewport. */}
         <div className="relative flex-1 overflow-hidden rounded-xl border border-edge bg-panel">
-          {tabs.map((t) => (
-            <CenterPanel key={t.id} controller={t.controller} active={t.id === active.id} />
-          ))}
+          {projects.length === 0 ? (
+            <EmptyWorkspace onNew={newProject} />
+          ) : (
+            projects.map((t) => (
+              <CenterPanel key={t.id} controller={t.controller} active={t.id === active.id} />
+            ))
+          )}
         </div>
 
         <ResizeHandle
@@ -804,7 +817,7 @@ export function App({ initial }: { initial: ShellController }) {
           onReset={() => setLayout((l) => ({ ...l, right: 344 }))}
         />
         <AiSidebar
-          tabs={tabs.map((t) => ({ id: t.id, name: t.name, controller: t.controller }))}
+          tabs={projects.map((t) => ({ id: t.id, name: t.name, controller: t.controller }))}
           activeId={active.id}
           onSelect={setActiveId}
           onCreateWorktree={createWorktreeForAgent}
@@ -892,6 +905,32 @@ function ThemeApplier() {
     if (appearance.traceSpeed !== "normal") root.classList.add(`trace-${appearance.traceSpeed}`);
   }, [appearance.fontFamily, appearance.traceSpeed]);
   return null;
+}
+
+/** What the workspace looks like before the first project: an invitation, not a
+ *  terminal sitting in the home folder that leads nowhere. */
+function EmptyWorkspace({ onNew }: { onNew: () => void }) {
+  return (
+    <div className="flex h-full flex-col items-center justify-center gap-5 p-8 text-center">
+      <div className="flex h-14 w-14 items-center justify-center rounded-2xl border border-edge bg-card text-2xl">
+        📁
+      </div>
+      <div>
+        <h2 className="text-lg font-semibold text-gray-100">No projects yet</h2>
+        <p className="mx-auto mt-2 max-w-md text-sm leading-relaxed text-muted">
+          Add a folder and OctoShell opens a terminal in it, follows its git branches, and gives it
+          its own coding agent. Add a few and the orchestrator can work across all of them.
+        </p>
+      </div>
+      <button
+        onClick={onNew}
+        className="rounded-lg bg-accent/25 px-4 py-2 text-sm font-semibold text-gray-100 transition-colors hover:bg-accent/35"
+      >
+        ＋ Add your first project
+      </button>
+      <p className="text-xs text-muted/70">Any folder works. A git repository gets worktrees too.</p>
+    </div>
+  );
 }
 
 /** Center column: top bar (cwd + macros) · feed · input — for one session.
