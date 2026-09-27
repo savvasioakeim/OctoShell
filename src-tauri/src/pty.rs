@@ -280,8 +280,12 @@ fn run_reader(
                         // command's start and end markers, so a query that
                         // arrives before the first command never reaches it.
                         // Every tab sat there waiting, empty. One canned reply
-                        // costs nothing and unblocks the prompt.
-                        if buf[..n].windows(4).any(|w| w == b"[6n") {
+                        // costs nothing and unblocks the prompt. Only while no
+                        // command runs: during one the bytes DO reach the
+                        // emulator, which answers with the real position, and a
+                        // second canned answer would land in the program's input
+                        // (fzf, vim, a REPL) as stray `ESC[1;1R` keystrokes.
+                        if !parser.running && buf[..n].windows(4).any(|w| w == b"[6n") {
                             if let Some(sess) = sessions_q.lock().unwrap().get_mut(&id) {
                                 let _ = sess.writer.write_all(b"[1;1R");
                                 let _ = sess.writer.flush();
