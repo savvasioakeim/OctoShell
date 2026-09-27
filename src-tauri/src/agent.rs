@@ -98,6 +98,11 @@ impl AgentManager {
             let _ = old.kill();
         }
 
+        // Only the macOS build consults this (the TCC deny rules below); saying so
+        // keeps the Windows build warning-free without renaming the parameter.
+        #[cfg(not(target_os = "macos"))]
+        let _ = guard_protected_folders;
+
         let provider = provider.as_deref().unwrap_or("claude").to_string();
         let resumed = resume.as_deref().map(|r| !r.is_empty()).unwrap_or(false);
 
