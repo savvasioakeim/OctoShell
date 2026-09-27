@@ -180,6 +180,15 @@ pub fn run() {
             // spawned, so every shell/agent we launch can be tied to our lifetime
             // and can't be orphaned on a crash or hot-reload.
             jobctl::init();
+            // SIGTERM (logout, shutdown, `kill`) and SIGINT would otherwise end
+            // the process on the spot and skip RunEvent::Exit below, leaving
+            // every dev server and agent we started running. Turn them into a
+            // normal exit instead.
+            #[cfg(unix)]
+            {
+                let handle = app.handle().clone();
+                platform::on_terminate(move || handle.exit(0));
+            }
             // Tell every child what timezone we are in, BEFORE any of them
             // spawn. Without TZ, `gh` shells out to tzutil.exe, and tzutil
             // occasionally ends up allocating its own console -- which, with

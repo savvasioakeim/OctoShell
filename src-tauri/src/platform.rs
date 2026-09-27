@@ -153,6 +153,31 @@ pub fn kill_tree(pid: u32) {
     kill_trees(&[pid]);
 }
 
+/// Run `f` once when SIGTERM or SIGINT arrives, instead of dying on the spot.
+/// The handler only sets a flag (all a signal handler may safely do); a small
+/// thread watches it. If `f` doesn't end the process within a few seconds, the
+/// process exits anyway, so a stuck shutdown can't make it unkillable.
+#[cfg(unix)]
+pub fn on_terminate(f: impl FnOnce() + Send + 'static) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static HIT: AtomicBool = AtomicBool::new(false);
+    extern "C" fn handler(_: libc::c_int) {
+        HIT.store(true, Ordering::SeqCst);
+    }
+    unsafe {
+        libc::signal(libc::SIGTERM, handler as *const () as libc::sighandler_t);
+        libc::signal(libc::SIGINT, handler as *const () as libc::sighandler_t);
+    }
+    std::thread::spawn(move || {
+        while !HIT.load(Ordering::SeqCst) {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+        f();
+        std::thread::sleep(std::time::Duration::from_secs(5));
+        std::process::exit(0);
+    });
+}
+
 /// [`kill_tree`] for several processes at once, sharing one grace period so app
 /// exit doesn't pay it per process.
 pub fn kill_trees(pids: &[u32]) {
@@ -525,6 +550,35 @@ pub fn install_hint(tool: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SIGTERM runs the shutdown callback and the process then exits cleanly,
+    /// instead of dying on the spot. Checked in a forked child, since the
+    /// handler is process-wide and the callback ends the process.
+    #[cfg(unix)]
+    #[test]
+    fn sigterm_runs_the_shutdown_callback() {
+        let marker = std::env::temp_dir().join(format!("octo-sigterm-{}", std::process::id()));
+        let _ = std::fs::remove_file(&marker);
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0, "fork failed");
+        if pid == 0 {
+            let m = marker.clone();
+            on_terminate(move || {
+                let _ = std::fs::write(&m, "ran");
+                unsafe { libc::_exit(0) };
+            });
+            unsafe { libc::raise(libc::SIGTERM) };
+            std::thread::sleep(std::time::Duration::from_secs(10));
+            unsafe { libc::_exit(3) }; // the callback never ran
+        }
+        let mut status = 0;
+        unsafe { libc::waitpid(pid, &mut status, 0) };
+        let ran = std::fs::read_to_string(&marker).unwrap_or_default();
+        let _ = std::fs::remove_file(&marker);
+        assert!(libc::WIFEXITED(status), "child was killed by the signal instead of exiting");
+        assert_eq!(libc::WEXITSTATUS(status), 0);
+        assert_eq!(ran, "ran");
+    }
 
     #[test]
     fn which_finds_a_real_binary() {
