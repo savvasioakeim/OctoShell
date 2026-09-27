@@ -9,7 +9,7 @@ import { KEY, loadJSON, removeKey, saveJSON } from "../util/persist";
 import { deleteBlocksDb, loadBlocksDb, saveBlocksDb } from "../util/db";
 import { notify } from "../util/notify";
 import { playSfx } from "../util/sfx";
-import { acpCommandFor, acpSandboxCommandFor, isAcp, normalizeProvider, parseAgentLine, prepareOpencodeConfig, supportsEffort, type AgentProvider, type AgentStep } from "../agents/providers";
+import { acpCommandFor, acpSandboxCommandFor, acpSessionConfigFor, isAcp, normalizeProvider, parseAgentLine, prepareOpencodeConfig, supportsEffort, type AgentProvider, type AgentStep } from "../agents/providers";
 import { settingsStore } from "../settings/settingsStore";
 import { serviceStore, type ServiceEntry } from "../services/serviceStore";
 import { taskJournal } from "../tasks/taskJournal";
@@ -991,13 +991,15 @@ export class ShellController {
     this.emit();
   }
 
-  /** How hard this project's agent should think (null = don't pass --effort).
-   *
-   *  Unlike the model, this needs no ACP teardown: it is only ever sent on the
-   *  native path, where every turn spawns a fresh process anyway. */
+  /** How hard this project's agent should think (null = don't pass one).
+   *  Native claude takes it per turn; an ACP adapter (Codex) takes it when its
+   *  session starts, so a running one is torn down like on a model change. */
   setAgentEffort(effort: string | null): void {
     this.agentEffort = effort;
     saveJSON(KEY.effort(this.sessionId), effort);
+    // An ACP adapter (Codex) takes its effort when the session starts, like its
+    // model, so a running one is torn down.
+    if (isAcp(this.agentProvider)) this.resetAcpSession();
     this.emit();
   }
 
@@ -1440,6 +1442,7 @@ export class ShellController {
             opencodeConfig: cfg,
             configDir: this.agentConfigDir,
           }),
+          sessionConfig: acpSessionConfigFor(this.agentProvider, this.agentModel, this.agentEffort),
           sandboxImage: sandbox?.image ?? null,
           sandboxCommand: sandbox?.command ?? null,
           // 🛡 Approve = prompt per tool; ⚡ Auto = approve without prompting.
