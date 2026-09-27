@@ -135,12 +135,15 @@ export const PROVIDER_DEFS = {
     models: DEFAULT_ONLY,
     configDirEnv: "CODEX_HOME",
     acp: {
-      // OpenAI Codex via Zed's ACP adapter. Model selection through the adapter
-      // isn't confirmed yet, so it runs the agent's default (no modelEnv).
-      command: "cmd /c npx -y @zed-industries/codex-acp@latest",
+      // OpenAI Codex over ACP. Was @zed-industries/codex-acp, which npm now
+      // marks deprecated ("replaced by @agentclientprotocol/codex-acp") and
+      // which last shipped in June; the new package is maintained. Model
+      // selection through the adapter isn't confirmed, so it runs the agent's
+      // default (no modelEnv).
+      command: "cmd /c npx -y @agentclientprotocol/codex-acp@latest",
       modelEnv: null,
       dockerImage: "node:22",
-      dockerCommand: "npx -y @zed-industries/codex-acp@latest",
+      dockerCommand: "npx -y @agentclientprotocol/codex-acp@latest",
       // The adapter wraps the codex CLI; its interactive run offers the login.
       loginCommand: "npx -y @openai/codex@latest",
     },
@@ -188,10 +191,12 @@ export const PROVIDER_DEFS = {
       // and the Antigravity *IDE* is a GUI Electron app with no headless entry
       // point — so neither can be added as an adapter here yet. Revisit once
       // `agy` ships either --acp or a stream-json headless mode.
-      command: "cmd /c npx -y -- @google/gemini-cli@latest --experimental-acp",
+      // `--acp`, not `--experimental-acp`: the CLI's own help marks the
+      // latter "deprecated, use --acp instead".
+      command: "cmd /c npx -y -- @google/gemini-cli@latest --acp",
       modelEnv: null,
       dockerImage: "node:22",
-      dockerCommand: "npx -y -- @google/gemini-cli@latest --experimental-acp",
+      dockerCommand: "npx -y -- @google/gemini-cli@latest --acp",
       loginCommand: "npx -y -- @google/gemini-cli@latest",
     },
   },
