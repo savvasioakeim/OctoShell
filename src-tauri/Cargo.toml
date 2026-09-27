@@ -4,10 +4,10 @@ version = "0.2.0"
 description = "OctoShell — a power-user terminal workspace"
 authors = ["OctoShell"]
 edition = "2021"
-# The real floor, not an aspiration: agent-client-protocol is edition 2024 and
-# needs 1.85, so 1.77 was already a lie that only cargo believed — and it silently
-# held dependencies back to older versions to honour it.
-rust-version = "1.85"
+# The real floor, not an aspiration: agent-client-protocol 2.x declares 1.88, and
+# a floor below what a dependency needs is a lie only cargo believes — it then
+# silently holds other dependencies back to older versions to honour it.
+rust-version = "1.88"
 
 # The library is what Tauri's mobile/desktop entrypoints link against.
 [lib]
@@ -22,10 +22,10 @@ tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-notification = "2"
 tauri-plugin-sql = { version = "2", features = ["sqlite"] }
-portable-pty = "0.8"
+portable-pty = "0.9"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-base64 = "0.22"
+base64 = "0.23"
 # Mobile companion server (mobile.rs). axum shares hyper/tower with what reqwest
 # and bollard already pull in, so the added weight is the router, not a stack.
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio"] }
@@ -33,7 +33,7 @@ axum = { version = "0.8", default-features = false, features = ["http1", "json",
 # approval.rs: that is adequate against a local process guessing a localhost
 # token, but this code is reachable through a public tunnel and must be
 # unguessable, not merely unpredictable.
-getrandom = "0.3"
+getrandom = "0.4"
 # Web Push (push.rs). No client feature: the crate builds and ENCRYPTS the message
 # (RFC 8291) and signs the VAPID header, and reqwest — already here — does the
 # sending. Pulling its bundled HTTP stack would mean a second one in the binary.
@@ -41,22 +41,25 @@ web-push-native = "0.5"
 # For http::Uri, which web-push-native takes. Already in the tree via axum/hyper.
 http = "1"
 # Server-side AI calls; rustls avoids a system OpenSSL dependency on Windows.
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream", "blocking"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "webpki-roots", "stream", "blocking"] }
+# 0.13 renamed the feature: `rustls-tls` became `rustls`, and the bundled
+# Mozilla root store it used to imply is now its own `webpki-roots`. Without
+# that second one it still builds and then fails every HTTPS call at runtime.
 
 # Optional Docker sandbox for agent commands (docker.rs). bollard's default
 # features use rustls (not system OpenSSL), so they're consistent with our
 # Windows-friendly, OpenSSL-free stack; they also provide connect_with_local_defaults.
-bollard = "0.18"
+bollard = "0.21"
 futures-util = "0.3"
 
 # Agent Client Protocol (ACP): the provider-agnostic path. OctoShell acts as an
 # ACP CLIENT that drives any ACP-speaking agent (Claude, Gemini, …) over a
 # subprocess. See acp.rs. tokio is needed directly for the async session tasks
 # and prompt/decision channels.
-agent-client-protocol = "1"
+agent-client-protocol = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "io-util", "process", "time"] }
-fastembed = "5"
-sysinfo = { version = "0.36.1", default-features = false, features = ["system", "disk"] }
+fastembed = "7"
+sysinfo = { version = "0.39", default-features = false, features = ["system", "disk"] }
 tauri-plugin-updater = "2.11.0"
 tauri-plugin-process = "2.3.1"
 
@@ -68,7 +71,7 @@ libc = "0.2"
 # Win32 Job Object: tie every spawned shell/agent to OctoShell's lifetime so a
 # crash or hot-reload can't orphan pwsh/claude/gemini processes (see jobctl.rs).
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = [
+windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Security",
     "Win32_System_JobObjects",

@@ -11,7 +11,7 @@
 
 use std::sync::{Arc, Mutex, OnceLock};
 
-use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
+use fastembed::{EmbeddingModel, TextEmbedding, TextInitOptions};
 
 /// Dimensions produced by [`MODEL`]. Stored alongside every vector: mixing
 /// dimensions (or models) silently would make old vectors incomparable rather
@@ -36,7 +36,7 @@ static MODEL_CELL: OnceLock<Result<Arc<Mutex<TextEmbedding>>, String>> = OnceLoc
 fn model() -> Result<Arc<Mutex<TextEmbedding>>, String> {
     MODEL_CELL
         .get_or_init(|| {
-            let opts = InitOptions::new(MODEL)
+            let opts = TextInitOptions::new(MODEL)
                 .with_show_download_progress(false)
                 .with_cache_dir(cache_dir());
             TextEmbedding::try_new(opts)
