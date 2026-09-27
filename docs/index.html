@@ -277,19 +277,29 @@
 
   <!-- 03 - WORKTREES -->
   <section id="worktrees" class="mx-auto max-w-6xl px-5 py-24">
-    <div class="reveal mx-auto max-w-3xl text-center">
-      <span class="font-mono text-xs tracking-widest text-neoncyan">ISOLATION</span>
-      <h2 class="mt-3 text-3xl font-bold tracking-tight text-white md:text-4xl">03 &middot; One worktree per task</h2>
-      <p class="mt-4 leading-relaxed text-slate-400">
-        Each agent gets its own worktree and its own branch, so two agents working at the same time
-        never touch the same files. Your own checkout stays where you left it, with no branch
-        switching and no stashing.
-      </p>
-    </div>
-    <pre class="reveal mx-auto mt-8 max-w-xl overflow-x-auto rounded-lg border border-edge bg-[#0D0F14] px-4 py-3 font-mono text-xs leading-relaxed text-slate-300 shadow-inner"><span class="text-slate-500">storefront/</span>
+    <div class="grid items-center gap-12 md:grid-cols-2">
+      <div class="reveal">
+        <span class="font-mono text-xs tracking-widest text-neoncyan">ISOLATION</span>
+        <h2 class="mt-3 text-3xl font-bold tracking-tight text-white md:text-4xl">03 &middot; One worktree per task</h2>
+        <p class="mt-4 leading-relaxed text-slate-400">
+          Each agent gets its own worktree and its own branch, so two agents working at the same
+          time never touch the same files. Your own checkout stays where you left it, with no
+          branch switching and no stashing.
+        </p>
+        <p class="mt-4 leading-relaxed text-slate-400">
+          Projects are grouped the way you group them, and a dot next to each branch tells you
+          whether an agent is working there, waiting, or done. Opening one puts you in that
+          worktree's own terminal.
+        </p>
+        <pre class="mt-6 overflow-x-auto rounded-lg border border-edge bg-[#0D0F14] px-4 py-3 font-mono text-xs leading-relaxed text-slate-300 shadow-inner"><span class="text-slate-500">storefront/</span>
  &#9500;&#9472;&#9472; <span class="text-white">main</span>                  your checkout, untouched
  &#9500;&#9472;&#9472; <span class="text-neonpurple">feat/order-currency</span>   agent A
  &#9492;&#9472;&#9472; <span class="text-neoncyan">feat/sidebar-refunds</span>  agent B</pre>
+      </div>
+      <div class="mockup-container reveal w-full">
+        <img src="img/worktrees.png" class="shot" alt="The projects sidebar: three repositories, each with its main branch and the worktrees agents are working in." />
+      </div>
+    </div>
   </section>
 
   <!-- 04 - QA -->
