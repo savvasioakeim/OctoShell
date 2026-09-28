@@ -6,7 +6,7 @@ You give it a task. It creates a Git worktree, starts an agent in it, and shows 
 
 Built with Tauri v2 and Rust, with a React and TypeScript frontend and xterm.js for the terminals.
 
-[Download the latest release](https://github.com/savvasioakeim/OctoShell/releases/latest) · [Site](https://savvasioakeim.github.io/OctoShell/) · [Ελληνικά](README.el.md)
+[Download the latest release](https://github.com/savvasioakeim/OctoShell/releases/latest) · [Site](https://savvasioakeim.github.io/OctoShell/)
 
 ![The OctoShell window: worktrees for three repositories on the left, an agent two thirds through its step list in the middle, and the orchestrator tracking every task on the right](docs/img/workspace.png)
 
