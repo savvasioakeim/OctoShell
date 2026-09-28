@@ -665,7 +665,9 @@ export class ShellController {
     // stale/unknown persisted value (which would otherwise crash the picker).
     this.agentProvider = normalizeProvider(loadJSON(KEY.provider(this.sessionId), d.provider));
     this.agentConfigDir = loadJSON<string | null>(KEY.agentCfgDir(this.sessionId), settingsStore.configDirFor(d.profileId));
-    this.agentApproval = loadJSON<boolean>(KEY.approval(this.sessionId), false);
+    // No stored choice means this project has never been toggled, so it takes
+    // the workspace default, which asks. Turning approvals off is deliberate.
+    this.agentApproval = loadJSON<boolean>(KEY.approval(this.sessionId), d.approval);
     if (this.agentSessionId || this.agentModel || this.agentConfigDir) this.emit();
     void this.hydrateBlocks();
   }

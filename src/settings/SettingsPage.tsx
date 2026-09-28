@@ -202,6 +202,14 @@ function AiTab({ projects }: { projects: SettingsProject[] }) {
             )}
           </Field>
         </div>
+        <div className="mt-3">
+          <ToggleRow
+            label="Ask before running commands"
+            desc="New agents ask you before each Bash, Edit and Write call. Turn it off and they run with --dangerously-skip-permissions, which is faster and means an agent can run any command in that project without asking. Each project keeps whichever setting you last gave it."
+            checked={agent.approval}
+            onChange={(v) => settingsStore.setAgentDefaults({ approval: v })}
+          />
+        </div>
       </Section>
 
       <Section title="Orchestrator — default" desc="What the Workspace Assistant runs with.">
