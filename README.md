@@ -42,7 +42,7 @@ Built with Tauri v2 and Rust, with a React and TypeScript frontend and xterm.js 
 
 Worth knowing before you install it:
 
-- **Windows first.** macOS works on Apple Silicon and has been tested by the developer who ported it, but most of the hours have gone into Windows. There is no Intel Mac build, because ONNX Runtime ships no prebuilt binary for that target, and no Linux build.
+- **Windows first, and that is the point.** This was built because nothing like it existed for Windows. macOS came later, because a second developer wanted it, ported it himself and now tests it on Apple Silicon. Linux is not planned. There is no Intel Mac build either, because ONNX Runtime ships no prebuilt binary for that target.
 - **A desktop app, not a server.** There is no `npx` command and no Docker deployment that serves a web UI to your team. It runs on your machine, on your repositories.
 - **No issue tracker.** There is no Kanban board and no ticket system. Work starts from what you type or from a saved plan.
 - **Not private from your model provider.** OctoShell has no server, no account and no telemetry, and your files stay local. But an agent has to send code to its provider to work on it, exactly as it would from that provider's own CLI. Ollama is the exception.
@@ -132,7 +132,7 @@ Every child process is tied to a kill-on-close Windows Job Object, or to a per-c
 
 ## Security posture, read this
 
-- With approval mode off, which is the default, agents run with `--dangerously-skip-permissions`: they can execute any command in your project without asking. The per-project **Approve** toggle makes Bash, Edit and Write calls ask first.
+- Agents ask before each Bash, Edit and Write call by default. Turning that off, per project or for new agents in Settings, runs them with `--dangerously-skip-permissions`, which is faster and lets an agent execute any command in that project without asking. That is a reasonable trade inside a worktree you are willing to lose, and it should be your decision rather than an installer's.
 - Orchestrator actions are confirm-per-click unless you enable Auto. A session spend limit in Settings halts everything when it is hit.
 - The Docker sandbox isolates the host from agent commands. It does not protect the worktree itself and does not prevent network exfiltration: the mounted worktree is read-write and networking is on, because installs need it.
 - Macros never run by themselves. They put a command in the input for you to approve.

@@ -19,6 +19,12 @@ export interface AgentDefaults {
   provider: AgentProvider;
   model: string | null;
   profileId: string | null;
+  /** Whether a new agent starts with approvals ON (it asks before Bash, Edit
+   *  and Write) or OFF (`--dangerously-skip-permissions`). Defaults to ON: an
+   *  agent that can run any command in your repository without asking is a
+   *  choice a person should make, not one they inherit from an installer. A
+   *  project that has been toggled keeps its own setting. */
+  approval: boolean;
 }
 export interface OrchestratorDefaults {
   /** Which CLI backs the orchestrator (claude / gemini). */
@@ -231,7 +237,17 @@ class SettingsStore {
   constructor() {
     this.state = {
       profiles: loadJSON<Profile[]>(KEY.aiProfiles, []),
-      agent: loadJSON<AgentDefaults>(KEY.agentDefaults, { provider: "claude", model: null, profileId: null }),
+      agent: (() => {
+        const saved = loadJSON<AgentDefaults>(KEY.agentDefaults, {
+          provider: "claude",
+          model: null,
+          profileId: null,
+          approval: true,
+        });
+        // A workspace saved before `approval` existed has no value for it, and
+        // that absence must not read as "off": fall back to asking.
+        return { ...saved, approval: saved.approval ?? true };
+      })(),
       // Seed the orchestrator default from the older standalone orchestrator keys
       // (model/profile) so existing setups carry over.
       // Seed from the older standalone keys, then overlay the persisted object.
