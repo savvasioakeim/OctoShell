@@ -71,6 +71,7 @@ export function SettingsPage({
   initialTab,
   focusProjectCwd,
   projects = [],
+  onApplyProfileToAll,
 }: {
   onClose: () => void;
   onSandboxLogin: () => void;
@@ -78,6 +79,10 @@ export function SettingsPage({
   initialTab?: string;
   focusProjectCwd?: string;
   projects?: SettingsProject[];
+  /** Push the default profile onto every project that is already open. Without
+   *  it the default only reaches projects created from here on, which reads as
+   *  the setting not working. */
+  onApplyProfileToAll?: (profileId: string | null) => void;
 }) {
   const [tab, setTab] = useState<TabId>((initialTab as TabId) || "ai");
 
@@ -115,7 +120,7 @@ export function SettingsPage({
         {/* Content — one panel; sections are nested cards inside it. */}
         <div className="flex-1 overflow-y-auto rounded-xl border border-edge bg-panel p-4">
           <div className="mx-auto max-w-2xl space-y-3">
-            {tab === "ai" && <AiTab projects={projects} />}
+            {tab === "ai" && <AiTab projects={projects} onApplyProfileToAll={onApplyProfileToAll} />}
             {tab === "local" && <LocalLlmTab />}
             {tab === "roles" && <StrategyRolesTab />}
             {tab === "skills" && <SkillsTab projects={projects} />}
@@ -133,7 +138,14 @@ export function SettingsPage({
 // ---------------------------------------------------------------------------
 // Tab 1 — Profiles & AI
 // ---------------------------------------------------------------------------
-function AiTab({ projects }: { projects: SettingsProject[] }) {
+function AiTab({
+  projects,
+  onApplyProfileToAll,
+}: {
+  projects: SettingsProject[];
+  onApplyProfileToAll?: (profileId: string | null) => void;
+}) {
+  const [applied, setApplied] = useState(false);
   const { profiles, agent, orchestrator, globalRules, spendLimitUsd, reviewAgent, orchestratorReadonly } = useSettings();
 
   const addProfile = async () => {
@@ -202,6 +214,25 @@ function AiTab({ projects }: { projects: SettingsProject[] }) {
             )}
           </Field>
         </div>
+        {onApplyProfileToAll && projects.length > 0 ? (
+          <div className="mt-3 flex items-center gap-3">
+            <button
+              onClick={() => {
+                onApplyProfileToAll(agent.profileId);
+                setApplied(true);
+                setTimeout(() => setApplied(false), 2500);
+              }}
+              className="rounded-lg border border-edge px-3 py-1.5 text-xs text-gray-200 transition-colors hover:bg-edge"
+            >
+              Apply this profile to all open projects
+            </button>
+            <span className="text-xs text-muted">
+              {applied
+                ? `Applied to ${projects.length} ${projects.length === 1 ? "project" : "projects"}.`
+                : "Otherwise the profile above only applies to projects opened from now on."}
+            </span>
+          </div>
+        ) : null}
         <div className="mt-3">
           <ToggleRow
             label="Ask before running commands"

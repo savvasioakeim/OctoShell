@@ -14,6 +14,7 @@ import { Titlebar } from "./chrome/Titlebar";
 import { serviceStore } from "./services/serviceStore";
 import { SettingsPage } from "./settings/SettingsPage";
 import { UpdatePrompt } from "./updates/UpdatePrompt";
+import { ConfirmRemove } from "./ui/ConfirmRemove";
 import { StrategyPanel } from "./strategy/StrategyPanel";
 import { startMobileBridge } from "./mobile/mobileBridge";
 import { modStore } from "./mods/modStore";
@@ -631,7 +632,27 @@ export function App({ initial }: { initial: ShellController }) {
     return { id: result.id, name: result.name, controller: result.controller };
   };
 
+  /** What the removal dialog is currently asking about (null = closed). */
+  const [pendingRemove, setPendingRemove] = useState<
+    | { kind: "tab"; id: string; name: string }
+    | { kind: "unopened"; path: string; name: string; repoRoot: string; parentId: string }
+    | null
+  >(null);
+
+  /** Close a project tab. A worktree tab asks first, because saying yes deletes
+   *  the checkout: `git worktree remove --force` plus a recursive delete take
+   *  uncommitted work with them. Everything else closes straight away. */
   const closeProject = (id: string) => {
+    if (tabs.length <= 1) return;
+    const tab = tabs.find((t) => t.id === id);
+    if (tab?.worktree) {
+      setPendingRemove({ kind: "tab", id, name: tab.name });
+      return;
+    }
+    closeProjectNow(id, false);
+  };
+
+  const closeProjectNow = (id: string, deleteFromDisk: boolean) => {
     if (tabs.length <= 1) return; // never close the last project
     const tab = tabs.find((t) => t.id === id);
     // Tear the shell down FIRST: on Windows a running pty holds the worktree dir
@@ -647,7 +668,7 @@ export function App({ initial }: { initial: ShellController }) {
     // made before that fix are restored from storage, so the check has to stay.
     const sharedByOther =
       !!tab && tabs.some((t) => t.id !== tab.id && t.cwd.toLowerCase() === tab.cwd.toLowerCase());
-    if (tab?.worktree && !sharedByOther) {
+    if (tab?.worktree && !sharedByOther && deleteFromDisk) {
       capture(tab.worktree.repoRoot, removeWorktreeScript(tab.cwd)).catch(() => {});
     }
     setTabs((prev) => {
@@ -665,8 +686,11 @@ export function App({ initial }: { initial: ShellController }) {
   // refs so the long-lived interval always sees the latest tabs/close handler.
   const tabsRef = useRef(tabs);
   tabsRef.current = tabs;
-  const closeProjectRef = useRef(closeProject);
-  closeProjectRef.current = closeProject;
+  // The auto-clean poll calls the immediate form: those worktrees are already
+  // merged and the user opted into having them swept, so a dialog per repository
+  // every five minutes would be the opposite of what they asked for.
+  const closeProjectRef = useRef(closeProjectNow);
+  closeProjectRef.current = closeProjectNow;
   useEffect(() => {
     const tick = async () => {
       if (settingsStore.getSnapshot().workspace.autoClean !== "onMerge") return;
@@ -711,7 +735,7 @@ export function App({ initial }: { initial: ShellController }) {
         const finished = new Set(parseMergedWorktrees(out));
         if (!finished.size) continue;
         for (const t of group) {
-          if (finished.has(normPath(t.cwd))) closeProjectRef.current(t.id);
+          if (finished.has(normPath(t.cwd))) closeProjectRef.current(t.id, true);
         }
       }
     };
@@ -772,13 +796,15 @@ export function App({ initial }: { initial: ShellController }) {
             const tab = await adoptWorktree(w.path, w.name, w.repoRoot, w.parentId);
             setActiveId(tab.id);
           }}
-          onRemoveWorktree={(w) => {
-            void capture(w.repoRoot, removeWorktreeScript(w.path)).catch(() => {});
-            setUnopened((u) => ({
-              ...u,
-              [w.parentId]: (u[w.parentId] ?? []).filter((x) => x.path !== w.path),
-            }));
-          }}
+          onRemoveWorktree={(w) =>
+            setPendingRemove({
+              kind: "unopened",
+              path: w.path,
+              name: w.name,
+              repoRoot: w.repoRoot,
+              parentId: w.parentId,
+            })
+          }
           stats={gitStats}
           groups={groupsState.groups}
           assign={groupsState.assign}
@@ -841,6 +867,10 @@ export function App({ initial }: { initial: ShellController }) {
               initialTab={settingsInit?.tab}
               focusProjectCwd={settingsInit?.focusCwd}
               projects={tabs.map((t) => ({ id: t.id, name: t.name, cwd: t.controller.getCwd(), parentId: t.worktree?.parentId }))}
+            onApplyProfileToAll={(profileId) => {
+              const dir = settingsStore.configDirFor(profileId);
+              for (const t of tabs) t.controller.setAgentConfigDir(dir);
+            }}
               onClose={() => setSettingsOpen(false)}
               onShowOnboarding={() => {
                 setSettingsOpen(false);
@@ -863,6 +893,40 @@ export function App({ initial }: { initial: ShellController }) {
           </div>
         )}
         <UpdatePrompt />
+        {pendingRemove?.kind === "tab" && (
+          <ConfirmRemove
+            title={`Remove the worktree "${pendingRemove.name}"?`}
+            message="The project closes either way. What happens to the checkout is up to you."
+            diskOption={{
+              label: "Delete the worktree from disk too",
+              hint: "Runs git worktree remove --force and deletes the folder. Anything in there that is not committed is gone. Unticked, the worktree stays on disk and you can open it again later.",
+            }}
+            confirmLabel="Remove"
+            onCancel={() => setPendingRemove(null)}
+            onConfirm={(fromDisk) => {
+              const { id } = pendingRemove;
+              setPendingRemove(null);
+              closeProjectNow(id, fromDisk);
+            }}
+          />
+        )}
+        {pendingRemove?.kind === "unopened" && (
+          <ConfirmRemove
+            title={`Delete the worktree "${pendingRemove.name}"?`}
+            message="This worktree is not open anywhere, so removing it means deleting it: git worktree remove --force, then the folder itself. Anything in there that is not committed is gone."
+            confirmLabel="Delete"
+            onCancel={() => setPendingRemove(null)}
+            onConfirm={() => {
+              const w = pendingRemove;
+              setPendingRemove(null);
+              void capture(w.repoRoot, removeWorktreeScript(w.path)).catch(() => {});
+              setUnopened((u) => ({
+                ...u,
+                [w.parentId]: (u[w.parentId] ?? []).filter((x) => x.path !== w.path),
+              }));
+            }}
+          />
+        )}
       </div>
     </div>
   );
