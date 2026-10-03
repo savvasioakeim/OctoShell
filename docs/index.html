@@ -217,6 +217,31 @@
     </div>
   </section>
 
+  <!-- 00 - THE LOOP -->
+  <section class="mx-auto max-w-4xl px-5 pt-16 pb-4">
+    <div class="reveal rounded-2xl border border-edge bg-card/40 p-8 md:p-10">
+      <span class="font-mono text-xs tracking-widest text-neoncyan">THE LOOP</span>
+      <h2 class="mt-3 text-2xl font-bold tracking-tight text-white md:text-3xl">One task, start to finish</h2>
+      <p class="mt-4 leading-relaxed text-slate-400">
+        The sections below are not separate features bolted together. They are one loop, and this is
+        what a single task looks like going through it.
+      </p>
+      <ol class="mt-6 space-y-3 text-sm leading-relaxed text-slate-400">
+        <li><span class="font-mono text-neonpurple">1.</span> You type a goal, or hand over a plan. The orchestrator turns it into tasks and shows you what it intends to dispatch.</li>
+        <li><span class="font-mono text-neonpurple">2.</span> You confirm. It creates a git worktree per task and starts an agent in each one, linking related tasks so an agent can ask what the others changed.</li>
+        <li><span class="font-mono text-neonpurple">3.</span> The agent writes down its steps before it starts. That list is the bar above its output.</li>
+        <li><span class="font-mono text-neonpurple">4.</span> It needs the app running, so it asks OctoShell instead of running the server itself. The server gets a port, a log and a row in the list.</li>
+        <li><span class="font-mono text-neonpurple">5.</span> It finishes, commits on its own branch, and records what it changed and how to verify it.</li>
+        <li><span class="font-mono text-neonpurple">6.</span> QA mode opens the dev server for that branch and shows the checklist the agent wrote, over the running app. You try the change yourself.</li>
+        <li><span class="font-mono text-neonpurple">7.</span> You decline with a note. The note becomes that agent's next task, and the loop continues from step 3.</li>
+      </ol>
+      <p class="mt-6 leading-relaxed text-slate-400">
+        Nothing in that sequence needs you to switch branches, find a free port, or explain to one
+        agent what another one did.
+      </p>
+    </div>
+  </section>
+
   <!-- 01 - STRATEGY MODE -->
   <section id="strategy" class="mx-auto max-w-6xl px-5 py-24">
     <div class="grid items-center gap-12 md:grid-cols-2">

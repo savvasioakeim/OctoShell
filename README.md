@@ -10,6 +10,20 @@ Built with Tauri v2 and Rust, with a React and TypeScript frontend and xterm.js 
 
 ![The OctoShell window: worktrees for three repositories on the left, an agent two thirds through its step list in the middle, and the orchestrator tracking every task on the right](docs/img/workspace.png)
 
+## One task, start to finish
+
+The parts below are not separate features bolted together. They are one loop, and this is what a single task looks like going through it.
+
+1. You type a goal, or hand over a plan from Strategy Mode. The orchestrator turns it into tasks and shows you what it intends to dispatch.
+2. You confirm. It creates a git worktree per task and starts an agent in each one. Related tasks are linked when they are dispatched, so an agent can ask what the others changed.
+3. The agent writes down its steps before it starts. That list is the bar above its output, so you can see where it is without reading the log.
+4. It needs the app running, so it asks OctoShell rather than running the server itself. The server gets a port, a log and a row in the list, marked with which agent asked for it.
+5. It finishes, commits on its own branch, and records what it changed and how to verify it.
+6. QA mode opens the dev server for that branch and shows the checklist the agent wrote, in a window over the running app. You try the change yourself.
+7. You decline with a note. The note goes back to that agent as its next task, and the loop continues from step 3.
+
+Nothing in that sequence needs you to switch branches, find a free port, or explain to one agent what another one did.
+
 ## What it does
 
 **One worktree per task.** Each agent gets its own worktree and branch, so two agents working at the same time never touch the same files. Your own checkout stays where you left it, with no branch switching and no stashing.
