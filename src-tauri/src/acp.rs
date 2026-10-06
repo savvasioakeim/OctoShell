@@ -167,6 +167,10 @@ struct Terminal {
     /// Notified when the process exits (so wait_for_exit can await it).
     done: Arc<Notify>,
     pid: Option<u32>,
+    /// Creation order, used to evict the oldest released terminals.
+    seq: u64,
+    /// Released by the agent: kept only so its output can still be displayed.
+    released: Arc<AtomicBool>,
 }
 
 type Terminals = Arc<Mutex<HashMap<String, Terminal>>>;
@@ -213,26 +217,87 @@ fn inject_terminal_output(v: &mut serde_json::Value, terminals: &Terminals) {
     }
 }
 
+/// The byte cap applied when the agent doesn't ask for one. Without it a chatty
+/// command (a watch-mode build, a test suite printing progress) grows the buffer
+/// for as long as it runs, and we hold that output for the rest of the session.
+const DEFAULT_OUTPUT_BYTE_LIMIT: u64 = 1 << 20; // 1 MiB
+
+/// How many released terminals keep their output. A terminal that was shown in a
+/// tool call SHOULD keep displaying its output after release, so we can't drop it
+/// on release; this bounds what that costs us.
+const RETAINED_RELEASED_TERMINALS: usize = 32;
+
+/// Append `text`, dropping from the FRONT to stay inside `limit`.
+///
+/// The spec is explicit about the direction: the client truncates from the
+/// beginning of the output, and the cut must land on a character boundary. We used
+/// to do the opposite and stop reading once the limit was reached, which kept the
+/// startup banner and threw away the error the command actually exited with.
+fn push_bounded(buf: &Arc<Mutex<String>>, truncated: &Arc<Mutex<bool>>, limit: u64, text: &str) {
+    let mut b = buf.lock().unwrap();
+    b.push_str(text);
+    let lim = limit as usize;
+    if b.len() <= lim {
+        return;
+    }
+    // Drop whole characters until it fits: cutting mid-character would leave an
+    // invalid string, which the response is required not to contain.
+    let want = b.len() - lim;
+    let at = b.char_indices().map(|(i, _)| i).find(|i| *i >= want).unwrap_or(b.len());
+    b.drain(..at);
+    *truncated.lock().unwrap() = true;
+}
+
+/// Decode as much of `pending` as forms valid UTF-8, leaving a trailing partial
+/// character in the buffer for the next read.
+///
+/// `from_utf8_lossy` per read looks equivalent and is not: a character split
+/// across two reads (any Greek letter, any emoji a test runner prints) came out as
+/// a replacement character.
+fn decode_utf8_prefix(pending: &mut Vec<u8>) -> String {
+    match std::str::from_utf8(pending) {
+        Ok(s) => {
+            let out = s.to_string();
+            pending.clear();
+            out
+        }
+        Err(e) => {
+            let good = e.valid_up_to();
+            let mut out = String::from_utf8_lossy(&pending[..good]).to_string();
+            match e.error_len() {
+                // Genuinely invalid bytes: emit one replacement and step past them.
+                Some(bad) => {
+                    out.push(char::REPLACEMENT_CHARACTER);
+                    pending.drain(..good + bad);
+                }
+                // Truncated character: keep the tail for the next read.
+                None => {
+                    pending.drain(..good);
+                }
+            }
+            out
+        }
+    }
+}
+
 /// Drain a child stream into the shared output buffer, honouring the byte limit.
-fn spawn_reader<R>(stream: Option<R>, buf: Arc<Mutex<String>>, truncated: Arc<Mutex<bool>>, limit: Option<u64>)
+fn spawn_reader<R>(stream: Option<R>, buf: Arc<Mutex<String>>, truncated: Arc<Mutex<bool>>, limit: u64)
 where
     R: AsyncReadExt + Unpin + Send + 'static,
 {
     let Some(mut r) = stream else { return };
     tokio::spawn(async move {
         let mut chunk = [0u8; 4096];
+        let mut pending: Vec<u8> = Vec::new();
         loop {
             match r.read(&mut chunk).await {
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
-                    let mut b = buf.lock().unwrap();
-                    if let Some(lim) = limit {
-                        if b.len() as u64 >= lim {
-                            *truncated.lock().unwrap() = true;
-                            break;
-                        }
+                    pending.extend_from_slice(&chunk[..n]);
+                    let text = decode_utf8_prefix(&mut pending);
+                    if !text.is_empty() {
+                        push_bounded(&buf, &truncated, limit, &text);
                     }
-                    b.push_str(&String::from_utf8_lossy(&chunk[..n]));
                 }
             }
         }
@@ -243,12 +308,13 @@ where
 /// into the buffer; a waiter task records the exit code and notifies waiters —
 /// ALWAYS (even on spawn failure) so `wait_for_exit` can never hang.
 fn create_terminal(req: &CreateTerminalRequest, terminals: &Terminals) -> String {
-    let id = format!("term-{}", TERM_COUNTER.fetch_add(1, Ordering::Relaxed));
+    let seq = TERM_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let id = format!("term-{seq}");
     let output = Arc::new(Mutex::new(String::new()));
     let truncated = Arc::new(Mutex::new(false));
     let exit: Arc<Mutex<Option<Option<i32>>>> = Arc::new(Mutex::new(None));
     let done = Arc::new(Notify::new());
-    let limit = req.output_byte_limit;
+    let limit = req.output_byte_limit.unwrap_or(DEFAULT_OUTPUT_BYTE_LIMIT);
 
     let mut cmd = tokio::process::Command::new(&req.command);
     cmd.args(&req.args);
@@ -295,7 +361,10 @@ fn create_terminal(req: &CreateTerminalRequest, terminals: &Terminals) -> String
     terminals
         .lock()
         .unwrap()
-        .insert(id.clone(), Terminal { output, truncated, exit, done, pid });
+        .insert(
+            id.clone(),
+            Terminal { output, truncated, exit, done, pid, seq, released: Arc::new(AtomicBool::new(false)) },
+        );
     id
 }
 
@@ -312,12 +381,13 @@ fn create_terminal_sandboxed(
     mgr: &SandboxManager,
     session_worktree: &str,
 ) -> String {
-    let id = format!("term-{}", TERM_COUNTER.fetch_add(1, Ordering::Relaxed));
+    let seq = TERM_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let id = format!("term-{seq}");
     let output = Arc::new(Mutex::new(String::new()));
     let truncated = Arc::new(Mutex::new(false));
     let exit: Arc<Mutex<Option<Option<i32>>>> = Arc::new(Mutex::new(None));
     let done = Arc::new(Notify::new());
-    let limit = req.output_byte_limit;
+    let limit = req.output_byte_limit.unwrap_or(DEFAULT_OUTPUT_BYTE_LIMIT);
 
     // The agent sends command + args separately; the sandbox runs a single shell
     // line (`sh -c`), so join them. Prefer the request's cwd, else the session's.
@@ -338,6 +408,8 @@ fn create_terminal_sandboxed(
             exit: exit.clone(),
             done: done.clone(),
             pid: None,
+            seq,
+            released: Arc::new(AtomicBool::new(false)),
         },
     );
 
@@ -346,14 +418,7 @@ fn create_terminal_sandboxed(
     let trunc_cb = truncated.clone();
     tokio::spawn(async move {
         let on_chunk = move |chunk: &str, _stderr: bool| {
-            let mut b = out_cb.lock().unwrap();
-            if let Some(lim) = limit {
-                if b.len() as u64 >= lim {
-                    *trunc_cb.lock().unwrap() = true;
-                    return;
-                }
-            }
-            b.push_str(chunk);
+            push_bounded(&out_cb, &trunc_cb, limit, chunk);
         };
         let code = mgr
             .exec_capture(worktree, cmdline, SANDBOX_IMAGE.to_string(), SandboxOptions::default(), on_chunk)
@@ -770,10 +835,36 @@ async fn run_session(
         )
         .on_receive_request(
             async move |req: ReleaseTerminalRequest, responder, _conn| {
-                let t = term_rel.lock().unwrap().remove(&req.terminal_id.0.to_string());
-                if let Some(t) = t {
-                    kill_pid(t.pid);
-                }
+                // Don't drop the entry: a terminal that was embedded in a tool call
+                // SHOULD keep displaying its output after release, and WE are the ones
+                // holding that output (see inject_terminal_output). Mark it instead,
+                // and evict the oldest released ones so a long session with many
+                // commands doesn't keep every buffer alive.
+                let key = req.terminal_id.0.to_string();
+                let pid = {
+                    let mut map = term_rel.lock().unwrap();
+                    let pid = match map.get(&key) {
+                        Some(t) => {
+                            t.released.store(true, Ordering::Relaxed);
+                            t.pid
+                        }
+                        None => None,
+                    };
+                    let mut released: Vec<(u64, String)> = map
+                        .iter()
+                        .filter(|(_, t)| t.released.load(Ordering::Relaxed))
+                        .map(|(k, t)| (t.seq, k.clone()))
+                        .collect();
+                    if released.len() > RETAINED_RELEASED_TERMINALS {
+                        released.sort_unstable();
+                        let drop_n = released.len() - RETAINED_RELEASED_TERMINALS;
+                        for (_, k) in released.into_iter().take(drop_n) {
+                            map.remove(&k);
+                        }
+                    }
+                    pid
+                };
+                kill_pid(pid);
                 responder.respond(ReleaseTerminalResponse::new())
             },
             agent_client_protocol::on_receive_request!(),
@@ -957,4 +1048,66 @@ pub fn acp_send(
 pub fn acp_cancel(manager: State<'_, AcpManager>, id: String) -> Result<(), String> {
     manager.cancel(&id);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn buf() -> (Arc<Mutex<String>>, Arc<Mutex<bool>>) {
+        (Arc::new(Mutex::new(String::new())), Arc::new(Mutex::new(false)))
+    }
+
+    /// Over the limit, the OLDEST output goes. A command that prints a banner and
+    /// then fails must leave the failure visible, not the banner.
+    #[test]
+    fn truncates_from_the_front() {
+        let (b, t) = buf();
+        push_bounded(&b, &t, 10, "0123456789");
+        assert_eq!(*b.lock().unwrap(), "0123456789");
+        assert!(!*t.lock().unwrap());
+
+        push_bounded(&b, &t, 10, "ERROR: no");
+        assert_eq!(*b.lock().unwrap(), "9ERROR: no");
+        assert!(*t.lock().unwrap());
+    }
+
+    /// The cut lands on a character boundary, so the retained output stays valid
+    /// even when that means keeping fewer bytes than the limit allows.
+    #[test]
+    fn truncation_keeps_characters_whole() {
+        let (b, t) = buf();
+        // Six 2-byte characters, then one more: the oldest must go whole.
+        push_bounded(&b, &t, 12, "αβγδεζ");
+        push_bounded(&b, &t, 12, "η");
+        let out = b.lock().unwrap().clone();
+        assert_eq!(out, "βγδεζη");
+        assert_eq!(out.len(), 12);
+    }
+
+    /// A character split across two reads survives: the tail waits for the rest
+    /// instead of becoming a replacement character.
+    #[test]
+    fn decodes_characters_split_across_reads() {
+        let bytes = "ναι".as_bytes().to_vec();
+        let mut pending = Vec::new();
+        let mut out = String::new();
+        // Feed one byte at a time, the worst case for a multi-byte character.
+        for byte in bytes {
+            pending.push(byte);
+            out.push_str(&decode_utf8_prefix(&mut pending));
+        }
+        assert_eq!(out, "ναι");
+        assert!(pending.is_empty());
+    }
+
+    /// Bytes that are not UTF-8 at all still move the buffer forward, one
+    /// replacement character each, rather than parking there for ever.
+    #[test]
+    fn decodes_past_invalid_bytes() {
+        let mut pending = vec![b'a', 0xFF, b'b'];
+        let out = decode_utf8_prefix(&mut pending);
+        assert_eq!(out, "a\u{FFFD}");
+        assert_eq!(pending, vec![b'b']);
+    }
 }
