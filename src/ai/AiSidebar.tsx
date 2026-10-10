@@ -1703,7 +1703,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
             onClick={stopAll}
             disabled={!canStop}
             title="Stop everything — orchestrator + all agents (like Escape)"
-            className={`inline-flex h-6 items-center gap-1 rounded border border-transparent px-1.5 text-[10px] font-semibold ${
+            className={`inline-flex h-6 items-center gap-1 rounded-sm border border-transparent px-1.5 text-[10px] font-semibold ${
               canStop
                 ? "bg-red-500/25 text-red-200 hover:bg-red-500/35"
                 : "border border-edge text-muted/50"
@@ -1718,7 +1718,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
               setSessionMenu(true);
             }}
             title="Chats — new chat + switch/search existing"
-            className="inline-flex h-6 items-center gap-1 rounded border border-[#7c5cff]/50 px-1.5 text-[10px] text-muted hover:bg-[#7c5cff]/15 hover:text-gray-200"
+            className="inline-flex h-6 items-center gap-1 rounded-sm border border-[#7c5cff]/50 px-1.5 text-[10px] text-muted hover:bg-[#7c5cff]/15 hover:text-gray-200"
           >
             <svg viewBox="0 0 24 24" fill="none" stroke="url(#chat-grad)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 shrink-0" aria-hidden>
               <defs>
@@ -1734,7 +1734,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
           <button
             onClick={() => setAutoRun((v) => !v)}
             title={autoRun ? "Auto-run: actions run without confirmation" : "Confirm: every action needs a click"}
-            className={`inline-flex h-6 items-center gap-1 rounded border border-transparent px-1.5 text-[10px] font-medium ${
+            className={`inline-flex h-6 items-center gap-1 rounded-sm border border-transparent px-1.5 text-[10px] font-medium ${
               autoRun ? "bg-amber-500/20 text-amber-300" : "text-muted hover:bg-edge/50 hover:text-gray-200"
             }`}
           >
@@ -1747,7 +1747,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
                 ? "Live watch: continues on its own when an agent finishes"
                 : "Live watch off"
             }
-            className={`inline-flex h-6 items-center gap-1 rounded border border-transparent px-1.5 text-[10px] font-medium ${
+            className={`inline-flex h-6 items-center gap-1 rounded-sm border border-transparent px-1.5 text-[10px] font-medium ${
               liveWatch ? "bg-emerald-500/20 text-emerald-300" : "text-muted hover:bg-edge/50 hover:text-gray-200"
             }`}
           >
@@ -1781,7 +1781,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
               <span className="text-[11px] text-muted">{sessions.length}</span>
               <button
                 onClick={() => setSessionMenu(false)}
-                className="ml-auto rounded px-2 py-0.5 text-sm text-muted hover:bg-edge hover:text-gray-200"
+                className="ml-auto rounded-sm px-2 py-0.5 text-sm text-muted hover:bg-edge hover:text-gray-200"
               >
                 ✕
               </button>
@@ -1798,7 +1798,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
                 onChange={(e) => setChatSearch(e.target.value)}
                 autoFocus
                 placeholder="Search chats…"
-                className="w-full rounded-lg border border-edge bg-card px-3 py-1.5 text-sm text-gray-100 outline-none placeholder:text-muted/50 focus:border-accent"
+                className="w-full rounded-lg border border-edge bg-card px-3 py-1.5 text-sm text-gray-100 outline-hidden placeholder:text-muted/50 focus:border-accent"
               />
             </div>
             <ul className="min-h-0 flex-1 overflow-y-auto py-1">
@@ -1842,7 +1842,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
                 key={t.id}
                 onClick={() => setAgentFilter(t.id)}
                 disabled={empty}
-                className={`flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors ${
+                className={`flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-[10px] font-medium transition-colors ${
                   active ? "bg-edge text-gray-100" : "text-muted hover:bg-edge/50"
                 } ${empty ? "opacity-40" : ""}`}
               >
@@ -1855,7 +1855,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
           <button
             onClick={() => setPane((p) => (p === "agents" ? "system" : "agents"))}
             title={pane === "agents" ? "Show this machine's CPU, memory and disk" : "Back to the agent list"}
-            className={`ml-auto flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors ${
+            className={`ml-auto flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-[10px] font-medium transition-colors ${
               pane === "system" ? "bg-edge text-gray-100" : "text-muted hover:bg-edge/50"
             }`}
           >
@@ -1874,7 +1874,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
             return (
               <div
                 key={p.id}
-                className={`flex items-center gap-2 rounded px-1.5 py-1 text-xs hover:bg-edge/50 ${
+                className={`flex items-center gap-2 rounded-sm px-1.5 py-1 text-xs hover:bg-edge/50 ${
                   status === "idle" ? "opacity-55" : ""
                 }`}
               >
@@ -1897,7 +1897,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
                   <button
                     onClick={() => p.controller.cancelAgent()}
                     title="Cancel agent"
-                    className="rounded px-1 text-red-300 hover:bg-red-500/20"
+                    className="rounded-sm px-1 text-red-300 hover:bg-red-500/20"
                   >
                     ✕
                   </button>
@@ -1964,7 +1964,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
               {qa.items.length > 0 && (
                 <button
                   onClick={() => startQa(qa.items, qaHistory.add({ items: qa.items, key: qaKey(m.content) }))}
-                  className="mt-2 w-full rounded bg-emerald-500/20 px-2 py-1.5 text-xs font-medium text-emerald-200 hover:bg-emerald-500/30"
+                  className="mt-2 w-full rounded-sm bg-emerald-500/20 px-2 py-1.5 text-xs font-medium text-emerald-200 hover:bg-emerald-500/30"
                 >
                   🔍 Open QA Mode ({qa.items.length} feature{qa.items.length > 1 ? "s" : ""})
                 </button>
@@ -1992,7 +1992,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
                           if (!actionState[key]) runAction(key, a);
                         })
                       }
-                      className="w-full rounded bg-accent/20 px-2 py-1 text-xs font-medium text-accent hover:bg-accent/30"
+                      className="w-full rounded-sm bg-accent/20 px-2 py-1 text-xs font-medium text-accent hover:bg-accent/30"
                     >
                       ▶ Run all ({pending.length})
                     </button>
@@ -2024,7 +2024,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
         onDrop={(e) => void onDropFiles(e)}
       >
         {dropErr && (
-          <div className="mb-1.5 flex items-center gap-2 rounded border border-red-500/40 bg-red-500/10 px-2 py-1 text-[11px] text-red-300">
+          <div className="mb-1.5 flex items-center gap-2 rounded-sm border border-red-500/40 bg-red-500/10 px-2 py-1 text-[11px] text-red-300">
             <span className="flex-1">{dropErr}</span>
             <button onClick={() => setDropErr(null)} title="Dismiss" className="text-red-300/70 hover:text-red-200">
               ✕
@@ -2036,7 +2036,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
             {drops.map((p, i) => (
               <span
                 key={`${p}-${i}`}
-                className="flex items-center gap-1 rounded border border-edge bg-card px-1.5 py-0.5 text-[11px] text-gray-200"
+                className="flex items-center gap-1 rounded-sm border border-edge bg-card px-1.5 py-0.5 text-[11px] text-gray-200"
               >
                 <span className="shrink-0">📎</span>
                 <span className="max-w-[160px] truncate" title={p}>{p.split(/[\\/]/).pop() || p}</span>
@@ -2074,7 +2074,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
               }
             }}
             placeholder="Ask about all your projects…"
-            className="max-h-[220px] flex-1 resize-none overflow-y-auto bg-transparent text-sm leading-relaxed text-gray-100 caret-accent outline-none placeholder:text-muted/50"
+            className="max-h-[220px] flex-1 resize-none overflow-y-auto bg-transparent text-sm leading-relaxed text-gray-100 caret-accent outline-hidden placeholder:text-muted/50"
           />
         </div>
       </div>
@@ -2232,7 +2232,7 @@ function WatchTick({ content }: { content: string }) {
         👁 live watch · continuation {open ? "▾" : "▸"}
       </button>
       {open && (
-        <div className="mt-1 whitespace-pre-wrap break-words rounded bg-well/40 px-2 py-1 text-[10px] text-muted/70">
+        <div className="mt-1 whitespace-pre-wrap break-words rounded-sm bg-well/40 px-2 py-1 text-[10px] text-muted/70">
           {content}
         </div>
       )}
@@ -2270,7 +2270,7 @@ function ActionCard({
   // and silence is what made people click Confirm again, so say so plainly.
   if (state === "running") {
     return (
-      <div className="flex items-center gap-1.5 rounded border border-accent/30 bg-accent/10 px-2 py-1.5 text-xs text-accent">
+      <div className="flex items-center gap-1.5 rounded-sm border border-accent/30 bg-accent/10 px-2 py-1.5 text-xs text-accent">
         <span className="animate-pulse">●</span>
         <span>
           {isDispatch ? "Dispatching to" : isReview ? "Starting review on" : "Stopping"} <b>{target}</b>…
@@ -2280,21 +2280,21 @@ function ActionCard({
   }
   if (state === "done") {
     return (
-      <div className="rounded border border-emerald-500/30 bg-emerald-500/10 px-2 py-1.5 text-xs text-emerald-300">
+      <div className="rounded-sm border border-emerald-500/30 bg-emerald-500/10 px-2 py-1.5 text-xs text-emerald-300">
         ✓ {doneLabel} <b>{target}</b>
       </div>
     );
   }
   if (state === "dismissed") {
     return (
-      <div className="rounded border border-edge bg-edge/30 px-2 py-1.5 text-xs text-muted line-through">
+      <div className="rounded-sm border border-edge bg-edge/30 px-2 py-1.5 text-xs text-muted line-through">
         {dismissLabel} {target}
       </div>
     );
   }
   if (state === "error") {
     return (
-      <div className="rounded border border-red-500/30 bg-red-500/10 px-2 py-1.5 text-xs text-red-300">
+      <div className="rounded-sm border border-red-500/30 bg-red-500/10 px-2 py-1.5 text-xs text-red-300">
         <div>
           ⚠️ Couldn't {isDispatch ? "dispatch to" : isReview ? "review" : "cancel"} "{target}".
         </div>
@@ -2311,20 +2311,20 @@ function ActionCard({
         </span>
       </div>
       {isDispatch && (
-        <div className="mt-1 max-h-40 overflow-y-auto whitespace-pre-wrap break-words rounded bg-well/60 px-2 py-1 text-xs text-gray-300">
+        <div className="mt-1 max-h-40 overflow-y-auto whitespace-pre-wrap break-words rounded-sm bg-well/60 px-2 py-1 text-xs text-gray-300">
           {action.prompt}
         </div>
       )}
       <div className="mt-2 flex gap-2">
         <button
           onClick={onConfirm}
-          className="rounded bg-accent px-2.5 py-1 text-xs font-medium text-white hover:bg-accent/80"
+          className="rounded-sm bg-accent px-2.5 py-1 text-xs font-medium text-white hover:bg-accent/80"
         >
           ✓ Confirm
         </button>
         <button
           onClick={onDismiss}
-          className="rounded border border-edge px-2.5 py-1 text-xs text-muted hover:bg-edge/50"
+          className="rounded-sm border border-edge px-2.5 py-1 text-xs text-muted hover:bg-edge/50"
         >
           Dismiss
         </button>

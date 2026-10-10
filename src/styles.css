@@ -1,9 +1,49 @@
 @import "@xterm/xterm/css/xterm.css";
+@import "tailwindcss";
 
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
-/* surfaces: ink(frame) · card(blocks) · well(code) — see tailwind.config.js */
+/* The palette and fonts live here now rather than in tailwind.config.js, which
+   Tailwind 4 no longer reads. Every key under @theme becomes both a CSS custom
+   property and a utility, so `--color-card` gives `bg-card`, `text-card`,
+   `border-card`, and `var(--color-card)` in plain CSS.
+   Surfaces, darkest first: well(code) · chrome(titlebar) · card(blocks) ·
+   panel(bars) · ink(frame). */
+@theme {
+  /* Aligned to "Material Theme Palenight" (the VS Code theme this is used
+     alongside) so the whole app reads as an extension of the editor. */
+  --color-chrome: #14161c; /* window titlebar, sits below every panel */
+  --color-ink: #232734; /* app / feed frame */
+  --color-panel: #1c202b; /* sidebars and the input bar */
+  --color-card: #15181f; /* block surfaces, the main reading surface */
+  --color-well: #0d0f14; /* code wells inside blocks, the darkest layer */
+  --color-edge: #313747; /* borders and selection */
+  --color-accent: #7c5cff; /* neon violet, the worktree gradient's violet stop */
+  --color-muted: #8087a8; /* secondary text */
+
+  --font-mono: "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+}
+
+/* Two Tailwind 4 defaults we do not want.
+   A borderless `border` used to mean gray-200 and now means currentColor, which
+   on dark surfaces draws a bright line. A handful of places rely on the old
+   behaviour, so keep a sane default.
+   Buttons also lost `cursor: pointer`, and this app is almost entirely buttons. */
+@layer base {
+  *,
+  ::after,
+  ::before {
+    border-color: var(--color-edge);
+  }
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+  /* v3 painted placeholders gray-400; v4 uses the text colour at 50% opacity,
+     which on our light-on-dark inputs reads as real text. Most inputs already
+     say `placeholder:text-muted`, this covers the rest. */
+  ::placeholder {
+    color: var(--color-muted);
+  }
+}
 
 /* Larger base so the whole UI reads comfortably (matches the user's VS Code at
    18px). All rem-based Tailwind sizes/spacing scale from this. */

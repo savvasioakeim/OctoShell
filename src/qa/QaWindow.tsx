@@ -139,7 +139,7 @@ export function QaWindow() {
       {/* Custom chrome: drag region + per-item progress dots + stick/close. */}
       <div
         data-tauri-drag-region
-        className="flex shrink-0 items-center justify-between border-b border-edge bg-gradient-to-r from-accent/15 via-transparent to-transparent px-3 py-1.5"
+        className="flex shrink-0 items-center justify-between border-b border-edge bg-linear-to-r from-accent/15 via-transparent to-transparent px-3 py-1.5"
       >
         <span data-tauri-drag-region className="flex select-none items-center gap-2 text-[12px] font-semibold text-accent">
           <span>🔍 <span className="text-grad">QA</span></span>
@@ -251,7 +251,7 @@ export function QaWindow() {
             onDragLeave={() => setDropping(false)}
             onDrop={(e) => void onDropImages(e)}
             placeholder="Notes (optional · kept even if you close) — drop screenshots here…"
-            className={`mt-3 min-h-[72px] flex-1 resize-none rounded-lg border bg-card px-3 py-2 text-xs leading-relaxed text-gray-100 outline-none transition-colors placeholder:text-muted/60 focus:border-accent/60 focus:ring-1 focus:ring-accent/30 ${
+            className={`mt-3 min-h-[72px] flex-1 resize-none rounded-lg border bg-card px-3 py-2 text-xs leading-relaxed text-gray-100 outline-hidden transition-colors placeholder:text-muted/60 focus:border-accent/60 focus:ring-1 focus:ring-accent/30 ${
               dropping ? "border-accent bg-accent/5" : "border-edge"
             }`}
           />
@@ -343,7 +343,7 @@ function ServerChip({
         <button
           onClick={() => void navigator.clipboard?.writeText(server.url!)}
           title={msg ? `${label} — ${msg}` : `${label} — copy URL`}
-          className={`rounded px-1.5 py-0.5 ${degraded ? "bg-amber-500/20 text-amber-200" : "bg-edge/60 text-emerald-300/90"}`}
+          className={`rounded-sm px-1.5 py-0.5 ${degraded ? "bg-amber-500/20 text-amber-200" : "bg-edge/60 text-emerald-300/90"}`}
         >
           {degraded ? "⚠ " : ""}{server.url.replace(/^https?:\/\//, "")} ⧉
         </button>
@@ -358,7 +358,7 @@ function ServerChip({
         onClick={onStart}
         disabled={server?.status === "starting"}
         title={msg}
-        className="rounded bg-sky-500/25 px-1.5 py-0.5 text-sky-100 hover:bg-sky-500/35 disabled:opacity-60"
+        className="rounded-sm bg-sky-500/25 px-1.5 py-0.5 text-sky-100 hover:bg-sky-500/35 disabled:opacity-60"
       >
         {server?.status === "starting"
           ? `starting ${label}…`

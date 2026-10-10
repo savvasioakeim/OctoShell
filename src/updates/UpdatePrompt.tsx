@@ -27,7 +27,7 @@ export function UpdatePrompt() {
 
   return (
     <div className="pointer-events-auto fixed bottom-4 right-4 z-[60] w-80 overflow-hidden rounded-xl border border-edge bg-panel shadow-2xl">
-      <div className="border-b border-edge/60 bg-gradient-to-r from-accent/[0.12] to-transparent px-3 py-2">
+      <div className="border-b border-edge/60 bg-linear-to-r from-accent/[0.12] to-transparent px-3 py-2">
         <h2 className="flex items-center gap-2 text-sm font-semibold text-gray-100">
           <span className="h-3.5 w-0.5 rounded-full bg-accent/70" />
           {busy ? "Installing update" : "Update available"}
@@ -40,7 +40,7 @@ export function UpdatePrompt() {
 
       <div className="p-3">
         {u.notes && !busy && (
-          <div className="mb-3 max-h-32 overflow-y-auto whitespace-pre-wrap rounded border border-edge bg-well px-2 py-1.5 text-[11px] leading-relaxed text-muted">
+          <div className="mb-3 max-h-32 overflow-y-auto whitespace-pre-wrap rounded-sm border border-edge bg-well px-2 py-1.5 text-[11px] leading-relaxed text-muted">
             {u.notes}
           </div>
         )}

@@ -34,7 +34,7 @@ export function QaHistoryButton({ onOpen }: { onOpen: (s: QaSession) => void }) 
         ref={btn}
         onClick={toggle}
         title="QA — every QA the orchestrator proposed, with your verdicts"
-        className={`inline-flex h-6 items-center gap-1 rounded border px-1.5 text-[10px] ${
+        className={`inline-flex h-6 items-center gap-1 rounded-sm border px-1.5 text-[10px] ${
           pos
             ? "border-emerald-400/60 bg-emerald-500/15 text-gray-100"
             : "border-emerald-500/40 text-muted hover:bg-emerald-500/15 hover:text-gray-200"
@@ -43,7 +43,7 @@ export function QaHistoryButton({ onOpen }: { onOpen: (s: QaSession) => void }) 
         <span className="text-sm leading-none">🔍</span>
         QA
         {unreviewed > 0 && (
-          <span className="rounded bg-emerald-500/30 px-1 text-[9px] font-semibold text-emerald-100">{unreviewed}</span>
+          <span className="rounded-sm bg-emerald-500/30 px-1 text-[9px] font-semibold text-emerald-100">{unreviewed}</span>
         )}
       </button>
 
@@ -91,7 +91,7 @@ export function QaHistoryButton({ onOpen }: { onOpen: (s: QaSession) => void }) 
                   <button
                     onClick={() => qaHistory.remove(s.id)}
                     title="Remove from history"
-                    className="shrink-0 rounded px-1 text-muted opacity-0 hover:text-red-300 group-hover:opacity-100"
+                    className="shrink-0 rounded-sm px-1 text-muted opacity-0 hover:text-red-300 group-hover:opacity-100"
                   >
                     ✕
                   </button>

@@ -44,7 +44,7 @@ export function AgentTextBlockView({ block }: { block: AgentTextBlock }) {
             this machine run code. */}
         {block.via === "phone" && (
           <span
-            className="rounded border border-amber-400/40 bg-amber-500/10 px-1 text-[10px] text-amber-300"
+            className="rounded-sm border border-amber-400/40 bg-amber-500/10 px-1 text-[10px] text-amber-300"
             title="Sent from the phone companion"
           >
             📱 phone
@@ -56,7 +56,7 @@ export function AgentTextBlockView({ block }: { block: AgentTextBlock }) {
       {long && (
         <button
           onClick={() => setExpanded((e) => !e)}
-          className="mt-1 rounded bg-edge/80 px-2 py-0.5 text-[11px] text-gray-300 hover:bg-accent/40"
+          className="mt-1 rounded-sm bg-edge/80 px-2 py-0.5 text-[11px] text-gray-300 hover:bg-accent/40"
         >
           {expanded ? "▲ Less" : `▼ ${lines.length - TEXT_LINES_CAP} more lines`}
         </button>
@@ -93,7 +93,7 @@ export function AgentApprovalBlockView({
       </div>
       <div className="px-3 py-2">
         {isBash ? (
-          <div className="flex gap-2 overflow-x-auto rounded bg-well px-2 py-1.5">
+          <div className="flex gap-2 overflow-x-auto rounded-sm bg-well px-2 py-1.5">
             <span className="select-none text-green-300">$</span>
             <CodeBlock code={block.toolInput} lang="bash" className="flex-1 text-[14px]" />
           </div>
@@ -101,20 +101,20 @@ export function AgentApprovalBlockView({
           <CodeBlock
             code={block.toolInput}
             lang="json"
-            className="overflow-x-auto rounded bg-well px-2 py-1.5 text-[14px] text-gray-200"
+            className="overflow-x-auto rounded-sm bg-well px-2 py-1.5 text-[14px] text-gray-200"
           />
         )}
         {pending && (
           <div className="mt-2 flex gap-2">
             <button
               onClick={() => onRespond(block.requestId, true)}
-              className="rounded bg-emerald-500/80 px-3 py-1 text-xs font-medium text-white hover:bg-emerald-500"
+              className="rounded-sm bg-emerald-500/80 px-3 py-1 text-xs font-medium text-white hover:bg-emerald-500"
             >
               ✓ Approve
             </button>
             <button
               onClick={() => onRespond(block.requestId, false)}
-              className="rounded border border-red-400/50 px-3 py-1 text-xs font-medium text-red-300 hover:bg-red-500/20"
+              className="rounded-sm border border-red-400/50 px-3 py-1 text-xs font-medium text-red-300 hover:bg-red-500/20"
             >
               ✕ Deny
             </button>
@@ -165,7 +165,7 @@ export function AgentToolBlockView({ block }: { block: AgentToolBlock }) {
             via terminal/create) — a bare "{}" block is just noise, skip it. */}
         {block.toolInput.trim() && block.toolInput.trim() !== "{}" ? (
           isBash ? (
-            <div className="flex gap-2 overflow-x-auto rounded bg-well px-2 py-1.5">
+            <div className="flex gap-2 overflow-x-auto rounded-sm bg-well px-2 py-1.5">
               <span className="select-none text-green-300">$</span>
               <CodeBlock code={block.toolInput} lang="bash" className="flex-1 text-[14px]" />
             </div>
@@ -173,12 +173,12 @@ export function AgentToolBlockView({ block }: { block: AgentToolBlock }) {
             <CodeBlock
               code={block.toolInput}
               lang="json"
-              className="overflow-x-auto rounded bg-well px-2 py-1.5 text-[14px] text-gray-200"
+              className="overflow-x-auto rounded-sm bg-well px-2 py-1.5 text-[14px] text-gray-200"
             />
           )
         ) : null}
         {silentFailure && (
-          <div className="mt-1.5 rounded border border-red-500/30 bg-red-500/10 px-2 py-1.5 text-[12px] text-red-300">
+          <div className="mt-1.5 rounded-sm border border-red-500/30 bg-red-500/10 px-2 py-1.5 text-[12px] text-red-300">
             ⚠️ {block.toolName} failed but returned no output — check the agent's next
             message, or run the command yourself in Shell mode to see the error.
           </div>
@@ -186,7 +186,7 @@ export function AgentToolBlockView({ block }: { block: AgentToolBlock }) {
         {result !== "" && (
           <div className="relative mt-1.5">
             <pre
-              className={`overflow-auto whitespace-pre-wrap break-words rounded px-2 py-1.5 text-[14px] ${
+              className={`overflow-auto whitespace-pre-wrap break-words rounded-sm px-2 py-1.5 text-[14px] ${
                 block.isError ? "bg-red-500/10 text-red-200" : "bg-well/60 text-gray-300"
               }`}
               style={expanded ? undefined : { maxHeight: RESULT_MAX_PX }}
@@ -196,7 +196,7 @@ export function AgentToolBlockView({ block }: { block: AgentToolBlock }) {
             {result.length > 600 && (
               <button
                 onClick={() => setExpanded((e) => !e)}
-                className="mt-1 rounded bg-edge/80 px-2 py-0.5 text-[11px] text-gray-300 hover:bg-accent/40"
+                className="mt-1 rounded-sm bg-edge/80 px-2 py-0.5 text-[11px] text-gray-300 hover:bg-accent/40"
               >
                 {expanded ? "▲ Collapse" : "▼ Show all"}
               </button>

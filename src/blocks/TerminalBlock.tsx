@@ -61,7 +61,7 @@ export function TerminalBlock({
 
   return (
     <div
-      className={`group relative rounded-lg border bg-card shadow-sm transition-colors ${
+      className={`group relative rounded-lg border bg-card shadow-xs transition-colors ${
         liveKeyboard
           ? "border-accent/60 ring-1 ring-accent/40"
           : block.status === "error"
@@ -74,12 +74,12 @@ export function TerminalBlock({
         <StatusDot status={block.status} />
         <code className="flex-1 truncate text-gray-100">{block.command}</code>
         {liveKeyboard && (
-          <span className="rounded bg-accent/25 px-1.5 py-0.5 text-accent">
+          <span className="rounded-sm bg-accent/25 px-1.5 py-0.5 text-accent">
             ⌨ {interactive ? "interactive" : "typing"} · keys go to app
           </span>
         )}
         {block.exitCode !== undefined && block.exitCode !== 0 && (
-          <span className="rounded bg-red-500/20 px-1.5 py-0.5 text-red-300">exit {block.exitCode}</span>
+          <span className="rounded-sm bg-red-500/20 px-1.5 py-0.5 text-red-300">exit {block.exitCode}</span>
         )}
         <span className="text-muted">{fmtTime(block.startedAt)}</span>
       </div>
@@ -162,7 +162,7 @@ function FrozenOutput({ html }: { html: string }) {
           {overflowing && (
             <button
               onClick={() => setExpanded((e) => !e)}
-              className="mt-1 rounded bg-edge/80 px-2 py-0.5 text-[11px] text-gray-300 hover:bg-accent/40"
+              className="mt-1 rounded-sm bg-edge/80 px-2 py-0.5 text-[11px] text-gray-300 hover:bg-accent/40"
             >
               {expanded ? "▲ Collapse" : "▼ Show all"}
             </button>
@@ -180,7 +180,7 @@ function ActionBtn({ label, onClick, children }: { label: string; onClick: () =>
     <button
       title={label}
       onClick={onClick}
-      className="rounded bg-edge/90 px-1.5 py-0.5 text-[11px] text-gray-200 hover:bg-accent/40"
+      className="rounded-sm bg-edge/90 px-1.5 py-0.5 text-[11px] text-gray-200 hover:bg-accent/40"
     >
       {children}
     </button>

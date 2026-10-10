@@ -298,7 +298,7 @@ export function ProjectSidebar(props: Props) {
           endDrag();
         }}
         style={style}
-        className={`group cursor-pointer rounded py-1 pr-2 transition-colors ${
+        className={`group cursor-pointer rounded-sm py-1 pr-2 transition-colors ${
           dragId === t.id ? "opacity-50" : ""
         } ${active ? "bg-accent/25 text-gray-100" : "text-muted hover:bg-edge/60"} ${
           // The open context menu says which row it belongs to -- otherwise, with
@@ -403,7 +403,7 @@ export function ProjectSidebar(props: Props) {
           ? { boxShadow: overGroup.pos === "before" ? "inset 0 2px 0 #7E57C2" : "inset 0 -2px 0 #7E57C2" }
           : {}),
       }}
-      className={`flex cursor-grab items-center gap-1 rounded py-1 pr-1 ${dragGroup === g.id ? "opacity-50" : ""}`}
+      className={`flex cursor-grab items-center gap-1 rounded-sm py-1 pr-1 ${dragGroup === g.id ? "opacity-50" : ""}`}
       title="Drag to reorder · right-click for options"
     >
       <span className="min-w-0 truncate text-[10px] font-semibold uppercase tracking-wider" style={{ color: g.color }}>
@@ -439,7 +439,7 @@ export function ProjectSidebar(props: Props) {
             <div
               key={w.path}
               style={{ paddingLeft: (depth + 1) * 14 + 8 }}
-              className="group flex items-center gap-1.5 rounded py-0.5 pr-1 text-[12px] text-muted/70 hover:bg-edge/40"
+              className="group flex items-center gap-1.5 rounded-sm py-0.5 pr-1 text-[12px] text-muted/70 hover:bg-edge/40"
               title={`${w.path}\nNot open — click to open it as a project`}
             >
               <button
@@ -469,7 +469,7 @@ export function ProjectSidebar(props: Props) {
               <button
                 onClick={() => onRemoveWorktree?.(w)}
                 title="Remove this worktree (frees its branch)"
-                className="shrink-0 rounded px-1 text-muted/50 opacity-0 transition-opacity hover:text-red-300 group-hover:opacity-100"
+                className="shrink-0 rounded-sm px-1 text-muted/50 opacity-0 transition-opacity hover:text-red-300 group-hover:opacity-100"
               >
                 ✕
               </button>
@@ -585,7 +585,7 @@ export function ProjectSidebar(props: Props) {
             }}
             onBlur={() => setWtInput(null)}
             placeholder="branch name… (Enter)"
-            className="w-full rounded-md border border-edge bg-ink px-2 py-1.5 text-xs text-gray-100 outline-none focus:border-accent placeholder:text-muted/60"
+            className="w-full rounded-md border border-edge bg-ink px-2 py-1.5 text-xs text-gray-100 outline-hidden focus:border-accent placeholder:text-muted/60"
           />
         ) : (
           <button
@@ -936,7 +936,7 @@ function ContextMenu({
                   else if (e.key === "Escape") close();
                 }}
                 placeholder="⚡ Give the agent a task…"
-                className="w-full rounded bg-ink px-2 py-1 text-xs text-gray-100 outline-none placeholder:text-muted/60"
+                className="w-full rounded-sm bg-ink px-2 py-1 text-xs text-gray-100 outline-hidden placeholder:text-muted/60"
                 autoFocus
               />
             </div>
@@ -1085,7 +1085,7 @@ function ContextMenu({
                       else if (e.key === "Escape") close();
                     }}
                     placeholder="⚡ Task for every project…"
-                    className="w-full rounded bg-ink px-2 py-1 text-xs text-gray-100 outline-none placeholder:text-muted/60"
+                    className="w-full rounded-sm bg-ink px-2 py-1 text-xs text-gray-100 outline-hidden placeholder:text-muted/60"
                     autoFocus
                   />
                 </div>
@@ -1102,7 +1102,7 @@ function ContextMenu({
                   else if (e.key === "Escape") close();
                 }}
                 placeholder="Group name"
-                className="w-full rounded bg-ink px-2 py-1 text-xs text-gray-100 outline-none"
+                className="w-full rounded-sm bg-ink px-2 py-1 text-xs text-gray-100 outline-hidden"
               />
             </div>
             <div className="flex flex-wrap gap-1.5 px-3 py-1.5">

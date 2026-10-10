@@ -138,7 +138,7 @@ function CopyButton({ text }: { text: string }) {
     <button
       onClick={copy}
       title="Copy to clipboard"
-      className={`flex h-6 w-6 shrink-0 items-center justify-center rounded transition-colors ${
+      className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-sm transition-colors ${
         copied ? "text-emerald-400" : "text-muted hover:bg-white/10 hover:text-gray-200"
       }`}
     >
@@ -156,7 +156,7 @@ function InstallGuide({ k }: { k: DepKey }) {
     <div className="mt-2 space-y-1.5 rounded-lg border border-amber-500/20 bg-amber-500/[0.04] p-2">
       {g.cmd && (
         <div className="flex items-center gap-1.5">
-          <code className="min-w-0 flex-1 truncate rounded bg-black/40 px-2 py-1 text-[11px] text-amber-200/90">
+          <code className="min-w-0 flex-1 truncate rounded-sm bg-black/40 px-2 py-1 text-[11px] text-amber-200/90">
             {g.cmd}
           </code>
           <CopyButton text={g.cmd} />
@@ -276,7 +276,7 @@ export function OnboardingOverlay({ onDone }: { onDone: () => void }) {
   return (
     <div className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-7 bg-ink px-6">
       <div className="text-center">
-        <div className="bg-gradient-to-r from-purple-400 to-cyan-400 bg-clip-text text-2xl font-semibold tracking-tight text-transparent">
+        <div className="bg-linear-to-r from-purple-400 to-cyan-400 bg-clip-text text-2xl font-semibold tracking-tight text-transparent">
           Welcome to OctoShell
         </div>
         <div className="mt-1 text-xs text-muted">
@@ -298,7 +298,7 @@ export function OnboardingOverlay({ onDone }: { onDone: () => void }) {
                 className="flex w-full items-center gap-2 text-left"
               >
                 <span className="text-sm font-medium text-gray-100">AI Orchestration Engines</span>
-                <span className="rounded border border-accent/30 bg-accent/10 px-1.5 py-0.5 text-[10px] font-medium text-accent">
+                <span className="rounded-sm border border-accent/30 bg-accent/10 px-1.5 py-0.5 text-[10px] font-medium text-accent">
                   Required · choose 1
                 </span>
                 <svg
@@ -368,7 +368,7 @@ export function OnboardingOverlay({ onDone }: { onDone: () => void }) {
                 }}
                 state={shellOk ? "pass" : "fail"}
                 badge={
-                  <span className="rounded border border-edge bg-white/5 px-1.5 py-0.5 text-[10px] font-medium text-muted">
+                  <span className="rounded-sm border border-edge bg-white/5 px-1.5 py-0.5 text-[10px] font-medium text-muted">
                     Required
                   </span>
                 }
@@ -381,7 +381,7 @@ export function OnboardingOverlay({ onDone }: { onDone: () => void }) {
                 dep={{ key: "gh", label: "GitHub CLI", why: "Integrated PR and remote management." }}
                 state={health.gh ? "pass" : "neutral"}
                 badge={
-                  <span className="rounded border border-edge bg-white/5 px-1.5 py-0.5 text-[10px] font-medium text-muted">
+                  <span className="rounded-sm border border-edge bg-white/5 px-1.5 py-0.5 text-[10px] font-medium text-muted">
                     Optional
                   </span>
                 }
@@ -396,7 +396,7 @@ export function OnboardingOverlay({ onDone }: { onDone: () => void }) {
           onClick={dismiss}
           disabled={health === null || missingRequired}
           title={missingRequired ? "Install the missing tools above, then restart OctoShell." : undefined}
-          className="rounded-lg bg-gradient-to-r from-purple-600 to-cyan-500 px-6 py-2 text-sm font-semibold text-white transition-all hover:brightness-110 hover:shadow-[0_0_15px_rgba(6,182,212,0.5)] disabled:cursor-not-allowed disabled:from-gray-700 disabled:to-gray-700 disabled:text-muted disabled:shadow-none disabled:saturate-0"
+          className="rounded-lg bg-linear-to-r from-purple-600 to-cyan-500 px-6 py-2 text-sm font-semibold text-white transition-all hover:brightness-110 hover:shadow-[0_0_15px_rgba(6,182,212,0.5)] disabled:cursor-not-allowed disabled:from-gray-700 disabled:to-gray-700 disabled:text-muted disabled:shadow-none disabled:saturate-0"
         >
           {missingRequired ? "Fix required dependencies" : "Get started"}
         </button>

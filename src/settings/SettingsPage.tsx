@@ -163,7 +163,7 @@ function AiTab({
             <p className="text-xs text-muted">No profiles yet — add an account's folder.</p>
           )}
           {profiles.map((p) => (
-            <div key={p.id} className="flex items-center gap-2 rounded border border-edge px-2 py-1.5 text-sm">
+            <div key={p.id} className="flex items-center gap-2 rounded-sm border border-edge px-2 py-1.5 text-sm">
               <span className="font-medium">{p.name}</span>
               <span className="flex-1 truncate text-xs text-muted">{p.configDir}</span>
               <button
@@ -177,7 +177,7 @@ function AiTab({
           ))}
           <button
             onClick={() => void addProfile()}
-            className="btn-grad rounded px-3 py-1.5 text-sm font-medium"
+            className="btn-grad rounded-sm px-3 py-1.5 text-sm font-medium"
           >
             + Add profile…
           </button>
@@ -344,7 +344,7 @@ function AiTab({
           value={globalRules}
           onChange={(e) => settingsStore.setGlobalRules(e.target.value)}
           placeholder={"- Follow the project's linting rules\n- Don't add dependencies without a reason"}
-          className="min-h-[120px] w-full resize-y rounded border border-edge bg-well px-2 py-1.5 text-sm leading-relaxed text-gray-100 outline-none focus:border-accent"
+          className="min-h-[120px] w-full resize-y rounded-sm border border-edge bg-well px-2 py-1.5 text-sm leading-relaxed text-gray-100 outline-hidden focus:border-accent"
         />
       </Section>
 
@@ -367,7 +367,7 @@ function AiTab({
                 step={0.5}
                 value={spendLimitUsd}
                 onChange={(e) => settingsStore.setSpendLimit(Math.max(0, Number(e.target.value) || 0))}
-                className="w-24 rounded border border-edge bg-well px-2 py-1.5 text-sm text-gray-100 outline-none focus:border-accent"
+                className="w-24 rounded-sm border border-edge bg-well px-2 py-1.5 text-sm text-gray-100 outline-hidden focus:border-accent"
               />
               <span className="text-sm text-muted">/ session</span>
             </div>
@@ -434,7 +434,7 @@ function OrchestratorMcpSection({ cwds }: { cwds: string[] }) {
             return (
               <label
                 key={s.name}
-                className="flex cursor-pointer items-center gap-2 rounded border border-edge px-2 py-1.5 text-sm hover:border-accent"
+                className="flex cursor-pointer items-center gap-2 rounded-sm border border-edge px-2 py-1.5 text-sm hover:border-accent"
               >
                 <input
                   type="checkbox"
@@ -443,7 +443,7 @@ function OrchestratorMcpSection({ cwds }: { cwds: string[] }) {
                   className="accent-accent"
                 />
                 <span className="font-medium">{s.name}</span>
-                <span className="ml-auto rounded bg-well px-1.5 py-0.5 text-[10px] uppercase text-muted">
+                <span className="ml-auto rounded-sm bg-well px-1.5 py-0.5 text-[10px] uppercase text-muted">
                   {s.transport}
                 </span>
               </label>
@@ -459,7 +459,7 @@ function OrchestratorMcpSection({ cwds }: { cwds: string[] }) {
             return (
               <label
                 key={name}
-                className="flex cursor-pointer items-center gap-2 rounded border border-edge px-2 py-1.5 text-sm hover:border-accent"
+                className="flex cursor-pointer items-center gap-2 rounded-sm border border-edge px-2 py-1.5 text-sm hover:border-accent"
               >
                 <input
                   type="checkbox"
@@ -474,7 +474,7 @@ function OrchestratorMcpSection({ cwds }: { cwds: string[] }) {
                     shadowed by your config
                   </span>
                 )}
-                <span className="ml-auto rounded bg-well px-1.5 py-0.5 text-[10px] uppercase text-muted">mod</span>
+                <span className="ml-auto rounded-sm bg-well px-1.5 py-0.5 text-[10px] uppercase text-muted">mod</span>
               </label>
             );
           })}
@@ -590,7 +590,7 @@ function LocalLlmTab() {
               value={ollama.baseUrl}
               onChange={(e) => settingsStore.setOllama({ baseUrl: e.target.value })}
               placeholder="http://localhost:11434"
-              className="w-64 rounded-lg border border-edge bg-well px-2.5 py-1.5 text-sm text-gray-100 outline-none focus:border-accent"
+              className="w-64 rounded-lg border border-edge bg-well px-2.5 py-1.5 text-sm text-gray-100 outline-hidden focus:border-accent"
             />
           </Field>
           <button
@@ -643,7 +643,7 @@ function LocalLlmTab() {
               onChange={(e) => setPullTag(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && void runPull(pullTag)}
               placeholder="qwen2.5-coder:7b"
-              className="w-64 rounded-lg border border-edge bg-well px-2.5 py-1.5 font-mono text-sm text-gray-100 outline-none focus:border-accent"
+              className="w-64 rounded-lg border border-edge bg-well px-2.5 py-1.5 font-mono text-sm text-gray-100 outline-hidden focus:border-accent"
             />
           </Field>
           <button
@@ -888,7 +888,7 @@ function ModelCatalog({
                   <span className="font-mono text-sm text-gray-100">{m.tag}</span>
                   <span className="text-[10px] text-muted">{m.size}</span>
                   <span
-                    className={`rounded px-1.5 py-0.5 text-[9px] uppercase tracking-wide ${
+                    className={`rounded-sm px-1.5 py-0.5 text-[9px] uppercase tracking-wide ${
                       m.tools ? "bg-emerald-500/15 text-emerald-300" : "bg-amber-500/15 text-amber-300"
                     }`}
                   >
@@ -923,7 +923,7 @@ function ModelCatalog({
                 value={filter}
                 onChange={(e) => setFilter(e.target.value)}
                 placeholder="filter…"
-                className="w-32 rounded border border-edge bg-well px-2 py-0.5 text-xs text-gray-100 outline-none focus:border-accent"
+                className="w-32 rounded-sm border border-edge bg-well px-2 py-0.5 text-xs text-gray-100 outline-hidden focus:border-accent"
               />
             )}
           </div>
@@ -1157,7 +1157,7 @@ function WorkspaceTab() {
               value={workspace.baseBranch}
               onChange={(e) => set({ baseBranch: e.target.value })}
               placeholder="(default: main worktree HEAD, e.g. main/dev)"
-              className="rounded border border-edge bg-well px-2 py-1.5 text-sm text-gray-100 outline-none focus:border-accent"
+              className="rounded-sm border border-edge bg-well px-2 py-1.5 text-sm text-gray-100 outline-hidden focus:border-accent"
             />
           </Field>
         </div>
@@ -1283,12 +1283,12 @@ function EnvVarsSection() {
         onChange={(e) => setText(e.target.value)}
         spellCheck={false}
         placeholder={"SLACK_MCP_XOXC_TOKEN\nSLACK_MCP_XOXD_TOKEN"}
-        className="min-h-[90px] w-full resize-y rounded border border-edge bg-well px-2 py-1.5 font-mono text-xs leading-relaxed text-gray-100 outline-none focus:border-accent"
+        className="min-h-[90px] w-full resize-y rounded-sm border border-edge bg-well px-2 py-1.5 font-mono text-xs leading-relaxed text-gray-100 outline-hidden focus:border-accent"
       />
       <div className="mt-2 flex items-center gap-2">
         <button
           onClick={() => void save()}
-          className="cursor-pointer rounded border border-edge px-2 py-1 text-xs text-gray-200 hover:bg-edge"
+          className="cursor-pointer rounded-sm border border-edge px-2 py-1 text-xs text-gray-200 hover:bg-edge"
         >
           Apply
         </button>
@@ -1341,7 +1341,7 @@ function UpdatesSection() {
         <button
           onClick={() => void updateStore.check(true)}
           disabled={checking}
-          className="rounded border border-edge px-2 py-1 text-xs hover:border-accent disabled:opacity-50"
+          className="rounded-sm border border-edge px-2 py-1 text-xs hover:border-accent disabled:opacity-50"
         >
           {checking ? "Checking…" : "Check now"}
         </button>
@@ -1397,7 +1397,7 @@ function SystemTab({ onSandboxLogin, onShowOnboarding }: { onSandboxLogin: () =>
             onChange={(e) =>
               settingsStore.setSystem({ scrollback: Math.max(200, Math.min(50000, Number(e.target.value) || 1000)) })
             }
-            className="w-32 rounded border border-edge bg-well px-2 py-1.5 text-sm text-gray-100 outline-none focus:border-accent"
+            className="w-32 rounded-sm border border-edge bg-well px-2 py-1.5 text-sm text-gray-100 outline-hidden focus:border-accent"
           />
           <span className="text-sm text-muted">lines</span>
         </div>
@@ -1416,7 +1416,7 @@ function SystemTab({ onSandboxLogin, onShowOnboarding }: { onSandboxLogin: () =>
         <div className="mt-3 flex items-center gap-3">
           <button
             onClick={onSandboxLogin}
-            className="btn-grad rounded px-3 py-1.5 text-sm font-medium"
+            className="btn-grad rounded-sm px-3 py-1.5 text-sm font-medium"
           >
             Sandbox agent login (one-time)
           </button>
@@ -1440,7 +1440,7 @@ function SystemTab({ onSandboxLogin, onShowOnboarding }: { onSandboxLogin: () =>
       >
         <button
           onClick={onShowOnboarding}
-          className="btn-grad rounded px-3 py-1.5 text-sm font-medium"
+          className="btn-grad rounded-sm px-3 py-1.5 text-sm font-medium"
         >
           Re-run health check
         </button>
@@ -1453,7 +1453,7 @@ function SystemTab({ onSandboxLogin, onShowOnboarding }: { onSandboxLogin: () =>
         <button
           onClick={() => void runVacuum()}
           disabled={busy}
-          className="btn-grad rounded px-3 py-1.5 text-sm font-medium disabled:opacity-60"
+          className="btn-grad rounded-sm px-3 py-1.5 text-sm font-medium disabled:opacity-60"
         >
           {busy ? "Compacting…" : "Compact now"}
         </button>
@@ -1529,7 +1529,7 @@ function SkillsTab({ projects }: { projects: SettingsProject[] }) {
           <select
             value={cwd}
             onChange={(e) => setCwd(e.target.value)}
-            className="w-full rounded border border-edge bg-well px-2 py-1.5 text-sm"
+            className="w-full rounded-sm border border-edge bg-well px-2 py-1.5 text-sm"
           >
             <option value="">— none (personal and plugin skills only) —</option>
             {projects.map((p) => (
@@ -1559,7 +1559,7 @@ function SkillsTab({ projects }: { projects: SettingsProject[] }) {
                 <label
                   key={`${s.source}:${s.path}`}
                   title={s.path}
-                  className="flex cursor-pointer items-start gap-2 rounded border border-edge px-2 py-1.5 text-sm hover:border-accent"
+                  className="flex cursor-pointer items-start gap-2 rounded-sm border border-edge px-2 py-1.5 text-sm hover:border-accent"
                 >
                   <input
                     type="checkbox"
@@ -1573,7 +1573,7 @@ function SkillsTab({ projects }: { projects: SettingsProject[] }) {
                       <span className="mt-0.5 block truncate text-xs text-muted">{s.description}</span>
                     )}
                   </span>
-                  <span className="mt-0.5 shrink-0 rounded bg-well px-1.5 py-0.5 text-[10px] uppercase text-muted">
+                  <span className="mt-0.5 shrink-0 rounded-sm bg-well px-1.5 py-0.5 text-[10px] uppercase text-muted">
                     {SOURCE_LABEL[s.source] ?? s.source}
                   </span>
                 </label>
@@ -1680,7 +1680,7 @@ function ProjectScriptRow({
             defaultValue={scripts.dev ?? ""}
             onChange={(e) => projectConfigStore.set(project.cwd, "dev", e.target.value)}
             placeholder="e.g. npm run dev · npm start"
-            className="w-full rounded bg-ink px-2 py-1.5 text-xs text-gray-100 outline-none placeholder:text-muted/50 focus:ring-1 focus:ring-accent/50"
+            className="w-full rounded-sm bg-ink px-2 py-1.5 text-xs text-gray-100 outline-hidden placeholder:text-muted/50 focus:ring-1 focus:ring-accent/50"
           />
         </label>
         <label className="flex flex-col gap-1">
@@ -1689,7 +1689,7 @@ function ProjectScriptRow({
             defaultValue={scripts.test ?? ""}
             onChange={(e) => projectConfigStore.set(project.cwd, "test", e.target.value)}
             placeholder="e.g. npm test"
-            className="w-full rounded bg-ink px-2 py-1.5 text-xs text-gray-100 outline-none placeholder:text-muted/50 focus:ring-1 focus:ring-accent/50"
+            className="w-full rounded-sm bg-ink px-2 py-1.5 text-xs text-gray-100 outline-hidden placeholder:text-muted/50 focus:ring-1 focus:ring-accent/50"
           />
         </label>
       </div>
@@ -1714,7 +1714,7 @@ function TrackedPortsField({ ports, onChange }: { ports: number[]; onChange: (v:
       </p>
       <div className="flex flex-wrap items-center gap-1.5">
         {ports.map((p) => (
-          <span key={p} className="flex items-center gap-1 rounded border border-edge bg-well/50 px-1.5 py-0.5 font-mono text-xs text-gray-200">
+          <span key={p} className="flex items-center gap-1 rounded-sm border border-edge bg-well/50 px-1.5 py-0.5 font-mono text-xs text-gray-200">
             :{p}
             <button onClick={() => onChange(ports.filter((x) => x !== p))} title="Remove" className="text-muted hover:text-red-300">
               ✕
@@ -1727,7 +1727,7 @@ function TrackedPortsField({ ports, onChange }: { ports: number[]; onChange: (v:
           onKeyDown={(e) => { if (e.key === "Enter") add(); }}
           onBlur={add}
           placeholder="add port…"
-          className="w-24 rounded bg-ink px-2 py-0.5 text-xs text-gray-100 outline-none placeholder:text-muted/50 focus:ring-1 focus:ring-accent/50"
+          className="w-24 rounded-sm bg-ink px-2 py-0.5 text-xs text-gray-100 outline-hidden placeholder:text-muted/50 focus:ring-1 focus:ring-accent/50"
         />
       </div>
     </div>
@@ -1792,10 +1792,10 @@ function WorkspaceTransferSection() {
       desc="Your chat history and memory already live in one shared database, but the project list and its session ids do not — so a fresh install starts empty. Export here, then Import in the other build to bring everything across."
     >
       <div className="flex flex-wrap items-center gap-3">
-        <button onClick={() => void doExport()} disabled={busy} className="btn-grad rounded px-3 py-1.5 text-sm font-medium disabled:opacity-60">
+        <button onClick={() => void doExport()} disabled={busy} className="btn-grad rounded-sm px-3 py-1.5 text-sm font-medium disabled:opacity-60">
           Export from this build
         </button>
-        <button onClick={() => void doImport()} disabled={busy || !snap} className="rounded border border-edge px-3 py-1.5 text-sm text-gray-200 hover:bg-edge disabled:opacity-40">
+        <button onClick={() => void doImport()} disabled={busy || !snap} className="rounded-sm border border-edge px-3 py-1.5 text-sm text-gray-200 hover:bg-edge disabled:opacity-40">
           Import into this build
         </button>
         <span className="text-xs text-muted">
@@ -1830,7 +1830,7 @@ function ModsSection() {
         <button
           onClick={() => void modStore.refresh()}
           disabled={loading}
-          className="btn-grad rounded px-3 py-1.5 text-sm font-medium disabled:opacity-60"
+          className="btn-grad rounded-sm px-3 py-1.5 text-sm font-medium disabled:opacity-60"
         >
           {loading ? "Scanning…" : "Reload mods"}
         </button>
@@ -1838,7 +1838,7 @@ function ModsSection() {
           onClick={() => void navigator.clipboard?.writeText(dir)}
           disabled={!dir}
           title={dir}
-          className="rounded border border-edge px-3 py-1.5 text-sm text-gray-200 hover:bg-edge disabled:opacity-40"
+          className="rounded-sm border border-edge px-3 py-1.5 text-sm text-gray-200 hover:bg-edge disabled:opacity-40"
         >
           Copy folder path
         </button>
@@ -1875,7 +1875,7 @@ function ModsSection() {
                         modStore.setEnabled(m.manifest!.id, !enabled);
                         force((n) => n + 1);
                       }}
-                      className={`shrink-0 rounded border px-2 py-0.5 text-[11px] ${
+                      className={`shrink-0 rounded-sm border px-2 py-0.5 text-[11px] ${
                         enabled
                           ? "border-emerald-400/50 bg-emerald-500/15 text-emerald-300"
                           : "border-edge text-muted hover:bg-edge"
@@ -1988,7 +1988,7 @@ function MobileSharingSection() {
                 value={mobileCfg.token}
                 onChange={(e) => settingsStore.setMobile({ token: e.target.value })}
                 placeholder="eyJhIjoi…"
-                className="w-full rounded border border-edge bg-well px-2 py-1.5 text-sm"
+                className="w-full rounded-sm border border-edge bg-well px-2 py-1.5 text-sm"
               />
             </Field>
             <Field label="Public hostname you routed to it">
@@ -1996,7 +1996,7 @@ function MobileSharingSection() {
                 value={mobileCfg.hostname}
                 onChange={(e) => settingsStore.setMobile({ hostname: e.target.value })}
                 placeholder="mobile.example.com"
-                className="w-full rounded border border-edge bg-well px-2 py-1.5 text-sm"
+                className="w-full rounded-sm border border-edge bg-well px-2 py-1.5 text-sm"
               />
             </Field>
             <Field label="Local port (must match the tunnel's public-hostname service)">
@@ -2004,7 +2004,7 @@ function MobileSharingSection() {
                 type="number"
                 value={mobileCfg.port}
                 onChange={(e) => settingsStore.setMobile({ port: Number(e.target.value) || 8787 })}
-                className="w-32 rounded border border-edge bg-well px-2 py-1.5 text-sm"
+                className="w-32 rounded-sm border border-edge bg-well px-2 py-1.5 text-sm"
               />
             </Field>
             {/* This is the trade the mode makes, and it should be impossible to
@@ -2056,7 +2056,7 @@ function MobileSharingSection() {
           <button
             onClick={() => void mobileStore.start(minutes)}
             disabled={m.busy}
-            className="btn-grad rounded px-3 py-1.5 text-sm font-medium disabled:opacity-60"
+            className="btn-grad rounded-sm px-3 py-1.5 text-sm font-medium disabled:opacity-60"
           >
             {m.busy ? "Starting…" : "Start sharing"}
           </button>
@@ -2092,7 +2092,7 @@ function MobileSharingSection() {
             <button
               onClick={() => void mobileStore.stop()}
               disabled={m.busy}
-              className="rounded border border-red-500/50 px-3 py-1.5 text-sm text-red-300 hover:bg-red-500/10 disabled:opacity-60"
+              className="rounded-sm border border-red-500/50 px-3 py-1.5 text-sm text-red-300 hover:bg-red-500/10 disabled:opacity-60"
             >
               Stop sharing
             </button>
@@ -2139,7 +2139,7 @@ function MobileSharingSection() {
                     that nobody wants to retype on a phone keyboard. */}
                 <TunnelQr url={m.tunnelUrl} />
                 {m.tunnelConnections !== null && m.tunnelConnections < m.tunnelHealthyConnections && (
-                  <p className="rounded border border-amber-400/40 bg-amber-500/10 px-2 py-1 text-xs text-amber-300">
+                  <p className="rounded-sm border border-amber-400/40 bg-amber-500/10 px-2 py-1 text-xs text-amber-300">
                     Connected to only <strong>{m.tunnelConnections} of {m.tunnelHealthyConnections}</strong>{" "}
                     Cloudflare locations. The address may work from this computer and fail from your
                     phone, because a request arriving somewhere the tunnel isn't connected has
@@ -2147,7 +2147,7 @@ function MobileSharingSection() {
                   </p>
                 )}
                 {m.tunnelUrlIsNew && (
-                  <p className="rounded border border-amber-400/40 bg-amber-500/10 px-2 py-1 text-xs text-amber-300">
+                  <p className="rounded-sm border border-amber-400/40 bg-amber-500/10 px-2 py-1 text-xs text-amber-300">
                     This address is <strong>new</strong>. Anything pointing at the previous one — a
                     saved link, your phone's history, an installed app — will say the site can't be
                     reached. Scan the code again, or use a named tunnel to stop the address moving.
@@ -2159,7 +2159,7 @@ function MobileSharingSection() {
                 </p>
                 <button
                   onClick={() => void mobileStore.stopTunnel()}
-                  className="rounded border border-edge px-2 py-1 text-xs text-muted hover:bg-edge"
+                  className="rounded-sm border border-edge px-2 py-1 text-xs text-muted hover:bg-edge"
                 >
                   Close the public address
                 </button>
@@ -2169,7 +2169,7 @@ function MobileSharingSection() {
                 <button
                   onClick={() => void mobileStore.startTunnel()}
                   disabled={m.tunnelBusy}
-                  className="rounded border border-edge px-3 py-1.5 text-sm text-gray-200 hover:bg-edge disabled:opacity-60"
+                  className="rounded-sm border border-edge px-3 py-1.5 text-sm text-gray-200 hover:bg-edge disabled:opacity-60"
                 >
                   {m.tunnelBusy ? "Opening…" : "Open a public address"}
                 </button>
@@ -2288,7 +2288,7 @@ function MemorySection() {
 function Section({ title, desc, children }: { title: string; desc: string; children: React.ReactNode }) {
   return (
     <section className="overflow-hidden rounded-xl border border-edge bg-card transition-colors hover:border-edge/80">
-      <div className="border-b border-edge/60 bg-gradient-to-r from-accent/[0.07] to-transparent px-4 py-2.5">
+      <div className="border-b border-edge/60 bg-linear-to-r from-accent/[0.07] to-transparent px-4 py-2.5">
         <h2 className="flex items-center gap-2 text-sm font-semibold text-gray-100">
           <span className="h-3.5 w-0.5 rounded-full bg-accent/70" />
           {title}
@@ -2322,7 +2322,7 @@ function Select({
     <select
       value={value}
       onChange={(e) => onChange(e.target.value)}
-      className="rounded-lg border border-edge bg-well px-2.5 py-1.5 text-sm text-gray-100 outline-none transition-colors hover:border-accent/40 focus:border-accent"
+      className="rounded-lg border border-edge bg-well px-2.5 py-1.5 text-sm text-gray-100 outline-hidden transition-colors hover:border-accent/40 focus:border-accent"
     >
       {options.map((o) => (
         <option key={o.value} value={o.value}>
@@ -2391,7 +2391,7 @@ function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (v: 
         }`}
       >
         <span
-          className={`absolute h-[14px] w-[14px] rounded-full bg-white shadow transition-transform ${
+          className={`absolute h-[14px] w-[14px] rounded-full bg-white shadow-sm transition-transform ${
             checked ? "translate-x-[16px]" : "translate-x-[2px]"
           }`}
         />
@@ -2466,7 +2466,7 @@ function StrategyRolesTab() {
           <div className="text-xs font-semibold uppercase tracking-wide text-muted">Your roles</div>
           <button
             onClick={() => strategyStore.addRole()}
-            className="rounded border border-edge px-2 py-1 text-[11px] text-muted hover:bg-edge/50 hover:text-gray-200"
+            className="rounded-sm border border-edge px-2 py-1 text-[11px] text-muted hover:bg-edge/50 hover:text-gray-200"
           >
             ＋ Add role
           </button>
@@ -2495,13 +2495,13 @@ function RoleCard({ role }: { role: StrategyRole }) {
             <span className="flex-1 text-sm font-medium text-gray-100">{role.name}</span>
             <button
               onClick={() => setOpen((v) => !v)}
-              className="rounded px-2 py-0.5 text-[11px] text-muted hover:bg-edge hover:text-gray-200"
+              className="rounded-sm px-2 py-0.5 text-[11px] text-muted hover:bg-edge hover:text-gray-200"
             >
               {open ? "Hide prompt" : "View prompt"}
             </button>
             <button
               onClick={() => strategyStore.cloneRole(role.id)}
-              className="rounded border border-edge px-2 py-0.5 text-[11px] text-muted hover:bg-edge/50 hover:text-gray-200"
+              className="rounded-sm border border-edge px-2 py-0.5 text-[11px] text-muted hover:bg-edge/50 hover:text-gray-200"
               title="Copy into an editable custom role"
             >
               ⎘ Clone
@@ -2512,11 +2512,11 @@ function RoleCard({ role }: { role: StrategyRole }) {
             <input
               value={role.name}
               onChange={(e) => strategyStore.updateRole(role.id, { name: e.target.value })}
-              className="flex-1 rounded border border-edge bg-panel px-2 py-1 text-sm font-medium text-gray-100 outline-none focus:border-accent"
+              className="flex-1 rounded-sm border border-edge bg-panel px-2 py-1 text-sm font-medium text-gray-100 outline-hidden focus:border-accent"
             />
             <button
               onClick={() => strategyStore.deleteRole(role.id)}
-              className="rounded px-1.5 py-1 text-[11px] text-muted hover:text-red-300"
+              className="rounded-sm px-1.5 py-1 text-[11px] text-muted hover:text-red-300"
               title="Delete role"
             >
               ✕
@@ -2534,7 +2534,7 @@ function RoleCard({ role }: { role: StrategyRole }) {
               onChange={(e) => strategyStore.updateRole(role.id, { prompt: e.target.value })}
               rows={4}
               placeholder="Describe who this participant is and the lens they bring to the discussion…"
-              className="w-full resize-y rounded border border-edge bg-panel px-2 py-1.5 text-xs leading-relaxed text-gray-200 outline-none focus:border-accent"
+              className="w-full resize-y rounded-sm border border-edge bg-panel px-2 py-1.5 text-xs leading-relaxed text-gray-200 outline-hidden focus:border-accent"
             />
           )}
         </div>
