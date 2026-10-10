@@ -1,5 +1,10 @@
 # 🐙 OctoShell
 
+[![Mentioned in Awesome Claude Code](https://awesome.re/mentioned-badge.svg)](https://github.com/hesreallyhim/awesome-claude-code)
+[![Build](https://github.com/savvasioakeim/OctoShell/actions/workflows/build.yml/badge.svg)](https://github.com/savvasioakeim/OctoShell/actions/workflows/build.yml)
+[![Latest release](https://img.shields.io/github/v/release/savvasioakeim/OctoShell)](https://github.com/savvasioakeim/OctoShell/releases/latest)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 **A desktop workspace for running coding agents, on Windows and macOS.**
 
 You give it a task. It creates a Git worktree, starts an agent in it, and shows you what the agent is doing while it does it. Several can run at once, in different repositories, without touching each other's files.
@@ -51,6 +56,13 @@ Nothing in that sequence needs you to switch branches, find a free port, or expl
 **Your phone, when you are away from the desk.** Share the workspace for a chosen length of time to read what agents are doing and answer an approval. Nothing is reachable until you press Start, the access code expires by itself, and letting the phone start new work is a separate switch.
 
 **Which agents.** Claude Code and Gemini CLI directly, plus any agent that speaks the Agent Client Protocol: Codex, OpenCode, Cursor, Copilot, Kiro. Provider, model and approval mode are set per project. Local models through Ollama.
+
+## Screenshots
+
+| | |
+|---|---|
+| ![Strategy Mode, four agents mid round](docs/img/strategy-round.png)<br>**Strategy Mode.** Agents argue a change in roles before any code is written, and you moderate each round. | ![The plan Strategy Mode produced](docs/img/strategy-plan.png)<br>**The plan it produces.** Goal, architecture, decisions, rejected alternatives, risks, steps, acceptance criteria. Save it, export it or execute it. |
+| ![The Ports panel listing listening ports](docs/img/ports.png)<br>**Ports and dev servers.** What is listening, which agent asked for it, and a way to kill it. | ![OctoShell settings open on a phone](docs/img/phone-settings.png)<br>**From your phone.** Read what agents are doing and answer an approval while you are away from the desk. |
 
 ## What it is not
 
@@ -150,6 +162,27 @@ Every child process is tied to a kill-on-close Windows Job Object, or to a per-c
 - Orchestrator actions are confirm-per-click unless you enable Auto. A session spend limit in Settings halts everything when it is hit.
 - The Docker sandbox isolates the host from agent commands. It does not protect the worktree itself and does not prevent network exfiltration: the mounted worktree is read-write and networking is on, because installs need it.
 - Macros never run by themselves. They put a command in the input for you to approve.
+
+## Where your data lives
+
+Everything stays on your machine. There is no account and no server of ours.
+
+On Windows:
+
+- `%APPDATA%\com.octoshell.app` holds `octoshell.db`, the SQLite database with your projects, sessions, QA passes and saved plans, plus `mods/`, `push.json` and `timezone.txt`.
+- `%LOCALAPPDATA%\com.octoshell.app\EBWebView` is WebView2's own folder. Your settings, profiles and per-session preferences live in its local storage, not in the database.
+
+On macOS both sit under `~/Library/Application Support/com.octoshell.app`.
+
+To back up your work, copy `octoshell.db`. To wipe OctoShell completely, uninstall it and delete both folders. Worktrees are not in there: they are real directories wherever you created them, and removing a worktree in the app asks before it deletes the folder.
+
+Agent credentials are not ours either. Claude Code and the ACP adapters keep their own logins in their own locations, and API keys you set are read from the environment.
+
+## What CI runs
+
+Every pull request is built on `windows-latest` and `macos-latest`: `npm ci`, `npm run build`, then `npm run tauri build -- --no-bundle`. `cargo clippy --all-targets` runs on both but does not block, because 20 warnings are still outstanding; it will become a gate once they are cleared. Release builds are a separate workflow, triggered by a version tag, and they produce the signed installers and the updater manifest.
+
+Note that `macos-latest` is Apple Silicon, so nothing here would catch an Intel-only failure. That is one reason there is no Intel build.
 
 ## Contributing
 
