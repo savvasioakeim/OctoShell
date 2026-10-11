@@ -25,6 +25,7 @@ import { useSettings } from "../settings/settingsStore";
 import { dragHasFiles, filesFromDrop, saveDroppedFile } from "../util/drop";
 import { memoryStore, type Recalled } from "../memory/memoryStore";
 import { platform, shellLabel } from "../platform/platform";
+import { setTaskbarDot } from "../util/taskbarDot";
 import {
   statusOf,
   STATUS_COLOR,
@@ -821,6 +822,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
       void client.cancel(id);
       currentReqRef.current = null;
     }
+    turnCancelledRef.current = true;
     setThinking(false);
   }, []);
 
@@ -832,6 +834,27 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
   messagesRef.current = messages;
   const thinkingRef = useRef(thinking);
   thinkingRef.current = thinking;
+
+  // The taskbar dot. The agents finishing one by one is not the event worth
+  // leaving the window for; the orchestrator landing is, so that is what the
+  // app icon reports: pulsing blue while it thinks, a green dot when the turn
+  // lands, red when it failed. Stopping a turn yourself is not a result, so it
+  // clears instead (the flag is a ref because `stopTurn` runs before the
+  // effect below sees `thinking` go false, and would otherwise be overwritten).
+  const turnCancelledRef = useRef(false);
+  const wasThinkingRef = useRef(false);
+  useEffect(() => {
+    if (thinking) {
+      setTaskbarDot("working");
+    } else if (wasThinkingRef.current) {
+      const last = messages[messages.length - 1];
+      // The turn reports its own failure as an assistant message (see `ask`).
+      const failed = last?.role === "assistant" && last.content.startsWith("⚠️");
+      setTaskbarDot(turnCancelledRef.current ? "none" : failed ? "error" : "done");
+    }
+    turnCancelledRef.current = false;
+    wasThinkingRef.current = thinking;
+  }, [thinking, messages]);
   const sessionsRef = useRef(sessions);
   sessionsRef.current = sessions;
   const chatIdRef = useRef(chatId);
@@ -884,6 +907,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
       void client.cancel(id);
       currentReqRef.current = null;
     }
+    turnCancelledRef.current = true;
     setThinking(false);
     // Halt the autonomy loop so a finished agent can't re-ping the orchestrator.
     watchedRef.current.clear();
