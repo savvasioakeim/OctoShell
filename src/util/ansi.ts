@@ -32,17 +32,23 @@ export function stripAnsi(input: string): string {
   return forwardAsSpaces(input).replace(/\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]/g, "");
 }
 
-const DEFAULT_FG = "#A6ACCD"; // matches the live xterm foreground (Palenight)
-const DEFAULT_BG = "#15181F"; // matches `card` (only used for inverse text)
-
-// Standard + bright 16-color palette (0–15).
-const BASE16 = [
-  "#0b0e14", "#f7768e", "#9ece6a", "#e0af68", "#7aa2f7", "#bb9af7", "#7dcfff", "#a9b1d6",
-  "#414868", "#ff7a93", "#b9f27c", "#ff9e64", "#7da6ff", "#c0a6f7", "#b4f9f8", "#c0caf5",
-];
+// Colours are written as references to the palette, not as values.
+//
+// This HTML is produced once, when the command finishes, and then kept for
+// as long as the block exists. A literal colour in it would be the colour
+// of whichever theme happened to be in force at that moment, so switching
+// theme would re-colour the live terminal and leave the whole scrollback
+// behind. These variables are set by applyPalette (see util/theme), which
+// means the browser re-colours every finished command for us.
+//
+// 256-colour and 24-bit escapes stay literal: those are a colour the
+// program asked for by number, not one of the sixteen the theme owns.
+const fgOf = () => "var(--octo-fg)";
+const bgOf = () => "var(--color-card)"; // only used for inverse text
+const base16 = (n: number) => `var(--ansi-${n})`;
 
 function color256(n: number): string {
-  if (n < 16) return BASE16[n];
+  if (n < 16) return base16(n);
   if (n < 232) {
     const i = n - 16;
     const r = Math.floor(i / 36), g = Math.floor((i % 36) / 6), b = i % 6;
@@ -80,12 +86,12 @@ function applySgr(state: SgrState, codes: number[]): void {
     else if (c === 23) state.italic = false;
     else if (c === 24) state.underline = false;
     else if (c === 27) state.inverse = false;
-    else if (c >= 30 && c <= 37) state.fg = BASE16[c - 30];
+    else if (c >= 30 && c <= 37) state.fg = base16(c - 30);
     else if (c === 39) state.fg = undefined;
-    else if (c >= 40 && c <= 47) state.bg = BASE16[c - 40];
+    else if (c >= 40 && c <= 47) state.bg = base16(c - 40);
     else if (c === 49) state.bg = undefined;
-    else if (c >= 90 && c <= 97) state.fg = BASE16[c - 90 + 8];
-    else if (c >= 100 && c <= 107) state.bg = BASE16[c - 100 + 8];
+    else if (c >= 90 && c <= 97) state.fg = base16(c - 90 + 8);
+    else if (c >= 100 && c <= 107) state.bg = base16(c - 100 + 8);
     else if (c === 38 || c === 48) {
       // Extended color: 38;5;n  or  38;2;r;g;b
       const target = c === 38 ? "fg" : "bg";
@@ -105,8 +111,8 @@ function styleOf(state: SgrState): string {
   // with a blue background that, combined with cursor-positioning, smears across
   // the line and looks like everything is selected. Foreground colors carry the
   // useful information and keep the feed clean.
-  const fg = state.inverse ? DEFAULT_BG : state.fg ?? DEFAULT_FG;
-  const bg = state.inverse ? state.fg ?? DEFAULT_FG : undefined;
+  const fg = state.inverse ? bgOf() : state.fg ?? fgOf();
+  const bg = state.inverse ? state.fg ?? fgOf() : undefined;
   const parts = [`color:${fg}`];
   if (bg) parts.push(`background:${bg}`);
   if (state.bold) parts.push("font-weight:bold");

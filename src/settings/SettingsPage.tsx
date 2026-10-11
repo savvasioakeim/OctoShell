@@ -1263,7 +1263,7 @@ function AppearanceTab() {
     <>
       <Section
         title="Theme"
-        desc="The window takes its colours from a VS Code theme, the same file that colours the code blocks, so OctoShell can look like the editor you already use. Dark themes only for now: the app still has a few hundred hardcoded light-on-dark text colours, and a light background would leave most of it unreadable."
+        desc="The window takes its colours from a VS Code theme, the same file that colours the code blocks and the terminal, so OctoShell can look like the editor you already use. Every theme Shiki bundles is here, light ones included; the label says which is which."
       >
         <Field label="Colour theme">
           <Select
@@ -2547,7 +2547,7 @@ function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (v: 
         }`}
       >
         <span
-          className={`absolute h-[14px] w-[14px] rounded-full bg-white shadow-sm transition-transform ${
+          className={`absolute h-[14px] w-[14px] rounded-full bg-onaccent shadow-sm transition-transform ${
             checked ? "translate-x-[16px]" : "translate-x-[2px]"
           }`}
         />

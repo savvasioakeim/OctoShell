@@ -11,7 +11,7 @@ import { notify, notifyAllowed } from "../util/notify";
 import { playSfx } from "../util/sfx";
 import { acpCommandFor, acpSandboxCommandFor, acpSessionConfigFor, configDirEnvFor, isAcp, normalizeProvider, parseAgentLine, prepareOpencodeConfig, supportsEffort, type AgentProvider, type AgentStep } from "../agents/providers";
 import { settingsStore } from "../settings/settingsStore";
-import { currentPalette, onPalette } from "../util/theme";
+import { currentPalette, onPalette, xtermTheme } from "../util/theme";
 import { serviceStore, type ServiceEntry } from "../services/serviceStore";
 import { taskJournal } from "../tasks/taskJournal";
 import { contractStore, formatChanges, normCwd } from "../agents/contracts";
@@ -408,7 +408,7 @@ export class ShellController {
     // and this terminal outlives any number of theme changes, so it is told
     // about each one instead of being rebuilt.
     this.offPalette = onPalette((p) => {
-      if (this.liveTerm) this.liveTerm.options.theme = { background: p.card, foreground: p.fg };
+      if (this.liveTerm) this.liveTerm.options.theme = xtermTheme(p);
     });
     this.liveTerm = new Terminal({
       fontFamily: font,
@@ -416,8 +416,8 @@ export class ShellController {
       scrollback: settingsStore.getSnapshot().system.scrollback,
       cursorBlink: false, // enabled only while focused/alt-screen (saves idle repaints)
       allowProposedApi: true,
-      // The reading surface and text of whatever theme is in force.
-      theme: { background: currentPalette().card, foreground: currentPalette().fg },
+      // The colours of whatever theme is in force, ANSI set included.
+      theme: xtermTheme(currentPalette()),
     });
     this.fit = new FitAddon();
     this.serializer = new SerializeAddon();

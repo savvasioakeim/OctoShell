@@ -34,6 +34,7 @@ import {
   STATUS_ORDER,
   type AgentStatus,
 } from "../shell/agentStatus";
+import { useAdapt } from "../util/usePalette";
 
 /** Per-action lifecycle once the model proposed it (keyed `msgIndex:actionIndex`). */
 /** `running` is the in-flight state. Worktree dispatch awaits `git worktree add`
@@ -241,6 +242,9 @@ function useAllReviews(projects: ProjectRef[]): Map<string, ReviewSnapshot> {
  * overview lets the user jump to a project or cancel a running agent.
  */
 export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseProject, onOpenStrategy, width }: Props) {
+  // The status colours are drawn through inline styles, so they are adapted
+  // here rather than by the light-mode rules in styles.css.
+  const adapt = useAdapt();
   const snaps = useAllSnapshots(tabs);
   const reviews = useAllReviews(tabs);
   // Chat sessions: the active session's content IS the live messages/actionState,
@@ -1929,7 +1933,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
               >
                 <span
                   className={`h-1.5 w-1.5 shrink-0 rounded-full ${running ? "animate-pulse" : ""}`}
-                  style={{ background: STATUS_COLOR[status] }}
+                  style={{ background: adapt(STATUS_COLOR[status], 2.2) }}
                 />
                 <button onClick={() => onSelect(p.id)} className="flex-1 truncate text-left text-gray-200">
                   {p.name}
@@ -1939,7 +1943,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
                     👁
                   </span>
                 )}
-                <span className="text-[10px]" style={{ color: STATUS_COLOR[status] }}>
+                <span className="text-[10px]" style={{ color: adapt(STATUS_COLOR[status]) }}>
                   {STATUS_SHORT[status]}
                 </span>
                 {running && (
@@ -2367,7 +2371,7 @@ function ActionCard({
       <div className="mt-2 flex gap-2">
         <button
           onClick={onConfirm}
-          className="rounded-sm bg-accent px-2.5 py-1 text-xs font-medium text-white hover:bg-accent/80"
+          className="rounded-sm bg-accent px-2.5 py-1 text-xs font-medium text-onaccent hover:bg-accent/80"
         >
           ✓ Confirm
         </button>

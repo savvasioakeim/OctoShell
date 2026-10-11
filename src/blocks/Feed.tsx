@@ -139,7 +139,7 @@ export function Feed({ blocks, controller, altScreen, interacting }: Props) {
           className="absolute bottom-3 right-4 z-10 flex items-center gap-1.5 rounded-full border border-edge bg-panel/90 px-3 py-1.5 text-xs text-muted shadow-lg backdrop-blur hover:bg-accent/30 hover:text-white"
         >
           {newCount > 0 && (
-            <span className="rounded-full bg-accent px-1.5 text-[11px] font-semibold text-white">
+            <span className="rounded-full bg-accent px-1.5 text-[11px] font-semibold text-onaccent">
               {newCount}
             </span>
           )}

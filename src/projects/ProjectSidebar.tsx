@@ -3,6 +3,7 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useReducer,
   useRef,
   useState,
@@ -11,6 +12,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { GitStat, Group, WorktreeRef } from "../App";
 import type { ShellController, ShellSnapshot } from "../shell/ShellController";
 import { statusOf, STATUS_COLOR as COLOR, STATUS_LABEL as LABEL } from "../shell/agentStatus";
+import { useAdapt, usePalette } from "../util/usePalette";
 import { KEY, loadJSON, saveJSON } from "../util/persist";
 import { ServicesView } from "../services/ServicesView";
 import { useServices, serviceStore } from "../services/serviceStore";
@@ -160,8 +162,21 @@ function Chevron({ open }: { open: boolean }) {
 export function ProjectSidebar(props: Props) {
   const {
     tabs, activeId, onSelect, onClose, onNew, onNewWorktree, onOpenSettings, width, stats,
-    groups, assign, onAssign, onReorder, onReorderGroup, unopened, onOpenWorktree, onRemoveWorktree,
+    groups: rawGroups, assign, onAssign, onReorder, onReorderGroup, unopened, onOpenWorktree,
+    onRemoveWorktree,
   } = props;
+
+  // A group is told apart by its colour, and those eight colours were picked
+  // against a near-black window. On a light theme the pale ones vanish, so
+  // they are adapted here, once, rather than at each of the six places that
+  // draws one (label, chevron, tint, spine trace, node fill, menu dot). On a
+  // dark theme `adapt` returns them unchanged.
+  const adapt = useAdapt();
+  const groups = useMemo(
+    () => rawGroups.map((g) => ({ ...g, color: adapt(g.color, 2.2) })),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- adapt is new on every palette change, which is the point
+    [rawGroups, adapt],
+  );
 
   const snaps = useAllSnapshots(tabs);
 
@@ -729,11 +744,17 @@ function Board({
     for (const c of childrenOf(t.id)) emit(c, depth + 1, self);
   };
 
+  const adapt = useAdapt();
+  // The colour the nodes are outlined in: the reading surface itself, so a
+  // node reads as cut out of it. An SVG presentation attribute cannot hold a
+  // CSS variable, which is why this is a value and not `var(--color-card)`.
+  const surface = usePalette().card;
+
   function node(t: ProjectTab, cy: number, cx: number, r: number, ring: string) {
     const st = statusOf(snaps.get(t.id));
     const isActive = t.id === activeId;
     const orch = orchestrated(t.id);
-    const fill = COLOR[st];
+    const fill = adapt(COLOR[st], 2.2);
     const g = groupOf(t.id);
     // Orchestrated nodes get an accent ring + strong glow (the tentacle's grip);
     // otherwise active = accent highlight, idle = group/neutral ring.
@@ -777,7 +798,7 @@ function Board({
         cy={gy}
         r={GROUP_R}
         fill={g.color}
-        stroke="#15181F"
+        stroke={surface}
         strokeWidth={2}
         style={{ cursor: "pointer", pointerEvents: "auto" }}
         onClick={() => members[0] && onSelect(members[0].id)}
@@ -813,7 +834,7 @@ function Board({
         cy={ROOT_Y}
         r={ROOT_R}
         fill={FLOW}
-        stroke="#15181F"
+        stroke={surface}
         strokeWidth={2}
       >
         <title>OctoShell</title>

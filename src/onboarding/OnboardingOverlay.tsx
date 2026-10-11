@@ -49,12 +49,12 @@ const ENGINES: Dep[] = [
 const NODE_CLS: Record<NodeState, string> = {
   pass: "bg-emerald-400 shadow-[0_0_8px_2px_rgba(52,211,153,0.55)]",
   fail: "bg-red-500 shadow-[0_0_9px_2px_rgba(245,158,11,0.5)]",
-  neutral: "bg-gray-600",
+  neutral: "bg-muted",
 };
 const SEG_CLS: Record<NodeState, string> = {
   pass: "bg-emerald-400/45 group-hover:bg-emerald-400/80",
   fail: "bg-red-500/45 group-hover:bg-red-500/80",
-  neutral: "bg-edge group-hover:bg-gray-500/60",
+  neutral: "bg-edge group-hover:bg-muted/60",
 };
 
 // Per-dependency install hierarchy, in strict priority order:
@@ -139,7 +139,7 @@ function CopyButton({ text }: { text: string }) {
       onClick={copy}
       title="Copy to clipboard"
       className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-sm transition-colors ${
-        copied ? "text-emerald-400" : "text-muted hover:bg-white/10 hover:text-gray-200"
+        copied ? "text-emerald-400" : "text-muted hover:bg-edge/60 hover:text-gray-100"
       }`}
     >
       {copied ? <CheckIcon /> : <CopyIcon />}
@@ -156,7 +156,7 @@ function InstallGuide({ k }: { k: DepKey }) {
     <div className="mt-2 space-y-1.5 rounded-lg border border-amber-500/20 bg-amber-500/[0.04] p-2">
       {g.cmd && (
         <div className="flex items-center gap-1.5">
-          <code className="min-w-0 flex-1 truncate rounded-sm bg-black/40 px-2 py-1 text-[11px] text-amber-200/90">
+          <code className="min-w-0 flex-1 truncate rounded-sm bg-well px-2 py-1 text-[11px] text-amber-200/90">
             {g.cmd}
           </code>
           <CopyButton text={g.cmd} />
@@ -368,7 +368,7 @@ export function OnboardingOverlay({ onDone }: { onDone: () => void }) {
                 }}
                 state={shellOk ? "pass" : "fail"}
                 badge={
-                  <span className="rounded-sm border border-edge bg-white/5 px-1.5 py-0.5 text-[10px] font-medium text-muted">
+                  <span className="rounded-sm border border-edge bg-edge/30 px-1.5 py-0.5 text-[10px] font-medium text-muted">
                     Required
                   </span>
                 }
@@ -381,7 +381,7 @@ export function OnboardingOverlay({ onDone }: { onDone: () => void }) {
                 dep={{ key: "gh", label: "GitHub CLI", why: "Integrated PR and remote management." }}
                 state={health.gh ? "pass" : "neutral"}
                 badge={
-                  <span className="rounded-sm border border-edge bg-white/5 px-1.5 py-0.5 text-[10px] font-medium text-muted">
+                  <span className="rounded-sm border border-edge bg-edge/30 px-1.5 py-0.5 text-[10px] font-medium text-muted">
                     Optional
                   </span>
                 }

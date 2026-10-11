@@ -7,6 +7,7 @@ import strategyIcon from "../assets/strategy.png";
 import { PROVIDERS } from "../agents/providers";
 import { modelsFor, useSettings } from "../settings/settingsStore";
 import { PARTICIPANT_COLORS, strategyStore, useStrategy } from "./strategyStore";
+import { useAdapt } from "../util/usePalette";
 import { sendPlanToOrchestrator, orchestratorReady } from "./orchestratorBridge";
 import type { ExecutionPlan, StrategyParticipant } from "./strategyTypes";
 
@@ -224,7 +225,7 @@ function SetupView({
           disabled={!canStart}
           className={`rounded-lg px-4 py-2 text-sm font-semibold ${
             canStart
-              ? "bg-accent text-white hover:bg-accent/80"
+              ? "bg-accent text-onaccent hover:bg-accent/80"
               : "cursor-not-allowed border border-edge text-muted/50"
           }`}
         >
@@ -265,6 +266,9 @@ function RosterEditor({ roster }: { roster: StrategyParticipant[] }) {
 }
 
 function ParticipantRow({ p }: { p: StrategyParticipant }) {
+  // The roster colours were picked against a dark window; on a light one the
+  // pale ones need bringing down to stay visible.
+  const adapt = useAdapt();
   const settings = useSettings();
   const { roles } = useStrategy();
   const up = (patch: Partial<StrategyParticipant>) => strategyStore.updateParticipant(p.id, patch);
@@ -273,7 +277,7 @@ function ParticipantRow({ p }: { p: StrategyParticipant }) {
   return (
     <div
       className={`rounded-lg border bg-card p-2.5 ${p.enabled ? "border-edge" : "border-edge/40 opacity-60"}`}
-      style={p.enabled ? { borderLeft: `3px solid ${p.color}` } : undefined}
+      style={p.enabled ? { borderLeft: `3px solid ${adapt(p.color, 2.2)}` } : undefined}
     >
       <div className="mb-2 flex items-center gap-2">
         <input
@@ -340,8 +344,8 @@ function ParticipantRow({ p }: { p: StrategyParticipant }) {
             <button
               key={c}
               onClick={() => up({ color: c })}
-              className={`h-4 w-4 rounded-full ${p.color === c ? "ring-2 ring-white/70" : ""}`}
-              style={{ background: c }}
+              className={`h-4 w-4 rounded-full ${p.color === c ? "ring-2 ring-accent" : ""}`}
+              style={{ background: adapt(c, 2.2) }}
               title="Set colour"
             />
           ))}
@@ -470,7 +474,7 @@ function DiscussionView({
           className={`rounded-sm px-3 py-1.5 text-xs font-semibold ${
             session.busy || round === 0
               ? "cursor-not-allowed border border-edge text-muted/50"
-              : "bg-accent text-white hover:bg-accent/80"
+              : "bg-accent text-onaccent hover:bg-accent/80"
           }`}
           title="Synthesize the discussion into a Final Strategy Report"
         >
@@ -561,7 +565,7 @@ function ModeratorNote({ round, busy }: { round: number; busy: boolean }) {
           className={`rounded-sm px-3 py-1 text-[11px] font-semibold ${
             busy || !dirty
               ? "cursor-not-allowed border border-edge text-muted/50"
-              : "bg-accent text-white hover:bg-accent/80"
+              : "bg-accent text-onaccent hover:bg-accent/80"
           }`}
         >
           Save note
@@ -748,7 +752,7 @@ function ReportView({
             title={orchestratorReady() ? "Hand this plan to the coding orchestrator" : "Orchestrator not available"}
             className={`rounded-sm px-3 py-1.5 text-xs font-semibold ${
               orchestratorReady()
-                ? "bg-accent text-white hover:bg-accent/80"
+                ? "bg-accent text-onaccent hover:bg-accent/80"
                 : "cursor-not-allowed border border-edge text-muted/50"
             }`}
           >
@@ -832,7 +836,7 @@ function PlanLibrary({
                 }}
                 disabled={!orchestratorReady()}
                 className={`rounded-sm px-2 py-1 text-[11px] font-semibold ${
-                  orchestratorReady() ? "bg-accent/80 text-white hover:bg-accent" : "cursor-not-allowed border border-edge text-muted/50"
+                  orchestratorReady() ? "bg-accent/80 text-onaccent hover:bg-accent" : "cursor-not-allowed border border-edge text-muted/50"
                 }`}
                 title="Execute in a new orchestrator chat"
               >

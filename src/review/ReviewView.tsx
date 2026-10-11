@@ -62,7 +62,7 @@ function PinnedContext({ text }: { text: string }) {
   const [open, setOpen] = useState(false);
   if (!text) return null;
   return (
-    <div className="shrink-0 border-b border-edge bg-slate-900/50 px-3 py-2">
+    <div className="shrink-0 border-b border-edge bg-well/50 px-3 py-2">
       <div className="flex items-start gap-2">
         <div className="min-w-0 flex-1">
           <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-wider text-muted">
