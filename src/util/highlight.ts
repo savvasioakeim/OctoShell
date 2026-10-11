@@ -4,12 +4,57 @@
 // We use Shiki's FINE-GRAINED core: only the ~14 grammars we need + the
 // JavaScript regex engine (no WASM, no full-bundle that pulls every language).
 // Everything is behind a lazy dynamic import, so nothing loads until the first
-// code block renders. Theme is Material Theme Palenight (the user's VS Code).
+// code block renders. The theme is whichever VS Code theme the Appearance
+// settings name, the same file the window's palette is derived from, so a
+// code block and the app around it always come from one theme.
 // Any failure falls back to plain text — highlighting is never load-bearing.
 
-import type { HighlighterCore, LanguageInput } from "shiki/core";
+import type { HighlighterCore, LanguageInput, ThemeInput } from "shiki/core";
+import { DEFAULT_THEME, loadThemeFile } from "./theme";
 
-const THEME = "material-theme-palenight";
+/** The theme the highlighter is currently colouring with. Shiki needs the
+ *  theme's own name when highlighting, and it has to be one it has loaded. */
+let theme = DEFAULT_THEME;
+/** Bumped on every theme change, so a mounted code block can notice that what
+ *  it is showing was coloured by the previous theme. */
+let generation = 0;
+const themeListeners = new Set<() => void>();
+
+/** Subscribe to theme changes (for `useSyncExternalStore`). */
+export function subscribeHighlightTheme(cb: () => void): () => void {
+  themeListeners.add(cb);
+  return () => themeListeners.delete(cb);
+}
+
+/** A value that changes whenever the highlighting theme does. */
+export function highlightGeneration(): number {
+  return generation;
+}
+
+/**
+ * Switch the highlighting theme. Loads the theme into the highlighter if it is
+ * already running, empties the memo cache (every entry in it was coloured by
+ * the old theme) and tells the mounted blocks to ask again.
+ *
+ * Best-effort: a theme that will not load leaves the current one in place,
+ * because half-recoloured code is worse than code in the previous theme.
+ */
+export async function setHighlightTheme(id: string): Promise<void> {
+  if (id === theme) return;
+  if (highlighter) {
+    const file = await loadThemeFile(id);
+    if (!file) return;
+    try {
+      await highlighter.loadTheme(file as ThemeInput);
+    } catch {
+      return;
+    }
+  }
+  theme = id;
+  cache.clear();
+  generation++;
+  themeListeners.forEach((l) => l());
+}
 
 const LANGS = [
   "bash", "powershell", "typescript", "tsx", "javascript", "jsx",
@@ -24,10 +69,11 @@ let highlighterPromise: Promise<HighlighterCore> | null = null;
 function getHighlighter(): Promise<HighlighterCore> {
   if (!highlighterPromise) {
     highlighterPromise = (async () => {
-      const [core, engine, palenight, ...langs] = await Promise.all([
+      const [core, engine, themeFile, ...langs] = await Promise.all([
         import("shiki/core"),
         import("shiki/engine/javascript"),
-        import("shiki/themes/material-theme-palenight.mjs"),
+        // Whichever theme is selected by the time the first code block renders.
+        loadThemeFile(theme).then((f) => f ?? import("shiki/themes/material-theme-palenight.mjs").then((m) => m.default)),
         import("shiki/langs/bash.mjs"),
         import("shiki/langs/powershell.mjs"),
         import("shiki/langs/typescript.mjs"),
@@ -44,7 +90,7 @@ function getHighlighter(): Promise<HighlighterCore> {
         import("shiki/langs/yaml.mjs"),
       ]);
       return core.createHighlighterCore({
-        themes: [palenight.default],
+        themes: [themeFile as ThemeInput],
         langs: langs.map((m) => (m as { default: LanguageInput }).default),
         engine: engine.createJavaScriptRegexEngine(),
       });
@@ -130,7 +176,7 @@ function drain(deadline: IdleDeadline): void {
     }
     let result: string | null = null;
     try {
-      result = highlighter!.codeToHtml(job.code, { lang: job.lang, theme: THEME });
+      result = highlighter!.codeToHtml(job.code, { lang: job.lang, theme });
     } catch {
       result = null;
     }

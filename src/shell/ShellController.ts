@@ -11,6 +11,7 @@ import { notify, notifyAllowed } from "../util/notify";
 import { playSfx } from "../util/sfx";
 import { acpCommandFor, acpSandboxCommandFor, acpSessionConfigFor, configDirEnvFor, isAcp, normalizeProvider, parseAgentLine, prepareOpencodeConfig, supportsEffort, type AgentProvider, type AgentStep } from "../agents/providers";
 import { settingsStore } from "../settings/settingsStore";
+import { currentPalette, onPalette } from "../util/theme";
 import { serviceStore, type ServiceEntry } from "../services/serviceStore";
 import { taskJournal } from "../tasks/taskJournal";
 import { contractStore, formatChanges, normCwd } from "../agents/contracts";
@@ -250,6 +251,8 @@ export class ShellController {
   private fit: FitAddon;
   private serializer: SerializeAddon;
   private liveHost: HTMLDivElement;
+  /** Unsubscribe from palette changes, called on dispose. */
+  private offPalette: () => void;
 
   private blocks: Block[] = [];
   private current: CommandBlock | null = null;
@@ -401,13 +404,20 @@ export class ShellController {
         this.liveTerm.options.fontFamily = next;
       }
     });
+    // Same for the colours. xterm takes them as values rather than through CSS,
+    // and this terminal outlives any number of theme changes, so it is told
+    // about each one instead of being rebuilt.
+    this.offPalette = onPalette((p) => {
+      if (this.liveTerm) this.liveTerm.options.theme = { background: p.card, foreground: p.fg };
+    });
     this.liveTerm = new Terminal({
       fontFamily: font,
       fontSize: 15,
       scrollback: settingsStore.getSnapshot().system.scrollback,
       cursorBlink: false, // enabled only while focused/alt-screen (saves idle repaints)
       allowProposedApi: true,
-      theme: { background: "#15181F", foreground: "#A6ACCD" }, // matches `card`
+      // The reading surface and text of whatever theme is in force.
+      theme: { background: currentPalette().card, foreground: currentPalette().fg },
     });
     this.fit = new FitAddon();
     this.serializer = new SerializeAddon();
@@ -1773,6 +1783,7 @@ export class ShellController {
     invoke("close_tab", { id: this.sessionId }).catch(() => {});
     this.cancelAgent();
     this.review.dispose();
+    this.offPalette();
     this.liveTerm.dispose();
     this.liveHost.remove();
   }

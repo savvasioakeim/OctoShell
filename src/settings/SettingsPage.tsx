@@ -15,6 +15,10 @@ import {
   type DefaultShell,
   type OllamaSettings,
   type Profile,
+  type ColumnId,
+  FONT_SIZE_DEFAULT,
+  FONT_SIZE_MAX,
+  FONT_SIZE_MIN,
   type NotifyScope,
   type SttEngine,
   type TraceSpeed,
@@ -28,6 +32,7 @@ import { memoryStore, useMemoryStats } from "../memory/memoryStore";
 import { projectConfigStore, useProjectScripts } from "../projects/projectConfig";
 import { effectiveShell, isWindows, platform } from "../platform/platform";
 import { updateStore, useUpdate } from "../updates/updateStore";
+import { THEMES } from "../util/theme";
 
 type TabId = "ai" | "local" | "roles" | "skills" | "projects" | "workspace" | "appearance" | "system";
 const TABS: { id: TabId; label: string }[] = [
@@ -49,6 +54,16 @@ export interface SettingsProject {
   /** Set when this project is a worktree nested under that parent project. */
   parentId?: string;
 }
+
+/** What each column is called in the layout picker, and the order the picker
+ *  offers them in. The ids are the stored ones (see ColumnOrder). */
+const COLUMN_LABELS: { id: ColumnId; label: string }[] = [
+  { id: "projects", label: "Projects" },
+  { id: "work", label: "Terminal & feed" },
+  { id: "orchestrator", label: "Orchestrator" },
+];
+
+const POSITIONS = ["First (left)", "Second (middle)", "Third (right)"];
 
 /** Monospace fonts offered for the terminal/feed ("" = the app's theme default). */
 const FONTS: { label: string; value: string }[] = [
@@ -1197,10 +1212,79 @@ function AppearanceTab() {
 
   return (
     <>
-      <Section title="Typography" desc="Font for terminal & feed (must be installed on the system).">
-        <Field label="Font">
-          <Select value={appearance.fontFamily} onChange={(v) => set({ fontFamily: v })} options={FONTS} />
+      <Section
+        title="Theme"
+        desc="The window takes its colours from a VS Code theme, the same file that colours the code blocks, so OctoShell can look like the editor you already use. Dark themes only for now: the app still has a few hundred hardcoded light-on-dark text colours, and a light background would leave most of it unreadable."
+      >
+        <Field label="Colour theme">
+          <Select
+            value={appearance.theme}
+            onChange={(v) => set({ theme: v })}
+            options={THEMES.map((t) => ({ label: t.label, value: t.id }))}
+          />
         </Field>
+      </Section>
+
+      <Section title="Typography" desc="Font for terminal & feed (must be installed on the system), and the size everything else scales from.">
+        <div className="flex flex-col gap-4">
+          <Field label="Font">
+            <Select value={appearance.fontFamily} onChange={(v) => set({ fontFamily: v })} options={FONTS} />
+          </Field>
+          <Field label={`Interface size — ${appearance.fontSize}px`}>
+            <div className="flex items-center gap-3">
+              <input
+                type="range"
+                min={FONT_SIZE_MIN}
+                max={FONT_SIZE_MAX}
+                step={1}
+                value={appearance.fontSize}
+                onChange={(e) => set({ fontSize: Number(e.target.value) })}
+                className="h-1.5 flex-1 cursor-pointer appearance-none rounded-full bg-well accent-accent"
+              />
+              <button
+                type="button"
+                onClick={() => set({ fontSize: FONT_SIZE_DEFAULT })}
+                className="rounded-lg border border-edge px-2 py-1 text-xs text-muted transition-colors hover:border-accent/40 hover:text-gray-100"
+              >
+                Reset
+              </button>
+            </div>
+          </Field>
+          <p className="text-xs leading-relaxed text-muted">
+            Every size and gap in the app is relative to this one number, so it scales the whole interface rather
+            than only the text. It applies as you drag.
+          </p>
+        </div>
+      </Section>
+
+      <Section
+        title="Layout"
+        desc="Which panel sits in which column. Pick a panel for a position and the others slide along, so the three are never left overlapping or missing."
+      >
+        <div className="flex flex-col gap-4">
+          <div className="flex gap-2">
+            {appearance.columns.map((id, i) => (
+              <div
+                key={id}
+                className={`flex h-16 items-center justify-center rounded-lg border border-edge bg-well px-2 text-center text-[11px] text-muted ${
+                  id === "work" ? "flex-[2]" : "flex-1"
+                }`}
+              >
+                {COLUMN_LABELS.find((c) => c.id === id)?.label}
+                <span className="sr-only">{` in position ${i + 1}`}</span>
+              </div>
+            ))}
+          </div>
+          {POSITIONS.map((label, i) => (
+            <Field key={label} label={label}>
+              <Select
+                value={appearance.columns[i]}
+                onChange={(v) => settingsStore.moveColumn(v as ColumnId, i)}
+                options={COLUMN_LABELS.map((c) => ({ label: c.label, value: c.id }))}
+              />
+            </Field>
+          ))}
+        </div>
       </Section>
 
       <Section title="PCB trace animation" desc="How fast the circuit-board traces flow while agents are working.">

@@ -18,8 +18,11 @@ export interface StrategyProject {
 
 interface Props {
   projects: StrategyProject[];
-  /** Width of the orchestrator column to leave visible on the right. */
-  rightWidth: number;
+  /** Where to sit, as insets from the workspace edges, so the orchestrator
+   *  column stays visible beside it. The orchestrator is not always on the
+   *  right any more (Settings → Appearance → Layout), so the caller works out
+   *  which side to leave alone and this panel just fills what it is given. */
+  inset: { left: number; right: number };
   onClose: () => void;
 }
 
@@ -57,12 +60,12 @@ function slug(s: string): string {
 }
 
 /**
- * Strategy Mode — a separate PLANNING workspace. It overlays the left + center
- * columns (the orchestrator stays visible on the right) so several AI
- * participants can debate an approach, moderated by the user, before any coding
- * begins. The output is a reusable Execution Plan.
+ * Strategy Mode — a separate PLANNING workspace. It overlays the columns next
+ * to the orchestrator, which stays visible, so several AI participants can
+ * debate an approach, moderated by the user, before any coding begins. The
+ * output is a reusable Execution Plan.
  */
-export function StrategyPanel({ projects, rightWidth, onClose }: Props) {
+export function StrategyPanel({ projects, inset, onClose }: Props) {
   const { roster, plans, session, auto, maxRounds } = useStrategy();
   const [request, setRequest] = useState("");
   const [ctxIds, setCtxIds] = useState<string[]>([]);
@@ -76,7 +79,7 @@ export function StrategyPanel({ projects, rightWidth, onClose }: Props) {
   return (
     <div
       className="absolute z-30 flex flex-col overflow-hidden rounded-xl border border-accent/40 bg-panel shadow-2xl"
-      style={{ left: 8, top: 8, bottom: 8, right: rightWidth + 16 }}
+      style={{ left: inset.left, top: 8, bottom: 8, right: inset.right }}
     >
       {/* Header — makes it obvious this is the planning phase, not implementation. */}
       <div className="flex shrink-0 items-center gap-3 border-b border-edge bg-linear-to-r from-accent/15 to-transparent px-4 py-2.5">
