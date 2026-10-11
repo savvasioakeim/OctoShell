@@ -1054,12 +1054,18 @@ function ThemeApplier() {
   const { appearance } = useSettings();
   useEffect(() => {
     const root = document.documentElement;
-    root.style.setProperty(
-      "--octo-mono",
-      appearance.fontFamily
-        ? `"${appearance.fontFamily}", "JetBrains Mono", "Cascadia Code", Consolas, monospace`
-        : "",
-    );
+    // `--font-mono` is the Tailwind theme key behind the `font-mono` class on
+    // <body>, so overriding it here is what actually changes the whole UI.
+    // Setting it on the root element beats the @theme declaration (same
+    // property, higher specificity), and removing it falls back to that.
+    if (appearance.fontFamily) {
+      root.style.setProperty(
+        "--font-mono",
+        `"${appearance.fontFamily}", "JetBrains Mono", "Cascadia Code", Consolas, monospace`,
+      );
+    } else {
+      root.style.removeProperty("--font-mono");
+    }
     root.classList.remove("trace-fast", "trace-normal", "trace-stealth", "trace-static");
     if (appearance.traceSpeed !== "normal") root.classList.add(`trace-${appearance.traceSpeed}`);
   }, [appearance.fontFamily, appearance.traceSpeed]);

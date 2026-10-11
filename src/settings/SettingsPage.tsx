@@ -66,14 +66,59 @@ const COLUMN_LABELS: { id: ColumnId; label: string }[] = [
 const POSITIONS = ["First (left)", "Second (middle)", "Third (right)"];
 
 /** Monospace fonts offered for the terminal/feed ("" = the app's theme default). */
-const FONTS: { label: string; value: string }[] = [
-  { label: "Theme default", value: "" },
-  { label: "JetBrains Mono", value: "JetBrains Mono" },
-  { label: "Cascadia Code", value: "Cascadia Code" },
-  { label: "Fira Code", value: "Fira Code" },
-  { label: "Consolas", value: "Consolas" },
-  { label: "IBM Plex Mono", value: "IBM Plex Mono" },
+/** Monospace families worth offering, in rough order of how likely a developer
+ *  is to want them. The list is filtered against what the machine actually has
+ *  before it is shown: a family we cannot render is worse than useless in a
+ *  picker, because choosing it silently changes nothing. Nerd Font builds are
+ *  listed separately because they install under their own family name, so a
+ *  machine with FiraCode Nerd Font has no "Fira Code" to match. */
+const FONT_CANDIDATES: string[] = [
+  "JetBrains Mono",
+  "JetBrainsMono Nerd Font",
+  "Cascadia Code",
+  "Cascadia Mono",
+  "Consolas",
+  "Fira Code",
+  "FiraCode Nerd Font",
+  "IBM Plex Mono",
+  "Source Code Pro",
+  "SauceCodePro Nerd Font",
+  "Hack",
+  "Hack Nerd Font",
+  "Iosevka",
+  "MesloLGS NF",
+  "Geist Mono",
+  "Victor Mono",
+  "Monaspace Neon",
+  "Ubuntu Mono",
+  "DejaVu Sans Mono",
+  "Menlo",
+  "SF Mono",
+  "Courier New",
+  "Lucida Console",
 ];
+
+/** The candidates this machine can render. JetBrains Mono ships with the app,
+ *  so it is always offered whatever the check says. A family the user already
+ *  chose stays in the list too, marked, so an unavailable saved value does not
+ *  quietly turn into something else when the settings page opens. */
+function availableFonts(chosen: string): { label: string; value: string }[] {
+  const has = (family: string) => {
+    try {
+      return document.fonts.check(`12px "${family}"`);
+    } catch {
+      return true; // no FontFaceSet: offer everything rather than nothing
+    }
+  };
+  const out = [{ label: "Theme default (JetBrains Mono)", value: "" }];
+  for (const family of FONT_CANDIDATES) {
+    if (family === "JetBrains Mono" || has(family)) out.push({ label: family, value: family });
+  }
+  if (chosen && !out.some((o) => o.value === chosen)) {
+    out.push({ label: `${chosen} (not installed)`, value: chosen });
+  }
+  return out;
+}
 
 /**
  * Full-page application settings, organised into tabs: the per-surface AI
@@ -1209,6 +1254,10 @@ function WorkspaceTab() {
 function AppearanceTab() {
   const { appearance, sttEngine, notifications } = useSettings();
   const set = (patch: Parameters<typeof settingsStore.setAppearance>[0]) => settingsStore.setAppearance(patch);
+  // Probed once per visit to this tab: a font installed while the app is open
+  // is rare, and probing on every render would run the check two dozen times a
+  // keystroke.
+  const fonts = useMemo(() => availableFonts(appearance.fontFamily), [appearance.fontFamily]);
 
   return (
     <>
@@ -1225,10 +1274,14 @@ function AppearanceTab() {
         </Field>
       </Section>
 
-      <Section title="Typography" desc="Font for terminal & feed (must be installed on the system), and the size everything else scales from.">
+      <Section title="Typography" desc="The font for the whole interface, terminal and feed included, and the size everything else scales from. Only fonts this machine has are listed.">
         <div className="flex flex-col gap-4">
           <Field label="Font">
-            <Select value={appearance.fontFamily} onChange={(v) => set({ fontFamily: v })} options={FONTS} />
+            <Select
+              value={appearance.fontFamily}
+              onChange={(v) => set({ fontFamily: v })}
+              options={fonts}
+            />
           </Field>
           <Field label={`Interface size — ${appearance.fontSize}px`}>
             <div className="flex items-center gap-3">

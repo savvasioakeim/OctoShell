@@ -89,13 +89,7 @@ html {
   margin: 0;
   white-space: pre-wrap;
   word-break: break-word;
-  font-family: var(
-    --octo-mono,
-    "JetBrains Mono",
-    "Cascadia Code",
-    Consolas,
-    monospace
-  );
+  font-family: var(--font-mono);
   font-size: 15px;
   line-height: 20px;
 }
@@ -118,13 +112,7 @@ html {
   background: transparent !important;
   white-space: pre-wrap;
   word-break: break-word;
-  font-family: var(
-    --octo-mono,
-    "JetBrains Mono",
-    "Cascadia Code",
-    Consolas,
-    monospace
-  );
+  font-family: var(--font-mono);
   font-size: 14px;
   line-height: 1.5;
 }
