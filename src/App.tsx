@@ -173,11 +173,15 @@ interface PanelWidths {
 
 const DEFAULT_WIDTHS: PanelWidths = { projects: 216, orchestrator: 344 };
 
-/** Drag bounds per panel: narrow enough to get out of the way, wide enough to
- *  stay useful, and never so wide that the work panel is squeezed out. */
+/** Drag bounds per panel: narrow enough to get out of the way, and wide enough
+ *  that a sidebar can become the main panel. The upper bounds are generous on
+ *  purpose: the work panel takes whatever is left, so a sidebar's maximum is
+ *  what decides how small the work panel can be made, and its feed is often
+ *  the one part the user wants out of the way. CENTER_MIN below is the real
+ *  floor and keeps the work panel from vanishing on a narrow window. */
 const WIDTH_BOUNDS: Record<keyof PanelWidths, [number, number]> = {
-  projects: [160, 460],
-  orchestrator: [232, 760],
+  projects: [160, 720],
+  orchestrator: [232, 1200],
 };
 
 /** The gap a ResizeHandle occupies (w-2), and the workspace's own padding (p-2).
@@ -282,7 +286,10 @@ export function App({ initial }: { initial: ShellController }) {
   const columns = useSettings().appearance.columns;
 
   const eff = useMemo<PanelWidths>(() => {
-    const CENTER_MIN = 300; // keep the work panel usable before the sides give way
+    // The work panel keeps a readable column of text and nothing more; below
+    // this the sides start giving way instead. It is deliberately small so a
+    // user who wants the feed narrow can drag the sides over it.
+    const CENTER_MIN = 180;
     const CHROME = 40; // outer p-2 padding + the two resize handles
     const avail = winW - CHROME;
     let l = layout.projects;
