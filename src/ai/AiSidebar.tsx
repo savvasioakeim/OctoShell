@@ -455,22 +455,35 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
         const byId = new Map(stored.map((s) => [s.id, s]));
         for (const local of sessionsRef.current) {
           const db = byId.get(local.id);
+          // Skip the placeholder `loadSessions` mounts us with: it has no messages
+          // and no row, and adopting it is what used to open a blank chat on every
+          // launch. Its `updatedAt` is now, so it sorted first, became the active
+          // chat, and got written back -- one dead "New chat" row per start.
+          if (!db && !local.messages.length) continue;
           if (!db || local.messages.length > db.messages.length) byId.set(local.id, local);
         }
         const merged = [...byId.values()].sort((a, b) => b.updatedAt - a.updatedAt);
-        setSessions(merged);
+        // Clear out the empty chats earlier versions left behind. An empty chat
+        // holds nothing to lose, and leaving them means the chat list is mostly
+        // "New chat". Keep one if that is all there is, so the list is never bare.
+        const empty = merged.filter((s) => !s.messages.length);
+        const kept = merged.length > empty.length ? merged.filter((s) => s.messages.length) : merged;
+        for (const dead of merged.filter((s) => !kept.includes(s))) void deleteChatDb(dead.id);
+        setSessions(kept);
         // Write every chat back, then drop the localStorage copy. Without this the
         // old copy stays behind for good once the database has rows -- and since it
         // is what filled localStorage to its cap, leaving it there means every
         // OTHER setItem in the app keeps failing silently.
         void (async () => {
-          const ok = await Promise.all(merged.map((s) => saveChatDb(s)));
+          const ok = await Promise.all(kept.map((s) => saveChatDb(s)));
           if (ok.every(Boolean)) {
             removeKey(KEY.assistantSessions);
             removeKey(KEY.assistant); // the pre-sessions single chat, if any
           }
         })();
-        const active = merged.find((s) => s.id === chatIdRef.current) ?? merged[0];
+        // The chat that was open, or else the one used last: a restart lands back
+        // where the work was left rather than on an empty composer.
+        const active = kept.find((s) => s.id === chatIdRef.current) ?? kept[0];
         if (active) {
           setChatId(active.id);
           // Only adopt the stored messages when this chat is still untouched, so a
