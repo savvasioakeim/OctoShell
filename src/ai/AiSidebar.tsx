@@ -26,6 +26,7 @@ import { dragHasFiles, filesFromDrop, saveDroppedFile } from "../util/drop";
 import { memoryStore, type Recalled } from "../memory/memoryStore";
 import { platform, shellLabel } from "../platform/platform";
 import { setTaskbarDot } from "../util/taskbarDot";
+import { notify } from "../util/notify";
 import {
   statusOf,
   STATUS_COLOR,
@@ -864,6 +865,17 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
       // The turn reports its own failure as an assistant message (see `ask`).
       const failed = last?.role === "assistant" && last.content.startsWith("⚠️");
       setTaskbarDot(turnCancelledRef.current ? "none" : failed ? "error" : "done");
+      // On a fanned-out run this is the one event worth coming back for, so it
+      // gets a notification of its own rather than only the dot. Stopping the
+      // turn yourself is not news. `notify` keeps quiet when the window is in
+      // front, and when the setting says the orchestrator may not interrupt.
+      if (!turnCancelledRef.current) {
+        void notify(
+          failed ? "🐙 OctoShell: the orchestrator stopped" : "🐙 OctoShell: the orchestrator is done",
+          failed ? "The turn ended early — open OctoShell to see why." : "Open OctoShell to read the answer.",
+          "orchestrator",
+        );
+      }
     }
     turnCancelledRef.current = false;
     wasThinkingRef.current = thinking;

@@ -15,6 +15,7 @@ import {
   type DefaultShell,
   type OllamaSettings,
   type Profile,
+  type NotifyScope,
   type SttEngine,
   type TraceSpeed,
 } from "./settingsStore";
@@ -1191,7 +1192,7 @@ function WorkspaceTab() {
 // Tab 3 — Appearance
 // ---------------------------------------------------------------------------
 function AppearanceTab() {
-  const { appearance, sttEngine } = useSettings();
+  const { appearance, sttEngine, notifications } = useSettings();
   const set = (patch: Parameters<typeof settingsStore.setAppearance>[0]) => settingsStore.setAppearance(patch);
 
   return (
@@ -1224,6 +1225,24 @@ function AppearanceTab() {
           checked={appearance.sfx}
           onChange={(v) => set({ sfx: v })}
         />
+      </Section>
+
+      <Section
+        title="Notifications"
+        desc="Which side may interrupt you while the window is not in front. Agents means every dispatched agent, each one finishing and each approval it waits on. Orchestrator means the turn in the sidebar landing, which on a fanned-out run is one ping instead of five, and it is also what the dot on the taskbar icon follows."
+      >
+        <Field label="Notify me about">
+          <Select
+            value={notifications.scope}
+            onChange={(v) => settingsStore.setNotifyScope(v as NotifyScope)}
+            options={[
+              { label: "Everything", value: "all" },
+              { label: "Agents only", value: "agents" },
+              { label: "Orchestrator only", value: "orchestrator" },
+              { label: "Nothing", value: "off" },
+            ]}
+          />
+        </Field>
       </Section>
 
       <Section

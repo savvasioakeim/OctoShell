@@ -45,6 +45,11 @@ export type DefaultShell = string;
 export type TraceSpeed = "fast" | "normal" | "stealth" | "static";
 /** Speech-to-text backend: the browser's free Web Speech API, or Whisper. */
 export type SttEngine = "web" | "whisper";
+/** Which side may interrupt you. "agents" is every dispatched agent (each
+ *  one finishing, and each approval it waits on); "orchestrator" is the turn
+ *  in the sidebar landing, which on a fanned-out run is one ping instead of
+ *  five. "all" is both, "off" is neither. */
+export type NotifyScope = "all" | "agents" | "orchestrator" | "off";
 
 /** How the phone companion is exposed to the internet.
  *
@@ -178,10 +183,19 @@ export interface SettingsState {
   memory: MemorySettings;
   /** Phone companion exposure. */
   mobile: MobileSettings;
+  /** Which side may notify you (agents, the orchestrator, both, neither). */
+  notifications: NotifySettings;
   /** Extra environment variable NAMES to take from the login shell, beyond the
    *  built-in infrastructure allowlist. Names only; the values never leave the
    *  shell. This is how a token an MCP server needs gets in, as a decision. */
   envVars: string[];
+}
+
+/** Desktop (and phone) notifications: what is allowed to reach you when the
+ *  window is not in front. The taskbar dot follows the same scope, since it is
+ *  the orchestrator telling you something too, only quietly. */
+export interface NotifySettings {
+  scope: NotifyScope;
 }
 
 export interface MemorySettings {
@@ -223,6 +237,9 @@ const DEFAULT_APPEARANCE: AppearanceSettings = {
 };
 const DEFAULT_SYSTEM: SystemSettings = { scrollback: 1000, sandboxAgentCommands: false };
 const DEFAULT_MEMORY: MemorySettings = { enabled: false, retentionMonths: 6, topK: 6 };
+// Everything, as before this setting existed: a workspace that never touches
+// it keeps the behaviour it already had.
+const DEFAULT_NOTIFY: NotifySettings = { scope: "all" };
 const DEFAULT_REVIEW_AGENT: ReviewAgentSettings = { enabled: false, provider: "claude", model: null, profileId: null };
 const DEFAULT_OLLAMA: OllamaSettings = {
   baseUrl: "http://localhost:11434",
@@ -274,6 +291,7 @@ class SettingsStore {
       orchestratorReadonly: loadJSON<boolean>(KEY.orchestratorReadonly, true),
       memory: { ...DEFAULT_MEMORY, ...loadJSON<Partial<MemorySettings>>(KEY.memorySettings, {}) },
       mobile: { ...DEFAULT_MOBILE, ...loadJSON<Partial<MobileSettings>>(KEY.mobileSettings, {}) },
+      notifications: { ...DEFAULT_NOTIFY, ...loadJSON<Partial<NotifySettings>>(KEY.notifySettings, {}) },
       envVars: loadJSON<string[]>(KEY.envVars, []),
     };
     // Push the persisted sandbox flag to the backend once at startup so the ACP
@@ -322,11 +340,16 @@ class SettingsStore {
     saveJSON(KEY.orchestratorReadonly, next.orchestratorReadonly);
     saveJSON(KEY.memorySettings, next.memory);
     saveJSON(KEY.mobileSettings, next.mobile);
+    saveJSON(KEY.notifySettings, next.notifications);
     this.listeners.forEach((l) => l());
   }
 
   setOrchestratorReadonly(on: boolean): void {
     this.commit({ ...this.state, orchestratorReadonly: on });
+  }
+
+  setNotifyScope(scope: NotifyScope): void {
+    this.commit({ ...this.state, notifications: { ...this.state.notifications, scope } });
   }
 
   setMobile(patch: Partial<MobileSettings>): void {

@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { notifyAllowed } from "./notify";
 
 /** The orchestrator's state as the taskbar shows it: the same vocabulary the
  *  nodes inside the app use (see `shell/agentStatus.ts`). */
@@ -17,6 +18,10 @@ let current: TaskbarDot = "none";
  * taskbar pulse is a reason to leave the window in the first place.
  */
 export function setTaskbarDot(state: TaskbarDot): void {
+  // The dot is the orchestrator talking to you, so it answers to the same scope
+  // setting as the notifications. Turning it off clears whatever is painted
+  // rather than freezing it, which is why this becomes "none" instead of a return.
+  if (!notifyAllowed("orchestrator")) state = "none";
   const settled = state === "done" || state === "error";
   const next: TaskbarDot =
     settled && typeof document !== "undefined" && document.hasFocus() ? "none" : state;
