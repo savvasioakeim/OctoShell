@@ -103,7 +103,7 @@ function PortRow({ row, killing, onKill }: { row: Row; killing: boolean; onKill:
           onClick={onKill}
           disabled={killing}
           title={`Kill the process on :${row.port}`}
-          className="shrink-0 rounded border border-red-400/40 bg-red-500/10 px-1.5 py-0.5 text-[10px] font-medium text-red-300 hover:bg-red-500/20 disabled:opacity-50"
+          className="shrink-0 rounded-sm border border-red-400/40 bg-red-500/10 px-1.5 py-0.5 text-[10px] font-medium text-red-300 hover:bg-red-500/20 disabled:opacity-50"
         >
           {killing ? "…" : "Kill"}
         </button>

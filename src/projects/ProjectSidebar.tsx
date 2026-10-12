@@ -3,6 +3,7 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useReducer,
   useRef,
   useState,
@@ -11,6 +12,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { GitStat, Group, WorktreeRef } from "../App";
 import type { ShellController, ShellSnapshot } from "../shell/ShellController";
 import { statusOf, STATUS_COLOR as COLOR, STATUS_LABEL as LABEL } from "../shell/agentStatus";
+import { useAdapt, usePalette } from "../util/usePalette";
 import { KEY, loadJSON, saveJSON } from "../util/persist";
 import { ServicesView } from "../services/ServicesView";
 import { useServices, serviceStore } from "../services/serviceStore";
@@ -160,8 +162,23 @@ function Chevron({ open }: { open: boolean }) {
 export function ProjectSidebar(props: Props) {
   const {
     tabs, activeId, onSelect, onClose, onNew, onNewWorktree, onOpenSettings, width, stats,
-    groups, assign, onAssign, onReorder, onReorderGroup, unopened, onOpenWorktree, onRemoveWorktree,
+    groups: rawGroups, assign, onAssign, onReorder, onReorderGroup, unopened, onOpenWorktree,
+    onRemoveWorktree,
   } = props;
+
+  // A group is told apart by its colour, and those eight colours were picked
+  // against a near-black window. On a light theme the pale ones vanish, so
+  // they are adapted here, once, rather than at each of the six places that
+  // draws one (label, chevron, tint, spine trace, node fill, menu dot). On a
+  // dark theme `adapt` returns them unchanged.
+  const adapt = useAdapt();
+  const adaptText = (hex: string) => adapt(hex, 4);
+  const lightWindow = usePalette().mode === "light";
+  const groups = useMemo(
+    () => rawGroups.map((g) => ({ ...g, color: adapt(g.color, 2.2) })),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- adapt is new on every palette change, which is the point
+    [rawGroups, adapt],
+  );
 
   const snaps = useAllSnapshots(tabs);
 
@@ -298,7 +315,7 @@ export function ProjectSidebar(props: Props) {
           endDrag();
         }}
         style={style}
-        className={`group cursor-pointer rounded py-1 pr-2 transition-colors ${
+        className={`group cursor-pointer rounded-sm py-1 pr-2 transition-colors ${
           dragId === t.id ? "opacity-50" : ""
         } ${active ? "bg-accent/25 text-gray-100" : "text-muted hover:bg-edge/60"} ${
           // The open context menu says which row it belongs to -- otherwise, with
@@ -403,16 +420,22 @@ export function ProjectSidebar(props: Props) {
           ? { boxShadow: overGroup.pos === "before" ? "inset 0 2px 0 #7E57C2" : "inset 0 -2px 0 #7E57C2" }
           : {}),
       }}
-      className={`flex cursor-grab items-center gap-1 rounded py-1 pr-1 ${dragGroup === g.id ? "opacity-50" : ""}`}
+      className={`flex cursor-grab items-center gap-1 rounded-sm py-1 pr-1 ${dragGroup === g.id ? "opacity-50" : ""}`}
       title="Drag to reorder · right-click for options"
     >
-      <span className="min-w-0 truncate text-[10px] font-semibold uppercase tracking-wider" style={{ color: g.color }}>
+      <span
+        className="min-w-0 truncate text-[10px] font-semibold uppercase tracking-wider"
+        // 2.2:1 is enough for the dot beside it and nowhere near enough for
+        // 10px letters; `adapt` only ever moves further, so asking twice is
+        // safe and this is the one place that knows it is drawing text.
+        style={{ color: adaptText(g.color) }}
+      >
         {g.name}
       </span>
       <button
         onClick={(e) => { e.stopPropagation(); onToggle(); }}
         className="ml-0.5 flex shrink-0 items-center hover:opacity-80"
-        style={{ color: g.color }}
+        style={{ color: adaptText(g.color) }}
         title={isCollapsed ? "Expand group" : "Collapse group"}
       >
         <Chevron open={!isCollapsed} />
@@ -439,7 +462,7 @@ export function ProjectSidebar(props: Props) {
             <div
               key={w.path}
               style={{ paddingLeft: (depth + 1) * 14 + 8 }}
-              className="group flex items-center gap-1.5 rounded py-0.5 pr-1 text-[12px] text-muted/70 hover:bg-edge/40"
+              className="group flex items-center gap-1.5 rounded-sm py-0.5 pr-1 text-[12px] text-muted/70 hover:bg-edge/40"
               title={`${w.path}\nNot open — click to open it as a project`}
             >
               <button
@@ -469,7 +492,7 @@ export function ProjectSidebar(props: Props) {
               <button
                 onClick={() => onRemoveWorktree?.(w)}
                 title="Remove this worktree (frees its branch)"
-                className="shrink-0 rounded px-1 text-muted/50 opacity-0 transition-opacity hover:text-red-300 group-hover:opacity-100"
+                className="shrink-0 rounded-sm px-1 text-muted/50 opacity-0 transition-opacity hover:text-red-300 group-hover:opacity-100"
               >
                 ✕
               </button>
@@ -561,7 +584,14 @@ export function ProjectSidebar(props: Props) {
                   className="rounded-lg pt-2 pb-1 transition-colors"
                   // Whole group softly tinted in ITS color; a bit stronger while
                   // one of its projects is active.
-                  style={{ background: hexToRgba(g.color, activeGroupId === g.id ? 0.1 : 0.05) }}
+                  style={{
+                    // Half strength on a light window: the same wash that is a
+                    // hint over near-black is a stripe over white.
+                    background: hexToRgba(
+                      g.color,
+                      (activeGroupId === g.id ? 0.1 : 0.05) * (lightWindow ? 0.5 : 1),
+                    ),
+                  }}
                 >
                   {renderGroupHeader(g, isCollapsed, () => toggleGroup(g.id))}
                   {!isCollapsed && members.map((t) => renderProject(t, 2))}
@@ -585,7 +615,7 @@ export function ProjectSidebar(props: Props) {
             }}
             onBlur={() => setWtInput(null)}
             placeholder="branch name… (Enter)"
-            className="w-full rounded-md border border-edge bg-ink px-2 py-1.5 text-xs text-gray-100 outline-none focus:border-accent placeholder:text-muted/60"
+            className="w-full rounded-md border border-edge bg-ink px-2 py-1.5 text-xs text-gray-100 outline-hidden focus:border-accent placeholder:text-muted/60"
           />
         ) : (
           <button
@@ -729,11 +759,17 @@ function Board({
     for (const c of childrenOf(t.id)) emit(c, depth + 1, self);
   };
 
+  const adapt = useAdapt();
+  // The colour the nodes are outlined in: the reading surface itself, so a
+  // node reads as cut out of it. An SVG presentation attribute cannot hold a
+  // CSS variable, which is why this is a value and not `var(--color-card)`.
+  const surface = usePalette().card;
+
   function node(t: ProjectTab, cy: number, cx: number, r: number, ring: string) {
     const st = statusOf(snaps.get(t.id));
     const isActive = t.id === activeId;
     const orch = orchestrated(t.id);
-    const fill = COLOR[st];
+    const fill = adapt(COLOR[st], 2.2);
     const g = groupOf(t.id);
     // Orchestrated nodes get an accent ring + strong glow (the tentacle's grip);
     // otherwise active = accent highlight, idle = group/neutral ring.
@@ -777,7 +813,7 @@ function Board({
         cy={gy}
         r={GROUP_R}
         fill={g.color}
-        stroke="#15181F"
+        stroke={surface}
         strokeWidth={2}
         style={{ cursor: "pointer", pointerEvents: "auto" }}
         onClick={() => members[0] && onSelect(members[0].id)}
@@ -813,7 +849,7 @@ function Board({
         cy={ROOT_Y}
         r={ROOT_R}
         fill={FLOW}
-        stroke="#15181F"
+        stroke={surface}
         strokeWidth={2}
       >
         <title>OctoShell</title>
@@ -936,7 +972,7 @@ function ContextMenu({
                   else if (e.key === "Escape") close();
                 }}
                 placeholder="⚡ Give the agent a task…"
-                className="w-full rounded bg-ink px-2 py-1 text-xs text-gray-100 outline-none placeholder:text-muted/60"
+                className="w-full rounded-sm bg-ink px-2 py-1 text-xs text-gray-100 outline-hidden placeholder:text-muted/60"
                 autoFocus
               />
             </div>
@@ -1085,7 +1121,7 @@ function ContextMenu({
                       else if (e.key === "Escape") close();
                     }}
                     placeholder="⚡ Task for every project…"
-                    className="w-full rounded bg-ink px-2 py-1 text-xs text-gray-100 outline-none placeholder:text-muted/60"
+                    className="w-full rounded-sm bg-ink px-2 py-1 text-xs text-gray-100 outline-hidden placeholder:text-muted/60"
                     autoFocus
                   />
                 </div>
@@ -1102,7 +1138,7 @@ function ContextMenu({
                   else if (e.key === "Escape") close();
                 }}
                 placeholder="Group name"
-                className="w-full rounded bg-ink px-2 py-1 text-xs text-gray-100 outline-none"
+                className="w-full rounded-sm bg-ink px-2 py-1 text-xs text-gray-100 outline-hidden"
               />
             </div>
             <div className="flex flex-wrap gap-1.5 px-3 py-1.5">

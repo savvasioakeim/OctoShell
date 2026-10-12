@@ -7,6 +7,7 @@ import { useSyncExternalStore } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { KEY, loadJSON, saveJSON } from "../util/persist";
 import type { AgentProvider } from "../agents/providers";
+import { DEFAULT_THEME, isKnownTheme } from "../util/theme";
 
 /** A Claude Code profile = a named `CLAUDE_CONFIG_DIR` (its own logged-in account). */
 export interface Profile {
@@ -43,8 +44,18 @@ export type AutoCleanMode = "off" | "onApprove" | "onMerge";
 export type DefaultShell = string;
 /** How fast the PCB trace animations flow while agents work. */
 export type TraceSpeed = "fast" | "normal" | "stealth" | "static";
+/** The three columns of the workspace, as the layout setting names them:
+ *  the project list, the terminal/feed panel, and the orchestrator chat. */
+export type ColumnId = "projects" | "work" | "orchestrator";
+/** Left to right. Always a permutation of the three, never fewer. */
+export type ColumnOrder = [ColumnId, ColumnId, ColumnId];
 /** Speech-to-text backend: the browser's free Web Speech API, or Whisper. */
 export type SttEngine = "web" | "whisper";
+/** Which side may interrupt you. "agents" is every dispatched agent (each
+ *  one finishing, and each approval it waits on); "orchestrator" is the turn
+ *  in the sidebar landing, which on a fanned-out run is one ping instead of
+ *  five. "all" is both, "off" is neither. */
+export type NotifyScope = "all" | "agents" | "orchestrator" | "off";
 
 /** How the phone companion is exposed to the internet.
  *
@@ -101,10 +112,18 @@ export interface WorkspaceSettings {
 export interface AppearanceSettings {
   /** Monospace font family for the terminal/feed ("" = theme default). */
   fontFamily: string;
+  /** Root font size in px. Every rem-based size in the app scales from it,
+   *  so this is the one knob for "make the whole UI bigger". */
+  fontSize: number;
+  /** A Shiki/VS Code theme id — the window's colours and the code
+   *  highlighting both come from it. See util/theme.ts. */
+  theme: string;
   /** PCB trace animation speed. */
   traceSpeed: TraceSpeed;
   /** Play subtle sci-fi SFX on task done / error. */
   sfx: boolean;
+  /** Which column each of the three panels sits in, left to right. */
+  columns: ColumnOrder;
 }
 export interface SystemSettings {
   /** Max terminal output lines kept per command block before trimming. */
@@ -178,10 +197,19 @@ export interface SettingsState {
   memory: MemorySettings;
   /** Phone companion exposure. */
   mobile: MobileSettings;
+  /** Which side may notify you (agents, the orchestrator, both, neither). */
+  notifications: NotifySettings;
   /** Extra environment variable NAMES to take from the login shell, beyond the
    *  built-in infrastructure allowlist. Names only; the values never leave the
    *  shell. This is how a token an MCP server needs gets in, as a decision. */
   envVars: string[];
+}
+
+/** Desktop (and phone) notifications: what is allowed to reach you when the
+ *  window is not in front. The taskbar dot follows the same scope, since it is
+ *  the orchestrator telling you something too, only quietly. */
+export interface NotifySettings {
+  scope: NotifyScope;
 }
 
 export interface MemorySettings {
@@ -216,19 +244,55 @@ const DEFAULT_WORKSPACE: WorkspaceSettings = {
   defaultShell: "powershell",
   guardProtectedFolders: true,
 };
+/** Root font size bounds. The low end still fits the sidebar labels; the high
+ *  end is where a 1280px window stops holding three columns. */
+export const FONT_SIZE_MIN = 13;
+export const FONT_SIZE_MAX = 22;
+/** 17px matches the user's VS Code and is what styles.css has always set. */
+export const FONT_SIZE_DEFAULT = 17;
+
+export const DEFAULT_COLUMNS: ColumnOrder = ["projects", "work", "orchestrator"];
+
 const DEFAULT_APPEARANCE: AppearanceSettings = {
   fontFamily: "",
+  fontSize: FONT_SIZE_DEFAULT,
+  theme: DEFAULT_THEME,
   traceSpeed: "normal",
   sfx: false,
+  columns: DEFAULT_COLUMNS,
 };
+
+/** Repair a persisted column order. A dropped, duplicated or unknown id would
+ *  otherwise hide a whole panel with no way back to it from the UI, so anything
+ *  missing is appended in its default position. */
+export function normalizeColumns(saved: unknown): ColumnOrder {
+  const list = Array.isArray(saved) ? saved : [];
+  const seen: ColumnId[] = [];
+  for (const id of list) {
+    if (DEFAULT_COLUMNS.includes(id as ColumnId) && !seen.includes(id as ColumnId)) seen.push(id as ColumnId);
+  }
+  for (const id of DEFAULT_COLUMNS) if (!seen.includes(id)) seen.push(id);
+  return seen as ColumnOrder;
+}
 const DEFAULT_SYSTEM: SystemSettings = { scrollback: 1000, sandboxAgentCommands: false };
 const DEFAULT_MEMORY: MemorySettings = { enabled: false, retentionMonths: 6, topK: 6 };
+// Everything, as before this setting existed: a workspace that never touches
+// it keeps the behaviour it already had.
+const DEFAULT_NOTIFY: NotifySettings = { scope: "all" };
 const DEFAULT_REVIEW_AGENT: ReviewAgentSettings = { enabled: false, provider: "claude", model: null, profileId: null };
 const DEFAULT_OLLAMA: OllamaSettings = {
   baseUrl: "http://localhost:11434",
   contextWindow: 8192,
   temperature: 0.2,
 };
+
+/** Keep a persisted or typed font size inside the usable range, and integral.
+ *  A 4px UI is not a preference, it is a locked door. */
+function clampFontSize(px: number | undefined): number {
+  const n = Math.round(Number(px));
+  if (!Number.isFinite(n)) return FONT_SIZE_DEFAULT;
+  return Math.max(FONT_SIZE_MIN, Math.min(FONT_SIZE_MAX, n));
+}
 
 class SettingsStore {
   private state: SettingsState;
@@ -264,7 +328,25 @@ class SettingsStore {
       sttEngine: loadJSON<SttEngine>(KEY.sttEngine, "web"),
       // Merge persisted over defaults so a new field added later is filled in.
       workspace: { ...DEFAULT_WORKSPACE, ...loadJSON<Partial<WorkspaceSettings>>(KEY.workspaceSettings, {}) },
-      appearance: { ...DEFAULT_APPEARANCE, ...loadJSON<Partial<AppearanceSettings>>(KEY.appearanceSettings, {}) },
+      appearance: (() => {
+        const saved = { ...DEFAULT_APPEARANCE, ...loadJSON<Partial<AppearanceSettings>>(KEY.appearanceSettings, {}) };
+        // Validate what came off disk: a theme id that no longer exists (Shiki
+        // dropped it, or the file was edited) would leave the app with the
+        // stylesheet palette and no way to tell why.
+        //
+        // The default theme also changed name. It used to be stored as the VS
+        // Code theme the app was drawn alongside, while what it actually painted
+        // was our own palette; now that we ship themes under our own names it is
+        // "octo". Without this line everyone already running the app would be
+        // moved onto the derived Palenight instead, which is a different window.
+        const theme = saved.theme === "material-theme-palenight" ? DEFAULT_THEME : saved.theme;
+        return {
+          ...saved,
+          theme: isKnownTheme(theme) ? theme : DEFAULT_THEME,
+          fontSize: clampFontSize(saved.fontSize),
+          columns: normalizeColumns(saved.columns),
+        };
+      })(),
       system: { ...DEFAULT_SYSTEM, ...loadJSON<Partial<SystemSettings>>(KEY.systemSettings, {}) },
       reviewAgent: { ...DEFAULT_REVIEW_AGENT, ...loadJSON<Partial<ReviewAgentSettings>>(KEY.reviewAgent, {}) },
       ollama: { ...DEFAULT_OLLAMA, ...loadJSON<Partial<OllamaSettings>>(KEY.ollamaSettings, {}) },
@@ -274,6 +356,7 @@ class SettingsStore {
       orchestratorReadonly: loadJSON<boolean>(KEY.orchestratorReadonly, true),
       memory: { ...DEFAULT_MEMORY, ...loadJSON<Partial<MemorySettings>>(KEY.memorySettings, {}) },
       mobile: { ...DEFAULT_MOBILE, ...loadJSON<Partial<MobileSettings>>(KEY.mobileSettings, {}) },
+      notifications: { ...DEFAULT_NOTIFY, ...loadJSON<Partial<NotifySettings>>(KEY.notifySettings, {}) },
       envVars: loadJSON<string[]>(KEY.envVars, []),
     };
     // Push the persisted sandbox flag to the backend once at startup so the ACP
@@ -322,11 +405,16 @@ class SettingsStore {
     saveJSON(KEY.orchestratorReadonly, next.orchestratorReadonly);
     saveJSON(KEY.memorySettings, next.memory);
     saveJSON(KEY.mobileSettings, next.mobile);
+    saveJSON(KEY.notifySettings, next.notifications);
     this.listeners.forEach((l) => l());
   }
 
   setOrchestratorReadonly(on: boolean): void {
     this.commit({ ...this.state, orchestratorReadonly: on });
+  }
+
+  setNotifyScope(scope: NotifyScope): void {
+    this.commit({ ...this.state, notifications: { ...this.state.notifications, scope } });
   }
 
   setMobile(patch: Partial<MobileSettings>): void {
@@ -381,7 +469,20 @@ class SettingsStore {
     this.commit({ ...this.state, workspace: { ...this.state.workspace, ...patch } });
   }
   setAppearance(patch: Partial<AppearanceSettings>): void {
-    this.commit({ ...this.state, appearance: { ...this.state.appearance, ...patch } });
+    const next = { ...this.state.appearance, ...patch };
+    if (patch.fontSize !== undefined) next.fontSize = clampFontSize(patch.fontSize);
+    if (patch.columns !== undefined) next.columns = normalizeColumns(patch.columns);
+    this.commit({ ...this.state, appearance: next });
+  }
+
+  /** Move one panel into the column `index` (0 left, 2 right), sliding the
+   *  others along. Swapping the two would be simpler, but it makes "put the
+   *  orchestrator on the left" also move the project list to the right, which
+   *  is not what anyone asked for. */
+  moveColumn(id: ColumnId, index: number): void {
+    const rest = this.state.appearance.columns.filter((c) => c !== id);
+    const at = Math.max(0, Math.min(rest.length, index));
+    this.setAppearance({ columns: [...rest.slice(0, at), id, ...rest.slice(at)] as ColumnOrder });
   }
   setSystem(patch: Partial<SystemSettings>): void {
     this.commit({ ...this.state, system: { ...this.state.system, ...patch } });

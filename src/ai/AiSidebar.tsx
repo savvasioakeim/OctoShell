@@ -25,6 +25,8 @@ import { useSettings } from "../settings/settingsStore";
 import { dragHasFiles, filesFromDrop, saveDroppedFile } from "../util/drop";
 import { memoryStore, type Recalled } from "../memory/memoryStore";
 import { platform, shellLabel } from "../platform/platform";
+import { setTaskbarDot } from "../util/taskbarDot";
+import { notify } from "../util/notify";
 import {
   statusOf,
   STATUS_COLOR,
@@ -32,6 +34,7 @@ import {
   STATUS_ORDER,
   type AgentStatus,
 } from "../shell/agentStatus";
+import { useAdapt } from "../util/usePalette";
 
 /** Per-action lifecycle once the model proposed it (keyed `msgIndex:actionIndex`). */
 /** `running` is the in-flight state. Worktree dispatch awaits `git worktree add`
@@ -239,6 +242,9 @@ function useAllReviews(projects: ProjectRef[]): Map<string, ReviewSnapshot> {
  * overview lets the user jump to a project or cancel a running agent.
  */
 export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseProject, onOpenStrategy, width }: Props) {
+  // The status colours are drawn through inline styles, so they are adapted
+  // here rather than by the light-mode rules in styles.css.
+  const adapt = useAdapt();
   const snaps = useAllSnapshots(tabs);
   const reviews = useAllReviews(tabs);
   // Chat sessions: the active session's content IS the live messages/actionState,
@@ -454,22 +460,35 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
         const byId = new Map(stored.map((s) => [s.id, s]));
         for (const local of sessionsRef.current) {
           const db = byId.get(local.id);
+          // Skip the placeholder `loadSessions` mounts us with: it has no messages
+          // and no row, and adopting it is what used to open a blank chat on every
+          // launch. Its `updatedAt` is now, so it sorted first, became the active
+          // chat, and got written back -- one dead "New chat" row per start.
+          if (!db && !local.messages.length) continue;
           if (!db || local.messages.length > db.messages.length) byId.set(local.id, local);
         }
         const merged = [...byId.values()].sort((a, b) => b.updatedAt - a.updatedAt);
-        setSessions(merged);
+        // Clear out the empty chats earlier versions left behind. An empty chat
+        // holds nothing to lose, and leaving them means the chat list is mostly
+        // "New chat". Keep one if that is all there is, so the list is never bare.
+        const empty = merged.filter((s) => !s.messages.length);
+        const kept = merged.length > empty.length ? merged.filter((s) => s.messages.length) : merged;
+        for (const dead of merged.filter((s) => !kept.includes(s))) void deleteChatDb(dead.id);
+        setSessions(kept);
         // Write every chat back, then drop the localStorage copy. Without this the
         // old copy stays behind for good once the database has rows -- and since it
         // is what filled localStorage to its cap, leaving it there means every
         // OTHER setItem in the app keeps failing silently.
         void (async () => {
-          const ok = await Promise.all(merged.map((s) => saveChatDb(s)));
+          const ok = await Promise.all(kept.map((s) => saveChatDb(s)));
           if (ok.every(Boolean)) {
             removeKey(KEY.assistantSessions);
             removeKey(KEY.assistant); // the pre-sessions single chat, if any
           }
         })();
-        const active = merged.find((s) => s.id === chatIdRef.current) ?? merged[0];
+        // The chat that was open, or else the one used last: a restart lands back
+        // where the work was left rather than on an empty composer.
+        const active = kept.find((s) => s.id === chatIdRef.current) ?? kept[0];
         if (active) {
           setChatId(active.id);
           // Only adopt the stored messages when this chat is still untouched, so a
@@ -821,6 +840,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
       void client.cancel(id);
       currentReqRef.current = null;
     }
+    turnCancelledRef.current = true;
     setThinking(false);
   }, []);
 
@@ -832,6 +852,38 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
   messagesRef.current = messages;
   const thinkingRef = useRef(thinking);
   thinkingRef.current = thinking;
+
+  // The taskbar dot. The agents finishing one by one is not the event worth
+  // leaving the window for; the orchestrator landing is, so that is what the
+  // app icon reports: pulsing blue while it thinks, a green dot when the turn
+  // lands, red when it failed. Stopping a turn yourself is not a result, so it
+  // clears instead (the flag is a ref because `stopTurn` runs before the
+  // effect below sees `thinking` go false, and would otherwise be overwritten).
+  const turnCancelledRef = useRef(false);
+  const wasThinkingRef = useRef(false);
+  useEffect(() => {
+    if (thinking) {
+      setTaskbarDot("working");
+    } else if (wasThinkingRef.current) {
+      const last = messages[messages.length - 1];
+      // The turn reports its own failure as an assistant message (see `ask`).
+      const failed = last?.role === "assistant" && last.content.startsWith("⚠️");
+      setTaskbarDot(turnCancelledRef.current ? "none" : failed ? "error" : "done");
+      // On a fanned-out run this is the one event worth coming back for, so it
+      // gets a notification of its own rather than only the dot. Stopping the
+      // turn yourself is not news. `notify` keeps quiet when the window is in
+      // front, and when the setting says the orchestrator may not interrupt.
+      if (!turnCancelledRef.current) {
+        void notify(
+          failed ? "🐙 OctoShell: the orchestrator stopped" : "🐙 OctoShell: the orchestrator is done",
+          failed ? "The turn ended early — open OctoShell to see why." : "Open OctoShell to read the answer.",
+          "orchestrator",
+        );
+      }
+    }
+    turnCancelledRef.current = false;
+    wasThinkingRef.current = thinking;
+  }, [thinking, messages]);
   const sessionsRef = useRef(sessions);
   sessionsRef.current = sessions;
   const chatIdRef = useRef(chatId);
@@ -884,6 +936,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
       void client.cancel(id);
       currentReqRef.current = null;
     }
+    turnCancelledRef.current = true;
     setThinking(false);
     // Halt the autonomy loop so a finished agent can't re-ping the orchestrator.
     watchedRef.current.clear();
@@ -1703,7 +1756,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
             onClick={stopAll}
             disabled={!canStop}
             title="Stop everything — orchestrator + all agents (like Escape)"
-            className={`inline-flex h-6 items-center gap-1 rounded border border-transparent px-1.5 text-[10px] font-semibold ${
+            className={`inline-flex h-6 items-center gap-1 rounded-sm border border-transparent px-1.5 text-[10px] font-semibold ${
               canStop
                 ? "bg-red-500/25 text-red-200 hover:bg-red-500/35"
                 : "border border-edge text-muted/50"
@@ -1718,7 +1771,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
               setSessionMenu(true);
             }}
             title="Chats — new chat + switch/search existing"
-            className="inline-flex h-6 items-center gap-1 rounded border border-[#7c5cff]/50 px-1.5 text-[10px] text-muted hover:bg-[#7c5cff]/15 hover:text-gray-200"
+            className="inline-flex h-6 items-center gap-1 rounded-sm border border-[#7c5cff]/50 px-1.5 text-[10px] text-muted hover:bg-[#7c5cff]/15 hover:text-gray-200"
           >
             <svg viewBox="0 0 24 24" fill="none" stroke="url(#chat-grad)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 shrink-0" aria-hidden>
               <defs>
@@ -1734,7 +1787,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
           <button
             onClick={() => setAutoRun((v) => !v)}
             title={autoRun ? "Auto-run: actions run without confirmation" : "Confirm: every action needs a click"}
-            className={`inline-flex h-6 items-center gap-1 rounded border border-transparent px-1.5 text-[10px] font-medium ${
+            className={`inline-flex h-6 items-center gap-1 rounded-sm border border-transparent px-1.5 text-[10px] font-medium ${
               autoRun ? "bg-amber-500/20 text-amber-300" : "text-muted hover:bg-edge/50 hover:text-gray-200"
             }`}
           >
@@ -1747,7 +1800,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
                 ? "Live watch: continues on its own when an agent finishes"
                 : "Live watch off"
             }
-            className={`inline-flex h-6 items-center gap-1 rounded border border-transparent px-1.5 text-[10px] font-medium ${
+            className={`inline-flex h-6 items-center gap-1 rounded-sm border border-transparent px-1.5 text-[10px] font-medium ${
               liveWatch ? "bg-emerald-500/20 text-emerald-300" : "text-muted hover:bg-edge/50 hover:text-gray-200"
             }`}
           >
@@ -1781,7 +1834,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
               <span className="text-[11px] text-muted">{sessions.length}</span>
               <button
                 onClick={() => setSessionMenu(false)}
-                className="ml-auto rounded px-2 py-0.5 text-sm text-muted hover:bg-edge hover:text-gray-200"
+                className="ml-auto rounded-sm px-2 py-0.5 text-sm text-muted hover:bg-edge hover:text-gray-200"
               >
                 ✕
               </button>
@@ -1798,7 +1851,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
                 onChange={(e) => setChatSearch(e.target.value)}
                 autoFocus
                 placeholder="Search chats…"
-                className="w-full rounded-lg border border-edge bg-card px-3 py-1.5 text-sm text-gray-100 outline-none placeholder:text-muted/50 focus:border-accent"
+                className="w-full rounded-lg border border-edge bg-card px-3 py-1.5 text-sm text-gray-100 outline-hidden placeholder:text-muted/50 focus:border-accent"
               />
             </div>
             <ul className="min-h-0 flex-1 overflow-y-auto py-1">
@@ -1842,7 +1895,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
                 key={t.id}
                 onClick={() => setAgentFilter(t.id)}
                 disabled={empty}
-                className={`flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors ${
+                className={`flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-[10px] font-medium transition-colors ${
                   active ? "bg-edge text-gray-100" : "text-muted hover:bg-edge/50"
                 } ${empty ? "opacity-40" : ""}`}
               >
@@ -1855,7 +1908,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
           <button
             onClick={() => setPane((p) => (p === "agents" ? "system" : "agents"))}
             title={pane === "agents" ? "Show this machine's CPU, memory and disk" : "Back to the agent list"}
-            className={`ml-auto flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors ${
+            className={`ml-auto flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-[10px] font-medium transition-colors ${
               pane === "system" ? "bg-edge text-gray-100" : "text-muted hover:bg-edge/50"
             }`}
           >
@@ -1874,13 +1927,13 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
             return (
               <div
                 key={p.id}
-                className={`flex items-center gap-2 rounded px-1.5 py-1 text-xs hover:bg-edge/50 ${
+                className={`flex items-center gap-2 rounded-sm px-1.5 py-1 text-xs hover:bg-edge/50 ${
                   status === "idle" ? "opacity-55" : ""
                 }`}
               >
                 <span
                   className={`h-1.5 w-1.5 shrink-0 rounded-full ${running ? "animate-pulse" : ""}`}
-                  style={{ background: STATUS_COLOR[status] }}
+                  style={{ background: adapt(STATUS_COLOR[status], 2.2) }}
                 />
                 <button onClick={() => onSelect(p.id)} className="flex-1 truncate text-left text-gray-200">
                   {p.name}
@@ -1890,14 +1943,16 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
                     👁
                   </span>
                 )}
-                <span className="text-[10px]" style={{ color: STATUS_COLOR[status] }}>
+                {/* 10px text, so it asks for the ratio text needs rather than
+                    the lower one that suits the dot above. */}
+                <span className="text-[10px]" style={{ color: adapt(STATUS_COLOR[status], 4) }}>
                   {STATUS_SHORT[status]}
                 </span>
                 {running && (
                   <button
                     onClick={() => p.controller.cancelAgent()}
                     title="Cancel agent"
-                    className="rounded px-1 text-red-300 hover:bg-red-500/20"
+                    className="rounded-sm px-1 text-red-300 hover:bg-red-500/20"
                   >
                     ✕
                   </button>
@@ -1964,7 +2019,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
               {qa.items.length > 0 && (
                 <button
                   onClick={() => startQa(qa.items, qaHistory.add({ items: qa.items, key: qaKey(m.content) }))}
-                  className="mt-2 w-full rounded bg-emerald-500/20 px-2 py-1.5 text-xs font-medium text-emerald-200 hover:bg-emerald-500/30"
+                  className="mt-2 w-full rounded-sm bg-emerald-500/20 px-2 py-1.5 text-xs font-medium text-emerald-200 hover:bg-emerald-500/30"
                 >
                   🔍 Open QA Mode ({qa.items.length} feature{qa.items.length > 1 ? "s" : ""})
                 </button>
@@ -1992,7 +2047,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
                           if (!actionState[key]) runAction(key, a);
                         })
                       }
-                      className="w-full rounded bg-accent/20 px-2 py-1 text-xs font-medium text-accent hover:bg-accent/30"
+                      className="w-full rounded-sm bg-accent/20 px-2 py-1 text-xs font-medium text-accent hover:bg-accent/30"
                     >
                       ▶ Run all ({pending.length})
                     </button>
@@ -2024,7 +2079,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
         onDrop={(e) => void onDropFiles(e)}
       >
         {dropErr && (
-          <div className="mb-1.5 flex items-center gap-2 rounded border border-red-500/40 bg-red-500/10 px-2 py-1 text-[11px] text-red-300">
+          <div className="mb-1.5 flex items-center gap-2 rounded-sm border border-red-500/40 bg-red-500/10 px-2 py-1 text-[11px] text-red-300">
             <span className="flex-1">{dropErr}</span>
             <button onClick={() => setDropErr(null)} title="Dismiss" className="text-red-300/70 hover:text-red-200">
               ✕
@@ -2036,7 +2091,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
             {drops.map((p, i) => (
               <span
                 key={`${p}-${i}`}
-                className="flex items-center gap-1 rounded border border-edge bg-card px-1.5 py-0.5 text-[11px] text-gray-200"
+                className="flex items-center gap-1 rounded-sm border border-edge bg-card px-1.5 py-0.5 text-[11px] text-gray-200"
               >
                 <span className="shrink-0">📎</span>
                 <span className="max-w-[160px] truncate" title={p}>{p.split(/[\\/]/).pop() || p}</span>
@@ -2074,7 +2129,7 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
               }
             }}
             placeholder="Ask about all your projects…"
-            className="max-h-[220px] flex-1 resize-none overflow-y-auto bg-transparent text-sm leading-relaxed text-gray-100 caret-accent outline-none placeholder:text-muted/50"
+            className="max-h-[220px] flex-1 resize-none overflow-y-auto bg-transparent text-sm leading-relaxed text-gray-100 caret-accent outline-hidden placeholder:text-muted/50"
           />
         </div>
       </div>
@@ -2232,7 +2287,7 @@ function WatchTick({ content }: { content: string }) {
         👁 live watch · continuation {open ? "▾" : "▸"}
       </button>
       {open && (
-        <div className="mt-1 whitespace-pre-wrap break-words rounded bg-well/40 px-2 py-1 text-[10px] text-muted/70">
+        <div className="mt-1 whitespace-pre-wrap break-words rounded-sm bg-well/40 px-2 py-1 text-[10px] text-muted/70">
           {content}
         </div>
       )}
@@ -2270,7 +2325,7 @@ function ActionCard({
   // and silence is what made people click Confirm again, so say so plainly.
   if (state === "running") {
     return (
-      <div className="flex items-center gap-1.5 rounded border border-accent/30 bg-accent/10 px-2 py-1.5 text-xs text-accent">
+      <div className="flex items-center gap-1.5 rounded-sm border border-accent/30 bg-accent/10 px-2 py-1.5 text-xs text-accent">
         <span className="animate-pulse">●</span>
         <span>
           {isDispatch ? "Dispatching to" : isReview ? "Starting review on" : "Stopping"} <b>{target}</b>…
@@ -2280,21 +2335,21 @@ function ActionCard({
   }
   if (state === "done") {
     return (
-      <div className="rounded border border-emerald-500/30 bg-emerald-500/10 px-2 py-1.5 text-xs text-emerald-300">
+      <div className="rounded-sm border border-emerald-500/30 bg-emerald-500/10 px-2 py-1.5 text-xs text-emerald-300">
         ✓ {doneLabel} <b>{target}</b>
       </div>
     );
   }
   if (state === "dismissed") {
     return (
-      <div className="rounded border border-edge bg-edge/30 px-2 py-1.5 text-xs text-muted line-through">
+      <div className="rounded-sm border border-edge bg-edge/30 px-2 py-1.5 text-xs text-muted line-through">
         {dismissLabel} {target}
       </div>
     );
   }
   if (state === "error") {
     return (
-      <div className="rounded border border-red-500/30 bg-red-500/10 px-2 py-1.5 text-xs text-red-300">
+      <div className="rounded-sm border border-red-500/30 bg-red-500/10 px-2 py-1.5 text-xs text-red-300">
         <div>
           ⚠️ Couldn't {isDispatch ? "dispatch to" : isReview ? "review" : "cancel"} "{target}".
         </div>
@@ -2311,20 +2366,20 @@ function ActionCard({
         </span>
       </div>
       {isDispatch && (
-        <div className="mt-1 max-h-40 overflow-y-auto whitespace-pre-wrap break-words rounded bg-well/60 px-2 py-1 text-xs text-gray-300">
+        <div className="mt-1 max-h-40 overflow-y-auto whitespace-pre-wrap break-words rounded-sm bg-well/60 px-2 py-1 text-xs text-gray-300">
           {action.prompt}
         </div>
       )}
       <div className="mt-2 flex gap-2">
         <button
           onClick={onConfirm}
-          className="rounded bg-accent px-2.5 py-1 text-xs font-medium text-white hover:bg-accent/80"
+          className="rounded-sm bg-accentfill px-2.5 py-1 text-xs font-medium text-onaccent hover:bg-accent/80"
         >
           ✓ Confirm
         </button>
         <button
           onClick={onDismiss}
-          className="rounded border border-edge px-2.5 py-1 text-xs text-muted hover:bg-edge/50"
+          className="rounded-sm border border-edge px-2.5 py-1 text-xs text-muted hover:bg-edge/50"
         >
           Dismiss
         </button>

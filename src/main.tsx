@@ -10,8 +10,19 @@ import { App } from "./App";
 import { QaWindow } from "./qa/QaWindow";
 import { ShellController } from "./shell/ShellController";
 import { initPlatform } from "./platform/platform";
+import { settingsStore } from "./settings/settingsStore";
+import { applyCachedPalette } from "./util/theme";
 
 async function bootstrap() {
+  // The colours from the last run, before anything is drawn. The chosen theme
+  // loads asynchronously (see util/theme) and will confirm or correct this; the
+  // point is that the window never opens in the wrong palette first.
+  applyCachedPalette();
+  // Same for the interface size, which is read straight from settings (those are
+  // in localStorage, so they are already in hand). Without this the window opens
+  // at the default size and resizes itself once React mounts.
+  document.documentElement.style.fontSize = `${settingsStore.getSnapshot().appearance.fontSize}px`;
+
   // Which OS, which shells: everything platform-specific reads this synchronously
   // later, so it must be in place before the first render or the first PTY.
   await initPlatform();

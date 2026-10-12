@@ -15,7 +15,7 @@ function renderInline(text: string): ReactNode[] {
       nodes.push(<strong key={key++} className="font-medium text-gray-100">{tok.slice(2, -2)}</strong>);
     } else {
       nodes.push(
-        <code key={key++} className="rounded bg-edge px-1 text-[0.9em] text-accent">
+        <code key={key++} className="rounded-sm bg-edge px-1 text-[0.9em] text-accent">
           {tok.slice(1, -1)}
         </code>,
       );
@@ -80,7 +80,7 @@ export function Markdown({ text, className }: { text: string; className?: string
             key={i}
             code={code}
             lang={lang}
-            className="my-1 overflow-x-auto rounded bg-well px-2 py-1.5 text-[14px] text-gray-200"
+            className="my-1 overflow-x-auto rounded-sm bg-well px-2 py-1.5 text-[14px] text-gray-200"
           />
         );
       })}

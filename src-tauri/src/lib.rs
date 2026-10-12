@@ -2,6 +2,7 @@ mod acp;
 mod agent;
 mod ai;
 mod approval;
+mod badge;
 mod completion;
 mod docker;
 mod embed;
@@ -210,6 +211,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            badge::badge_set,
             pty::open_new_tab,
             pty::write_to_terminal,
             pty::resize_terminal,

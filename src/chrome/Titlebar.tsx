@@ -35,7 +35,7 @@ export function Titlebar() {
   }, []);
 
   const btn =
-    "flex h-full w-[46px] items-center justify-center text-muted hover:bg-edge hover:text-white transition-colors";
+    "flex h-full w-[46px] items-center justify-center text-muted hover:bg-edge hover:text-gray-100 transition-colors";
 
   const mac = isMac();
   // Room for the native traffic lights (they end at x≈58 by default), except in
@@ -66,7 +66,8 @@ export function Titlebar() {
         >
           {maximized ? (
             <svg width="11" height="11" viewBox="0 0 11 11" fill="none" stroke="currentColor">
-              <rect x="2.5" y="0.5" width="7" height="7" /><rect x="0.5" y="2.5" width="7" height="7" fill="#252A3A" />
+              <rect x="2.5" y="0.5" width="7" height="7" />
+              <rect x="0.5" y="2.5" width="7" height="7" style={{ fill: "var(--color-chrome)" }} />
             </svg>
           ) : (
             <svg width="11" height="11" viewBox="0 0 11 11" fill="none" stroke="currentColor"><rect x="0.5" y="0.5" width="9" height="9" /></svg>

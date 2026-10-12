@@ -58,7 +58,7 @@ function ServiceRow({ s, open, onToggle }: { s: ServiceEntry; open: boolean; onT
         {s.startedBy && (
           <span
             title={`Started by the ${s.startedBy} agent`}
-            className="shrink-0 rounded bg-accent/15 px-1 text-[9px] font-medium uppercase tracking-wide text-accent"
+            className="shrink-0 rounded-sm bg-accent/15 px-1 text-[9px] font-medium uppercase tracking-wide text-accent"
           >
             agent
           </span>

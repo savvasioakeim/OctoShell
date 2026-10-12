@@ -7,10 +7,11 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { ansiToHtml, stripAnsi } from "../util/ansi";
 import { KEY, loadJSON, removeKey, saveJSON } from "../util/persist";
 import { deleteBlocksDb, loadBlocksDb, saveBlocksDb } from "../util/db";
-import { notify } from "../util/notify";
+import { notify, notifyAllowed } from "../util/notify";
 import { playSfx } from "../util/sfx";
 import { acpCommandFor, acpSandboxCommandFor, acpSessionConfigFor, configDirEnvFor, isAcp, normalizeProvider, parseAgentLine, prepareOpencodeConfig, supportsEffort, type AgentProvider, type AgentStep } from "../agents/providers";
 import { settingsStore } from "../settings/settingsStore";
+import { currentPalette, onPalette, xtermTheme } from "../util/theme";
 import { serviceStore, type ServiceEntry } from "../services/serviceStore";
 import { taskJournal } from "../tasks/taskJournal";
 import { contractStore, formatChanges, normCwd } from "../agents/contracts";
@@ -250,6 +251,8 @@ export class ShellController {
   private fit: FitAddon;
   private serializer: SerializeAddon;
   private liveHost: HTMLDivElement;
+  /** Unsubscribe from palette changes, called on dispose. */
+  private offPalette: () => void;
 
   private blocks: Block[] = [];
   private current: CommandBlock | null = null;
@@ -401,13 +404,20 @@ export class ShellController {
         this.liveTerm.options.fontFamily = next;
       }
     });
+    // Same for the colours. xterm takes them as values rather than through CSS,
+    // and this terminal outlives any number of theme changes, so it is told
+    // about each one instead of being rebuilt.
+    this.offPalette = onPalette((p) => {
+      if (this.liveTerm) this.liveTerm.options.theme = xtermTheme(p);
+    });
     this.liveTerm = new Terminal({
       fontFamily: font,
       fontSize: 15,
       scrollback: settingsStore.getSnapshot().system.scrollback,
       cursorBlink: false, // enabled only while focused/alt-screen (saves idle repaints)
       allowProposedApi: true,
-      theme: { background: "#15181F", foreground: "#A6ACCD" }, // matches `card`
+      // The colours of whatever theme is in force, ANSI set included.
+      theme: xtermTheme(currentPalette()),
     });
     this.fit = new FitAddon();
     this.serializer = new SerializeAddon();
@@ -1720,12 +1730,16 @@ export class ShellController {
     // visible. Says WHAT happened and WHERE, never the report: the payload is
     // encrypted, but it still lands on a lock screen, and the detail is one tap
     // away in the app.
-    void invoke("push_notify", {
-      title,
-      body: failed ? "It stopped early — open OctoShell to see why." : "Open OctoShell to read the report.",
-    }).catch(() => {
-      /* nothing subscribed, or no network — never worth interrupting the turn */
-    });
+    // The scope setting is about being interrupted, and a phone is the most
+    // interrupting of the two, so it answers to the same switch.
+    if (notifyAllowed("agent")) {
+      void invoke("push_notify", {
+        title,
+        body: failed ? "It stopped early — open OctoShell to see why." : "Open OctoShell to read the report.",
+      }).catch(() => {
+        /* nothing subscribed, or no network — never worth interrupting the turn */
+      });
+    }
     playSfx(failed ? "error" : "done");
   }
 
@@ -1769,6 +1783,7 @@ export class ShellController {
     invoke("close_tab", { id: this.sessionId }).catch(() => {});
     this.cancelAgent();
     this.review.dispose();
+    this.offPalette();
     this.liveTerm.dispose();
     this.liveHost.remove();
   }

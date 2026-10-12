@@ -7,6 +7,7 @@ import strategyIcon from "../assets/strategy.png";
 import { PROVIDERS } from "../agents/providers";
 import { modelsFor, useSettings } from "../settings/settingsStore";
 import { PARTICIPANT_COLORS, strategyStore, useStrategy } from "./strategyStore";
+import { useAdapt } from "../util/usePalette";
 import { sendPlanToOrchestrator, orchestratorReady } from "./orchestratorBridge";
 import type { ExecutionPlan, StrategyParticipant } from "./strategyTypes";
 
@@ -18,8 +19,11 @@ export interface StrategyProject {
 
 interface Props {
   projects: StrategyProject[];
-  /** Width of the orchestrator column to leave visible on the right. */
-  rightWidth: number;
+  /** Where to sit, as insets from the workspace edges, so the orchestrator
+   *  column stays visible beside it. The orchestrator is not always on the
+   *  right any more (Settings → Appearance → Layout), so the caller works out
+   *  which side to leave alone and this panel just fills what it is given. */
+  inset: { left: number; right: number };
   onClose: () => void;
 }
 
@@ -57,12 +61,12 @@ function slug(s: string): string {
 }
 
 /**
- * Strategy Mode — a separate PLANNING workspace. It overlays the left + center
- * columns (the orchestrator stays visible on the right) so several AI
- * participants can debate an approach, moderated by the user, before any coding
- * begins. The output is a reusable Execution Plan.
+ * Strategy Mode — a separate PLANNING workspace. It overlays the columns next
+ * to the orchestrator, which stays visible, so several AI participants can
+ * debate an approach, moderated by the user, before any coding begins. The
+ * output is a reusable Execution Plan.
  */
-export function StrategyPanel({ projects, rightWidth, onClose }: Props) {
+export function StrategyPanel({ projects, inset, onClose }: Props) {
   const { roster, plans, session, auto, maxRounds } = useStrategy();
   const [request, setRequest] = useState("");
   const [ctxIds, setCtxIds] = useState<string[]>([]);
@@ -76,10 +80,10 @@ export function StrategyPanel({ projects, rightWidth, onClose }: Props) {
   return (
     <div
       className="absolute z-30 flex flex-col overflow-hidden rounded-xl border border-accent/40 bg-panel shadow-2xl"
-      style={{ left: 8, top: 8, bottom: 8, right: rightWidth + 16 }}
+      style={{ left: inset.left, top: 8, bottom: 8, right: inset.right }}
     >
       {/* Header — makes it obvious this is the planning phase, not implementation. */}
-      <div className="flex shrink-0 items-center gap-3 border-b border-edge bg-gradient-to-r from-accent/15 to-transparent px-4 py-2.5">
+      <div className="flex shrink-0 items-center gap-3 border-b border-edge bg-linear-to-r from-accent/15 to-transparent px-4 py-2.5">
         <img src={strategyIcon} alt="" className="h-7 w-7 rounded-md object-contain" />
         <div className="min-w-0 flex-1">
           <div className="text-grad text-sm font-semibold">Strategy Mode</div>
@@ -89,7 +93,7 @@ export function StrategyPanel({ projects, rightWidth, onClose }: Props) {
         </div>
         <button
           onClick={() => setLibrary((v) => !v)}
-          className={`rounded px-2 py-1 text-[11px] font-medium ${
+          className={`rounded-sm px-2 py-1 text-[11px] font-medium ${
             library ? "bg-accent/25 text-accent" : "text-muted hover:bg-edge hover:text-gray-200"
           }`}
           title="Saved Execution Plans"
@@ -99,7 +103,7 @@ export function StrategyPanel({ projects, rightWidth, onClose }: Props) {
         {session?.busy && (
           <button
             onClick={() => strategyStore.stop()}
-            className="rounded bg-red-500/25 px-2 py-1 text-[11px] font-semibold text-red-200 hover:bg-red-500/35"
+            className="rounded-sm bg-red-500/25 px-2 py-1 text-[11px] font-semibold text-red-200 hover:bg-red-500/35"
           >
             ⏹ Stop
           </button>
@@ -107,7 +111,7 @@ export function StrategyPanel({ projects, rightWidth, onClose }: Props) {
         {session && (
           <button
             onClick={() => strategyStore.reset()}
-            className="rounded px-2 py-1 text-[11px] text-muted hover:bg-edge hover:text-gray-200"
+            className="rounded-sm px-2 py-1 text-[11px] text-muted hover:bg-edge hover:text-gray-200"
             title="Discard this discussion (roster + saved plans are kept)"
           >
             ✚ New
@@ -115,7 +119,7 @@ export function StrategyPanel({ projects, rightWidth, onClose }: Props) {
         )}
         <button
           onClick={onClose}
-          className="rounded px-2 py-1 text-sm text-muted hover:bg-edge hover:text-gray-200"
+          className="rounded-sm px-2 py-1 text-sm text-muted hover:bg-edge hover:text-gray-200"
           title="Close Strategy Mode"
         >
           ✕
@@ -182,7 +186,7 @@ function SetupView({
           onChange={(e) => setRequest(e.target.value)}
           rows={4}
           placeholder="Describe the complex feature or task. The participants will debate the best implementation strategy…"
-          className="w-full resize-y rounded-lg border border-edge bg-card px-3 py-2 text-sm text-gray-100 outline-none placeholder:text-muted/50 focus:border-accent"
+          className="w-full resize-y rounded-lg border border-edge bg-card px-3 py-2 text-sm text-gray-100 outline-hidden placeholder:text-muted/50 focus:border-accent"
         />
       </section>
 
@@ -221,7 +225,7 @@ function SetupView({
           disabled={!canStart}
           className={`rounded-lg px-4 py-2 text-sm font-semibold ${
             canStart
-              ? "bg-accent text-white hover:bg-accent/80"
+              ? "bg-accentfill text-onaccent hover:bg-accentfill/80"
               : "cursor-not-allowed border border-edge text-muted/50"
           }`}
         >
@@ -242,7 +246,7 @@ function RosterEditor({ roster }: { roster: StrategyParticipant[] }) {
         <div className="text-xs font-semibold text-gray-200">Strategy participants</div>
         <button
           onClick={() => strategyStore.addParticipant()}
-          className="rounded border border-edge px-2 py-1 text-[11px] text-muted hover:bg-edge/50 hover:text-gray-200"
+          className="rounded-sm border border-edge px-2 py-1 text-[11px] text-muted hover:bg-edge/50 hover:text-gray-200"
         >
           ＋ Add participant
         </button>
@@ -262,6 +266,9 @@ function RosterEditor({ roster }: { roster: StrategyParticipant[] }) {
 }
 
 function ParticipantRow({ p }: { p: StrategyParticipant }) {
+  // The roster colours were picked against a dark window; on a light one the
+  // pale ones need bringing down to stay visible.
+  const adapt = useAdapt();
   const settings = useSettings();
   const { roles } = useStrategy();
   const up = (patch: Partial<StrategyParticipant>) => strategyStore.updateParticipant(p.id, patch);
@@ -270,7 +277,7 @@ function ParticipantRow({ p }: { p: StrategyParticipant }) {
   return (
     <div
       className={`rounded-lg border bg-card p-2.5 ${p.enabled ? "border-edge" : "border-edge/40 opacity-60"}`}
-      style={p.enabled ? { borderLeft: `3px solid ${p.color}` } : undefined}
+      style={p.enabled ? { borderLeft: `3px solid ${adapt(p.color, 2.2)}` } : undefined}
     >
       <div className="mb-2 flex items-center gap-2">
         <input
@@ -284,7 +291,7 @@ function ParticipantRow({ p }: { p: StrategyParticipant }) {
           value={p.roleId}
           onChange={(e) => up({ roleId: e.target.value })}
           title="Role — this participant's identity/lens in the discussion (managed in Settings → Strategy Roles)"
-          className="min-w-0 flex-1 rounded border border-edge bg-panel px-1.5 py-1 text-xs font-semibold text-gray-100 outline-none focus:border-accent"
+          className="min-w-0 flex-1 rounded-sm border border-edge bg-panel px-1.5 py-1 text-xs font-semibold text-gray-100 outline-hidden focus:border-accent"
         >
           <optgroup label="Built-in">
             {roles.filter((r) => r.builtin).map((r) => (
@@ -302,7 +309,7 @@ function ParticipantRow({ p }: { p: StrategyParticipant }) {
         <button
           onClick={() => strategyStore.removeParticipant(p.id)}
           title="Remove participant"
-          className="rounded px-1 text-muted hover:text-red-300"
+          className="rounded-sm px-1 text-muted hover:text-red-300"
         >
           ✕
         </button>
@@ -311,7 +318,7 @@ function ParticipantRow({ p }: { p: StrategyParticipant }) {
         <select
           value={p.provider}
           onChange={(e) => up({ provider: e.target.value as StrategyParticipant["provider"], model: null })}
-          className="rounded border border-edge bg-panel px-1.5 py-1 text-[11px] text-gray-200 outline-none focus:border-accent"
+          className="rounded-sm border border-edge bg-panel px-1.5 py-1 text-[11px] text-gray-200 outline-hidden focus:border-accent"
         >
           {PROVIDERS.map((pr) => (
             <option key={pr.value} value={pr.value}>
@@ -324,7 +331,7 @@ function ParticipantRow({ p }: { p: StrategyParticipant }) {
           onChange={(e) => up({ model: e.target.value || null })}
           // A floor on the width: when the card is narrow the colour dots wrap
           // to the next line instead of squeezing the model name to "Defau…".
-          className="min-w-[7rem] flex-1 rounded border border-edge bg-panel px-1.5 py-1 text-[11px] text-gray-200 outline-none focus:border-accent"
+          className="min-w-[7rem] flex-1 rounded-sm border border-edge bg-panel px-1.5 py-1 text-[11px] text-gray-200 outline-hidden focus:border-accent"
         >
           {models.map((m) => (
             <option key={m.label} value={m.value ?? ""}>
@@ -337,8 +344,8 @@ function ParticipantRow({ p }: { p: StrategyParticipant }) {
             <button
               key={c}
               onClick={() => up({ color: c })}
-              className={`h-4 w-4 rounded-full ${p.color === c ? "ring-2 ring-white/70" : ""}`}
-              style={{ background: c }}
+              className={`h-4 w-4 rounded-full ${p.color === c ? "ring-2 ring-accent" : ""}`}
+              style={{ background: adapt(c, 2.2) }}
               title="Set colour"
             />
           ))}
@@ -348,7 +355,7 @@ function ParticipantRow({ p }: { p: StrategyParticipant }) {
         <select
           value={p.profileId ?? ""}
           onChange={(e) => up({ profileId: e.target.value || null })}
-          className="mt-1.5 w-full rounded border border-edge bg-panel px-1.5 py-1 text-[11px] text-gray-300 outline-none focus:border-accent"
+          className="mt-1.5 w-full rounded-sm border border-edge bg-panel px-1.5 py-1 text-[11px] text-gray-300 outline-hidden focus:border-accent"
         >
           <option value="">Default account</option>
           {settings.profiles.map((pr) => (
@@ -412,7 +419,7 @@ function DiscussionView({
           <div className="text-[11px] font-semibold uppercase tracking-wide text-muted">Planning</div>
           <button
             onClick={tidy}
-            className="ml-auto rounded px-2 py-0.5 text-[10px] text-muted hover:bg-edge hover:text-gray-200"
+            className="ml-auto rounded-sm px-2 py-0.5 text-[10px] text-muted hover:bg-edge hover:text-gray-200"
             title="Reset panel order and sizes"
           >
             ⤢ Tidy panels
@@ -452,7 +459,7 @@ function DiscussionView({
         <button
           onClick={() => void strategyStore.runRound()}
           disabled={session.busy || round === 0}
-          className={`rounded px-3 py-1.5 text-xs font-semibold ${
+          className={`rounded-sm px-3 py-1.5 text-xs font-semibold ${
             session.busy || round === 0
               ? "cursor-not-allowed border border-edge text-muted/50"
               : "bg-edge text-gray-100 hover:bg-edge/70"
@@ -464,10 +471,10 @@ function DiscussionView({
         <button
           onClick={() => void strategyStore.generateReport()}
           disabled={session.busy || round === 0}
-          className={`rounded px-3 py-1.5 text-xs font-semibold ${
+          className={`rounded-sm px-3 py-1.5 text-xs font-semibold ${
             session.busy || round === 0
               ? "cursor-not-allowed border border-edge text-muted/50"
-              : "bg-accent text-white hover:bg-accent/80"
+              : "bg-accentfill text-onaccent hover:bg-accentfill/80"
           }`}
           title="Synthesize the discussion into a Final Strategy Report"
         >
@@ -490,7 +497,7 @@ function DiscussionView({
               max={20}
               value={maxRounds}
               onChange={(e) => strategyStore.setMaxRounds(Number(e.target.value))}
-              className="w-12 rounded border border-edge bg-panel px-1.5 py-0.5 text-center text-[11px] text-gray-200 outline-none focus:border-accent"
+              className="w-12 rounded-sm border border-edge bg-panel px-1.5 py-0.5 text-center text-[11px] text-gray-200 outline-hidden focus:border-accent"
             />
           </label>
         </div>
@@ -526,7 +533,7 @@ function ModeratorNote({ round, busy }: { round: number; busy: boolean }) {
       <button
         onClick={() => setOpen(true)}
         disabled={busy}
-        className={`self-start rounded border border-dashed border-edge px-3 py-1.5 text-[11px] ${
+        className={`self-start rounded-sm border border-dashed border-edge px-3 py-1.5 text-[11px] ${
           busy ? "cursor-not-allowed text-muted/50" : "text-muted hover:border-accent/50 hover:text-gray-200"
         }`}
         title="Reply to what the participants just said; it is injected before the next round"
@@ -549,16 +556,16 @@ function ModeratorNote({ round, busy }: { round: number; busy: boolean }) {
         disabled={busy}
         rows={3}
         placeholder="e.g. Drop the queue idea; assume we cannot add a service. Focus round 3 on migration risk."
-        className="w-full resize-y rounded-lg border border-edge bg-panel px-3 py-2 text-sm text-gray-100 outline-none placeholder:text-muted/50 focus:border-accent disabled:opacity-60"
+        className="w-full resize-y rounded-lg border border-edge bg-panel px-3 py-2 text-sm text-gray-100 outline-hidden placeholder:text-muted/50 focus:border-accent disabled:opacity-60"
       />
       <div className="mt-1.5 flex items-center gap-2">
         <button
           onClick={() => strategyStore.setModeratorNote(draft)}
           disabled={busy || !dirty}
-          className={`rounded px-3 py-1 text-[11px] font-semibold ${
+          className={`rounded-sm px-3 py-1 text-[11px] font-semibold ${
             busy || !dirty
               ? "cursor-not-allowed border border-edge text-muted/50"
-              : "bg-accent text-white hover:bg-accent/80"
+              : "bg-accentfill text-onaccent hover:bg-accentfill/80"
           }`}
         >
           Save note
@@ -567,7 +574,7 @@ function ModeratorNote({ round, busy }: { round: number; busy: boolean }) {
           <button
             onClick={() => { strategyStore.setModeratorNote(""); setDraft(""); setOpen(false); }}
             disabled={busy}
-            className="rounded px-2 py-1 text-[11px] text-muted hover:text-red-300 disabled:opacity-50"
+            className="rounded-sm px-2 py-1 text-[11px] text-muted hover:text-red-300 disabled:opacity-50"
           >
             Remove
           </button>
@@ -575,7 +582,7 @@ function ModeratorNote({ round, busy }: { round: number; busy: boolean }) {
         {!saved && (
           <button
             onClick={() => { setDraft(""); setOpen(false); }}
-            className="rounded px-2 py-1 text-[11px] text-muted hover:text-gray-200"
+            className="rounded-sm px-2 py-1 text-[11px] text-muted hover:text-gray-200"
           >
             Cancel
           </button>
@@ -709,7 +716,7 @@ function ReportView({
         <span className="text-[11px] text-muted">= your reusable Execution Plan</span>
         <button
           onClick={() => setEditing((v) => !v)}
-          className="ml-auto rounded px-2 py-0.5 text-[11px] text-muted hover:bg-edge hover:text-gray-200"
+          className="ml-auto rounded-sm px-2 py-0.5 text-[11px] text-muted hover:bg-edge hover:text-gray-200"
         >
           {editing ? "Preview" : "✎ Edit"}
         </button>
@@ -720,7 +727,7 @@ function ReportView({
           value={report}
           onChange={(e) => strategyStore.setReport(e.target.value)}
           rows={18}
-          className="w-full resize-y bg-well/40 px-3 py-2 font-mono text-xs text-gray-100 outline-none"
+          className="w-full resize-y bg-well/40 px-3 py-2 font-mono text-xs text-gray-100 outline-hidden"
         />
       ) : (
         <div className="max-h-[55vh] overflow-y-auto px-4 py-3 text-sm leading-relaxed">
@@ -735,7 +742,7 @@ function ReportView({
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             placeholder="Plan title (for the library / .md file)"
-            className="flex-1 rounded border border-edge bg-panel px-2 py-1 text-xs text-gray-100 outline-none focus:border-accent"
+            className="flex-1 rounded-sm border border-edge bg-panel px-2 py-1 text-xs text-gray-100 outline-hidden focus:border-accent"
           />
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -743,9 +750,9 @@ function ReportView({
             onClick={execute}
             disabled={!orchestratorReady()}
             title={orchestratorReady() ? "Hand this plan to the coding orchestrator" : "Orchestrator not available"}
-            className={`rounded px-3 py-1.5 text-xs font-semibold ${
+            className={`rounded-sm px-3 py-1.5 text-xs font-semibold ${
               orchestratorReady()
-                ? "bg-accent text-white hover:bg-accent/80"
+                ? "bg-accentfill text-onaccent hover:bg-accentfill/80"
                 : "cursor-not-allowed border border-edge text-muted/50"
             }`}
           >
@@ -757,20 +764,20 @@ function ReportView({
           </label>
           <button
             onClick={saveToLibrary}
-            className="rounded border border-edge px-3 py-1.5 text-xs font-medium text-gray-200 hover:bg-edge/50"
+            className="rounded-sm border border-edge px-3 py-1.5 text-xs font-medium text-gray-200 hover:bg-edge/50"
           >
             💾 Save Plan
           </button>
           <button
             onClick={buildAndExport}
-            className="rounded border border-edge px-3 py-1.5 text-xs font-medium text-gray-200 hover:bg-edge/50"
+            className="rounded-sm border border-edge px-3 py-1.5 text-xs font-medium text-gray-200 hover:bg-edge/50"
           >
             ⬇ Export .md
           </button>
           <button
             onClick={() => void strategyStore.runRound()}
             disabled={session.busy}
-            className="rounded border border-edge px-3 py-1.5 text-xs font-medium text-gray-200 hover:bg-edge/50 disabled:opacity-50"
+            className="rounded-sm border border-edge px-3 py-1.5 text-xs font-medium text-gray-200 hover:bg-edge/50 disabled:opacity-50"
           >
             💬 Continue discussion
           </button>
@@ -803,7 +810,7 @@ function PlanLibrary({
       <div className="flex items-center gap-2">
         <div className="text-sm font-semibold text-gray-200">Saved Execution Plans</div>
         <span className="text-[11px] text-muted">Reuse a plan any time — execute it without re-running the discussion.</span>
-        <button onClick={onClose} className="ml-auto rounded px-2 py-1 text-[11px] text-muted hover:bg-edge hover:text-gray-200">
+        <button onClick={onClose} className="ml-auto rounded-sm px-2 py-1 text-[11px] text-muted hover:bg-edge hover:text-gray-200">
           ← Back
         </button>
       </div>
@@ -828,8 +835,8 @@ function PlanLibrary({
                   sendPlanToOrchestrator({ text: framed, newChat: true });
                 }}
                 disabled={!orchestratorReady()}
-                className={`rounded px-2 py-1 text-[11px] font-semibold ${
-                  orchestratorReady() ? "bg-accent/80 text-white hover:bg-accent" : "cursor-not-allowed border border-edge text-muted/50"
+                className={`rounded-sm px-2 py-1 text-[11px] font-semibold ${
+                  orchestratorReady() ? "bg-accentfill/80 text-onaccent hover:bg-accentfill" : "cursor-not-allowed border border-edge text-muted/50"
                 }`}
                 title="Execute in a new orchestrator chat"
               >
@@ -837,13 +844,13 @@ function PlanLibrary({
               </button>
               <button
                 onClick={() => void exportMarkdown(p)}
-                className="rounded px-2 py-1 text-[11px] text-muted hover:bg-edge hover:text-gray-200"
+                className="rounded-sm px-2 py-1 text-[11px] text-muted hover:bg-edge hover:text-gray-200"
               >
                 ⬇ .md
               </button>
               <button
                 onClick={() => strategyStore.deletePlan(p.id)}
-                className="rounded px-1.5 py-1 text-[11px] text-muted hover:text-red-300"
+                className="rounded-sm px-1.5 py-1 text-[11px] text-muted hover:text-red-300"
                 title="Delete plan"
               >
                 ✕

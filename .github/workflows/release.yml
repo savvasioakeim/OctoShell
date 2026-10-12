@@ -1,7 +1,12 @@
 # Build & publish a release when a version tag is pushed (e.g. v0.1.0).
 # Uses tauri-action: builds the app, bundles the installers (NSIS on Windows,
-# .app/.dmg on macOS for Apple Silicon and Intel), and attaches the artifacts to
-# ONE draft GitHub release for manual review before publishing.
+# .app/.dmg on macOS for Apple Silicon), and attaches the artifacts to ONE
+# draft GitHub release for manual review before publishing.
+#
+# The release body is built by scripts/release-notes.mjs: the tag's section
+# from CHANGELOG.md, then the install steps. The same file feeds the What's
+# new list inside the app, so a release is described once and read in three
+# places.
 name: Release
 
 on:
@@ -17,6 +22,21 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+
+      # The release notes, from CHANGELOG.md. First step after checkout on
+      # purpose: it fails when the tag has no section in the changelog, and a
+      # release with no account of what changed is the thing it is here to
+      # prevent. Failing now costs seconds; failing after the build costs the
+      # build. It runs before setup-node, which is fine: the runner ships with
+      # node, and the script uses nothing but the standard library.
+      - id: notes
+        shell: bash
+        run: |
+          {
+            echo "body<<RELEASE_NOTES_EOF"
+            node scripts/release-notes.mjs "${{ github.ref_name }}"
+            echo "RELEASE_NOTES_EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - uses: actions/setup-node@v4
         with:
@@ -43,13 +63,7 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "OctoShell ${{ github.ref_name }}"
-          releaseBody: |
-            Download the build for your machine, then:
-
-            **macOS** — open the `.dmg` and drag OctoShell to Applications. The build is for Apple Silicon (M1 and later); there is no Intel build.
-            These builds are unsigned, so the first launch is blocked with "Apple could not verify OctoShell is free of malware". Open **System Settings → Privacy & Security**, scroll to Security, and click **Open Anyway** next to OctoShell, then launch it again. (Control-click → Open no longer works for unsigned apps on macOS 15 Sequoia and later.) From a terminal, `xattr -dr com.apple.quarantine /Applications/OctoShell.app` does the same thing in one step.
-
-            **Windows** — run the installer. SmartScreen will warn because the build is unsigned: **More info → Run anyway**.
+          releaseBody: ${{ steps.notes.outputs.body }}
           releaseDraft: true
           prerelease: false
 
@@ -69,6 +83,21 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+
+      # The release notes, from CHANGELOG.md. First step after checkout on
+      # purpose: it fails when the tag has no section in the changelog, and a
+      # release with no account of what changed is the thing it is here to
+      # prevent. Failing now costs seconds; failing after the build costs the
+      # build. It runs before setup-node, which is fine: the runner ships with
+      # node, and the script uses nothing but the standard library.
+      - id: notes
+        shell: bash
+        run: |
+          {
+            echo "body<<RELEASE_NOTES_EOF"
+            node scripts/release-notes.mjs "${{ github.ref_name }}"
+            echo "RELEASE_NOTES_EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - uses: actions/setup-node@v4
         with:
@@ -97,13 +126,7 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "OctoShell ${{ github.ref_name }}"
-          releaseBody: |
-            Download the build for your machine, then:
-
-            **macOS** — open the `.dmg` and drag OctoShell to Applications. The build is for Apple Silicon (M1 and later); there is no Intel build.
-            These builds are unsigned, so the first launch is blocked with "Apple could not verify OctoShell is free of malware". Open **System Settings → Privacy & Security**, scroll to Security, and click **Open Anyway** next to OctoShell, then launch it again. (Control-click → Open no longer works for unsigned apps on macOS 15 Sequoia and later.) From a terminal, `xattr -dr com.apple.quarantine /Applications/OctoShell.app` does the same thing in one step.
-
-            **Windows** — run the installer. SmartScreen will warn because the build is unsigned: **More info → Run anyway**.
+          releaseBody: ${{ steps.notes.outputs.body }}
           releaseDraft: true
           prerelease: false
           args: --target ${{ matrix.target }}

@@ -30,7 +30,7 @@ export function ReviewSwitch({
   busy: boolean;
 }) {
   return (
-    <div className="flex items-center overflow-hidden rounded-md border border-edge bg-chrome shadow-sm">
+    <div className="flex items-center overflow-hidden rounded-md border border-edge bg-chrome shadow-xs">
       <button
         onClick={() => onChange("coding")}
         className={`px-2.5 py-1 text-[11px] font-medium transition-colors ${
@@ -62,7 +62,7 @@ function PinnedContext({ text }: { text: string }) {
   const [open, setOpen] = useState(false);
   if (!text) return null;
   return (
-    <div className="shrink-0 border-b border-edge bg-slate-900/50 px-3 py-2">
+    <div className="shrink-0 border-b border-edge bg-well/50 px-3 py-2">
       <div className="flex items-start gap-2">
         <div className="min-w-0 flex-1">
           <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-wider text-muted">
@@ -75,7 +75,7 @@ function PinnedContext({ text }: { text: string }) {
         <button
           onClick={() => setOpen((o) => !o)}
           title={open ? "Collapse" : "Expand"}
-          className="mt-0.5 shrink-0 rounded p-0.5 text-muted transition-colors hover:bg-edge hover:text-gray-200"
+          className="mt-0.5 shrink-0 rounded-sm p-0.5 text-muted transition-colors hover:bg-edge hover:text-gray-200"
         >
           <svg
             viewBox="0 0 12 12"
@@ -117,7 +117,7 @@ function ReviewInput({ controller, busy }: { controller: ShellController; busy: 
         }}
         rows={2}
         placeholder="Reply to Reviewer or approve changes… (Enter to send)"
-        className="w-full resize-none rounded-lg border border-purple-500/50 bg-card px-3 py-2 text-sm leading-relaxed text-gray-100 outline-none transition-colors placeholder:text-muted/60 focus:border-purple-400 focus:ring-1 focus:ring-purple-500/40"
+        className="w-full resize-none rounded-lg border border-purple-500/50 bg-card px-3 py-2 text-sm leading-relaxed text-gray-100 outline-hidden transition-colors placeholder:text-muted/60 focus:border-purple-400 focus:ring-1 focus:ring-purple-500/40"
       />
     </div>
   );

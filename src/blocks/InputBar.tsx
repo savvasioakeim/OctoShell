@@ -436,7 +436,7 @@ export function InputBar({ controller, cwd, busy, value, altScreen, interacting,
           status row below. Above the row rather than below it so it grows away
           from the composer instead of shoving it down the screen mid-sentence. */}
       {agent && agentBusy && thoughtOpen && agentThought && (
-        <div className="mb-1 max-h-48 overflow-y-auto whitespace-pre-wrap break-words rounded border border-edge/70 bg-card px-2 py-1.5 text-[11px] leading-relaxed text-muted">
+        <div className="mb-1 max-h-48 overflow-y-auto whitespace-pre-wrap break-words rounded-sm border border-edge/70 bg-card px-2 py-1.5 text-[11px] leading-relaxed text-muted">
           {agentThought}
         </div>
       )}
@@ -491,7 +491,7 @@ export function InputBar({ controller, cwd, busy, value, altScreen, interacting,
             <button
               onClick={() => setProviderMenu((o) => !o)}
               title="Agent provider (CLI)"
-              className="flex items-center gap-1 rounded border border-edge px-1.5 py-0.5 text-[11px] text-muted hover:bg-edge hover:text-gray-200"
+              className="flex items-center gap-1 rounded-sm border border-edge px-1.5 py-0.5 text-[11px] text-muted hover:bg-edge hover:text-gray-200"
             >
               {prov.label}
             </button>
@@ -539,7 +539,7 @@ export function InputBar({ controller, cwd, busy, value, altScreen, interacting,
             <button
               onClick={() => setModelMenu((o) => !o)}
               title="Agent model (applies from the next turn)"
-              className="flex items-center gap-1 rounded border border-edge px-1.5 py-0.5 text-[11px] text-muted hover:bg-edge hover:text-gray-200"
+              className="flex items-center gap-1 rounded-sm border border-edge px-1.5 py-0.5 text-[11px] text-muted hover:bg-edge hover:text-gray-200"
             >
               ⚙ {modelLabel}
             </button>
@@ -571,7 +571,7 @@ export function InputBar({ controller, cwd, busy, value, altScreen, interacting,
             <button
               onClick={() => setEffortMenu((o) => !o)}
               title="How hard the agent thinks (applies from the next turn)"
-              className="flex items-center gap-1 rounded border border-edge px-1.5 py-0.5 text-[11px] text-muted hover:bg-edge hover:text-gray-200"
+              className="flex items-center gap-1 rounded-sm border border-edge px-1.5 py-0.5 text-[11px] text-muted hover:bg-edge hover:text-gray-200"
             >
               ◐ {effortLabel}
             </button>
@@ -603,7 +603,7 @@ export function InputBar({ controller, cwd, busy, value, altScreen, interacting,
             <button
               onClick={() => setProfileMenu((o) => !o)}
               title="Profile (account/config dir) — applies from the next turn"
-              className="flex items-center gap-1 rounded border border-edge px-1.5 py-0.5 text-[11px] text-muted hover:bg-edge hover:text-gray-200"
+              className="flex items-center gap-1 rounded-sm border border-edge px-1.5 py-0.5 text-[11px] text-muted hover:bg-edge hover:text-gray-200"
             >
               👤 {agentProfileName}
             </button>
@@ -658,7 +658,7 @@ export function InputBar({ controller, cwd, busy, value, altScreen, interacting,
                 ? "Approval: the agent asks before Bash/Edit/Write"
                 : "Auto: the agent runs without approval"
             }
-            className={`rounded border px-1.5 py-0.5 text-[11px] ${
+            className={`rounded-sm border px-1.5 py-0.5 text-[11px] ${
               agentApproval
                 ? "border-amber-400/50 bg-amber-500/15 text-amber-300"
                 : "border-edge text-muted hover:bg-edge hover:text-gray-200"
@@ -670,7 +670,7 @@ export function InputBar({ controller, cwd, busy, value, altScreen, interacting,
 
         {agent && agentTokens && (agentTokens.input > 0 || agentTokens.output > 0) && (
           <span
-            className="flex shrink-0 items-center gap-1 rounded border border-edge px-1.5 py-0.5 text-[10px] text-muted"
+            className="flex shrink-0 items-center gap-1 rounded-sm border border-edge px-1.5 py-0.5 text-[10px] text-muted"
             title="Session token totals (sent / received)"
           >
             🪙 ↑{fmtTokens(agentTokens.input)} ↓{fmtTokens(agentTokens.output)}
@@ -687,7 +687,7 @@ export function InputBar({ controller, cwd, busy, value, altScreen, interacting,
           const col = pct >= 80 ? "text-red-400" : pct >= 50 ? "text-amber-400" : "text-sky-300/80";
           return (
             <span
-              className="flex shrink-0 items-center gap-1 rounded border border-edge px-1.5 py-0.5 text-[10px] text-muted"
+              className="flex shrink-0 items-center gap-1 rounded-sm border border-edge px-1.5 py-0.5 text-[10px] text-muted"
               title={`Context window: ${agentContext.used.toLocaleString()} / ${agentContext.window.toLocaleString()} tokens`}
             >
               🧠 {fmtTokens(agentContext.used)}/{fmtTokens(agentContext.window)}
@@ -702,14 +702,14 @@ export function InputBar({ controller, cwd, busy, value, altScreen, interacting,
           <button
             onClick={() => controller.newAgentSession()}
             title="New agent session — the next task starts with an empty context window. Your visible history is kept."
-            className="shrink-0 rounded border border-edge px-1.5 py-0.5 text-[10px] text-muted hover:bg-edge hover:text-gray-200"
+            className="shrink-0 rounded-sm border border-edge px-1.5 py-0.5 text-[10px] text-muted hover:bg-edge hover:text-gray-200"
           >
             ⟲ New session
           </button>
         )}
         {agent && !agentApiKey && fmtReset(agentRateReset) && (
           <span
-            className="flex shrink-0 items-center gap-1 rounded border border-edge px-1.5 py-0.5 text-[10px] text-muted"
+            className="flex shrink-0 items-center gap-1 rounded-sm border border-edge px-1.5 py-0.5 text-[10px] text-muted"
             title="When the subscription's 5-hour limit resets"
           >
             ↻ {fmtReset(agentRateReset)}
@@ -728,7 +728,7 @@ export function InputBar({ controller, cwd, busy, value, altScreen, interacting,
                 <button
                   onClick={() => setThoughtOpen((o) => !o)}
                   title="Show what the agent is reasoning about"
-                  className="rounded border border-edge px-1.5 py-0.5 text-[11px] text-muted hover:bg-edge hover:text-gray-200"
+                  className="rounded-sm border border-edge px-1.5 py-0.5 text-[11px] text-muted hover:bg-edge hover:text-gray-200"
                 >
                   {thoughtOpen ? "▾" : "▸"} thinking
                 </button>
@@ -736,7 +736,7 @@ export function InputBar({ controller, cwd, busy, value, altScreen, interacting,
               <button
                 onClick={() => controller.stop()}
                 title="Stop the agent (also releases the orchestrator's live-watch hold)"
-                className="flex items-center gap-1 rounded border border-red-400/50 bg-red-500/15 px-1.5 py-0.5 text-[11px] font-medium text-red-300 hover:bg-red-500/25"
+                className="flex items-center gap-1 rounded-sm border border-red-400/50 bg-red-500/15 px-1.5 py-0.5 text-[11px] font-medium text-red-300 hover:bg-red-500/25"
               >
                 ■ Stop
               </button>
@@ -751,7 +751,7 @@ export function InputBar({ controller, cwd, busy, value, altScreen, interacting,
               <button
                 onClick={() => void controller.killCommand()}
                 title="Kill the running command (use when Ctrl+C won't stop it — e.g. a dev server)"
-                className="flex items-center gap-1 rounded border border-red-400/50 bg-red-500/15 px-1.5 py-0.5 text-[11px] font-medium text-red-300 hover:bg-red-500/25"
+                className="flex items-center gap-1 rounded-sm border border-red-400/50 bg-red-500/15 px-1.5 py-0.5 text-[11px] font-medium text-red-300 hover:bg-red-500/25"
               >
                 ■ Kill
               </button>
@@ -772,17 +772,17 @@ export function InputBar({ controller, cwd, busy, value, altScreen, interacting,
       </button>
 
       {serverOffer && (
-        <div className="mb-1.5 flex flex-wrap items-center gap-2 rounded border border-sky-500/40 bg-sky-500/10 px-2 py-1 text-[11px]">
+        <div className="mb-1.5 flex flex-wrap items-center gap-2 rounded-sm border border-sky-500/40 bg-sky-500/10 px-2 py-1 text-[11px]">
           <span className="text-sky-200">🌐 Looks like a server — run it managed (own port, own logs)?</span>
           <button
             onClick={() => runManaged(serverOffer)}
-            className="rounded bg-sky-500/30 px-1.5 py-0.5 text-sky-100 hover:bg-sky-500/40"
+            className="rounded-sm bg-sky-500/30 px-1.5 py-0.5 text-sky-100 hover:bg-sky-500/40"
           >
             Yes, managed
           </button>
           <button
             onClick={() => runShell(serverOffer)}
-            className="rounded border border-edge px-1.5 py-0.5 text-muted hover:bg-edge hover:text-gray-200"
+            className="rounded-sm border border-edge px-1.5 py-0.5 text-muted hover:bg-edge hover:text-gray-200"
           >
             Run normally
           </button>
@@ -797,7 +797,7 @@ export function InputBar({ controller, cwd, busy, value, altScreen, interacting,
       )}
 
       {dropErr && (
-        <div className="mb-1.5 flex items-center gap-2 rounded border border-red-500/40 bg-red-500/10 px-2 py-1 text-[11px] text-red-300">
+        <div className="mb-1.5 flex items-center gap-2 rounded-sm border border-red-500/40 bg-red-500/10 px-2 py-1 text-[11px] text-red-300">
           <span className="flex-1">{dropErr}</span>
           <button onClick={() => setDropErr(null)} title="Dismiss" className="text-red-300/70 hover:text-red-200">
             ✕
@@ -810,7 +810,7 @@ export function InputBar({ controller, cwd, busy, value, altScreen, interacting,
           {attachments.map((p, i) => (
             <span
               key={`${p}-${i}`}
-              className="flex items-center gap-1 rounded border border-edge bg-card px-1.5 py-0.5 text-[11px] text-gray-200"
+              className="flex items-center gap-1 rounded-sm border border-edge bg-card px-1.5 py-0.5 text-[11px] text-gray-200"
             >
               <span className="shrink-0">📎</span>
               <span className="max-w-[160px] truncate" title={p}>{p.split(/[\\/]/).pop() || p}</span>
@@ -869,7 +869,7 @@ export function InputBar({ controller, cwd, busy, value, altScreen, interacting,
                   : "Ask or delegate to the agent…  (Enter = send, Tab = path complete)"
                 : "Type a command…  (Enter = run, Tab = autocomplete, Shift+Enter = new line)"
             }
-            className="max-h-[364px] min-h-[5.6rem] flex-1 resize-none overflow-y-auto bg-transparent text-sm leading-relaxed text-gray-100 caret-accent outline-none placeholder:text-muted/50"
+            className="max-h-[364px] min-h-[5.6rem] flex-1 resize-none overflow-y-auto bg-transparent text-sm leading-relaxed text-gray-100 caret-accent outline-hidden placeholder:text-muted/50"
             autoFocus
           />
         </div>

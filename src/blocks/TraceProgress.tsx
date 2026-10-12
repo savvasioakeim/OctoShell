@@ -1,15 +1,20 @@
 import { Fragment } from "react";
 import type { AgentStep } from "../agents/providers";
+import { useAdapt } from "../util/usePalette";
 
 // Neon endpoints for the trace: purple (#A855F7) → blue (#38BDF8). A node/segment
 // at fraction t along the route is colored by interpolating between them, so the
 // route visibly shifts from purple (just started) to blue (nearly done).
+//
+// The interpolation is numeric, so neither a CSS variable nor the light-mode
+// hue flip can reach it; the result goes through `adapt` instead. The unlit
+// colour is just the border colour, so it can be the variable.
 const TRACE_FROM = [168, 85, 247];
 const TRACE_TO = [56, 189, 248];
-const TRACE_PENDING = "#313747"; // unlit segment/node (matches `edge`)
-function traceColor(t: number): string {
+const TRACE_PENDING = "var(--color-edge)"; // unlit segment/node
+function traceHex(t: number): string {
   const c = TRACE_FROM.map((from, i) => Math.round(from + (TRACE_TO[i] - from) * t));
-  return `rgb(${c[0]}, ${c[1]}, ${c[2]})`;
+  return `#${c.map((n) => n.toString(16).padStart(2, "0")).join("")}`;
 }
 
 /**
@@ -19,6 +24,8 @@ function traceColor(t: number): string {
  * pulsing), and pending `○` (hollow ring, dim). Hidden when there are no steps.
  */
 export function TraceProgress({ steps }: { steps: AgentStep[] | null }) {
+  const adapt = useAdapt();
+  const traceColor = (t: number) => adapt(traceHex(t), 2.2);
   if (!steps || steps.length === 0) return null;
   const total = steps.length;
   const completed = steps.filter((s) => s.status === "completed").length;

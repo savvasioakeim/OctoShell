@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { ShellController } from "./shell/ShellController";
@@ -19,8 +19,14 @@ import { StrategyPanel } from "./strategy/StrategyPanel";
 import { startMobileBridge } from "./mobile/mobileBridge";
 import { modStore } from "./mods/modStore";
 import { normPath, parseMergedWorktrees, pollCommand } from "./projects/worktreePrs";
-import { settingsStore, useSettings } from "./settings/settingsStore";
+import {
+  settingsStore,
+  useSettings,
+  type ColumnId,
+} from "./settings/settingsStore";
 import { KEY, loadJSON, saveJSON } from "./util/persist";
+import { applyTheme } from "./util/theme";
+import { setHighlightTheme } from "./util/highlight";
 import { OnboardingOverlay } from "./onboarding/OnboardingOverlay";
 import { hasModKey } from "./platform/platform";
 import {
@@ -158,6 +164,31 @@ function clamp(v: number, min: number, max: number): number {
 }
 
 /** A draggable vertical divider that resizes the panel beside it. */
+/** The two resizable panels' widths in px. The work panel has none: it takes
+ *  whatever is left, which is why it is the one that should be widest. */
+interface PanelWidths {
+  projects: number;
+  orchestrator: number;
+}
+
+const DEFAULT_WIDTHS: PanelWidths = { projects: 216, orchestrator: 344 };
+
+/** Drag bounds per panel: narrow enough to get out of the way, and wide enough
+ *  that a sidebar can become the main panel. The upper bounds are generous on
+ *  purpose: the work panel takes whatever is left, so a sidebar's maximum is
+ *  what decides how small the work panel can be made, and its feed is often
+ *  the one part the user wants out of the way. CENTER_MIN below is the real
+ *  floor and keeps the work panel from vanishing on a narrow window. */
+const WIDTH_BOUNDS: Record<keyof PanelWidths, [number, number]> = {
+  projects: [160, 720],
+  orchestrator: [232, 1200],
+};
+
+/** The gap a ResizeHandle occupies (w-2), and the workspace's own padding (p-2).
+ *  Both are needed to place the Strategy overlay against a column edge. */
+const HANDLE_PX = 8;
+const EDGE_PX = 8;
+
 function ResizeHandle({ onDrag, onReset }: { onDrag: (dx: number) => void; onReset: () => void }) {
   // Pointer capture (not document mouse listeners): the move/up events are bound
   // to the handle element and captured to it, so an alt-tab or a mouse-up outside
@@ -223,10 +254,20 @@ export function App({ initial }: { initial: ShellController }) {
   const [preloading, setPreloading] = useState(false);
   const [preloadProgress, setPreloadProgress] = useState(0);
   const [onboarding, setOnboarding] = useState(() => !loadJSON<boolean>(KEY.onboardingDone, false));
-  // User-resizable panel widths (px), persisted across restarts.
-  // Left default fits the three sidebar tabs at the 17px root font; the
-  // user can still drag it down to 160 (labels then truncate).
-  const [layout, setLayout] = useState(() => loadJSON(KEY.layout, { left: 216, right: 344 }));
+  // User-resizable panel widths (px), persisted across restarts. Keyed by PANEL
+  // rather than by side, because either sidebar can now be on either side (see
+  // the column order below) and a width belongs to the panel, not to the place
+  // it happens to sit. The older {left,right} shape is read once and carried
+  // over so an existing workspace keeps the widths it was dragged to.
+  // The projects default fits its three tabs at the 17px root font; it can still
+  // be dragged down to 160, where the labels truncate.
+  const [layout, setLayout] = useState<PanelWidths>(() => {
+    const saved = loadJSON<Partial<PanelWidths & { left: number; right: number }>>(KEY.layout, {});
+    return {
+      projects: saved.projects ?? saved.left ?? DEFAULT_WIDTHS.projects,
+      orchestrator: saved.orchestrator ?? saved.right ?? DEFAULT_WIDTHS.orchestrator,
+    };
+  });
 
   useEffect(() => { saveJSON(KEY.layout, layout); }, [layout]);
 
@@ -240,20 +281,27 @@ export function App({ initial }: { initial: ShellController }) {
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, []);
-  const { effLeft, effRight } = useMemo(() => {
-    const CENTER_MIN = 300; // keep the center usable before the sides give way
+  // The column order is a user setting; the widths above are per panel, so the
+  // two compose without either knowing about the other.
+  const columns = useSettings().appearance.columns;
+
+  const eff = useMemo<PanelWidths>(() => {
+    // The work panel keeps a readable column of text and nothing more; below
+    // this the sides start giving way instead. It is deliberately small so a
+    // user who wants the feed narrow can drag the sides over it.
+    const CENTER_MIN = 180;
     const CHROME = 40; // outer p-2 padding + the two resize handles
     const avail = winW - CHROME;
-    let l = layout.left;
-    let r = layout.right;
+    let l = layout.projects;
+    let r = layout.orchestrator;
     const over = l + r + CENTER_MIN - avail;
     if (over > 0) {
       const side = l + r;
       l = Math.max(150, l - (over * l) / side);
       r = Math.max(220, r - (over * r) / side);
     }
-    return { effLeft: Math.round(l), effRight: Math.round(r) };
-  }, [winW, layout.left, layout.right]);
+    return { projects: Math.round(l), orchestrator: Math.round(r) };
+  }, [winW, layout.projects, layout.orchestrator]);
 
   // Drive the preload: turbo the mount budget while the overlay covers the UI,
   // watch the scheduler's queue drain, then reveal the app. A frame cap is a
@@ -774,6 +822,111 @@ export function App({ initial }: { initial: ShellController }) {
   useEffect(() => startMobileBridge(() => tabsRef.current), []);
 
 
+  // Each column's content, by id. Built here rather than inline in the loop so
+  // the JSX below is the layout and nothing else.
+  const panels: Record<ColumnId, React.ReactNode> = {
+    projects: (
+      <ProjectSidebar
+        tabs={projects.map((t) => ({ id: t.id, name: t.name, parentId: t.worktree?.parentId, controller: t.controller }))}
+        activeId={active.id}
+        onSelect={setActiveId}
+        onClose={closeProject}
+        onNew={newProject}
+        onNewWorktree={newWorktree}
+        onOpenSettings={() => { setSettingsInit(null); setSettingsOpen(true); }}
+        onOpenProjectScripts={(cwd) => { setSettingsInit({ tab: "projects", focusCwd: cwd }); setSettingsOpen(true); }}
+        unopened={unopened}
+        onOpenWorktree={async (w) => {
+          const tab = await adoptWorktree(w.path, w.name, w.repoRoot, w.parentId);
+          setActiveId(tab.id);
+        }}
+        onRemoveWorktree={(w) =>
+          setPendingRemove({
+            kind: "unopened",
+            path: w.path,
+            name: w.name,
+            repoRoot: w.repoRoot,
+            parentId: w.parentId,
+          })
+        }
+        stats={gitStats}
+        groups={groupsState.groups}
+        assign={groupsState.assign}
+        onAssign={assignGroup}
+        onCreateGroup={createGroup}
+        onReorder={reorderProject}
+        onReorderGroup={reorderGroup}
+        onSetGroupColor={setGroupColor}
+        onRenameGroup={renameGroup}
+        onDeleteGroup={deleteGroup}
+        palette={GROUP_COLORS}
+        width={eff.projects}
+      />
+    ),
+    // Every project's center panel stays mounted (so switching back doesn't
+    // rebuild it), but inactive ones use display:none so they're excluded from
+    // layout — otherwise the browser reflows every project's blocks on any DOM
+    // change, which froze the UI. Each panel virtualizes its own feed, so the
+    // live laid-out DOM stays ≈ one viewport.
+    work: (
+      <div className="relative flex-1 overflow-hidden rounded-xl border border-edge bg-panel">
+        {projects.length === 0 ? (
+          <EmptyWorkspace onNew={newProject} />
+        ) : (
+          projects.map((t) => (
+            <CenterPanel key={t.id} controller={t.controller} active={t.id === active.id} />
+          ))
+        )}
+      </div>
+    ),
+    orchestrator: (
+      <AiSidebar
+        tabs={projects.map((t) => ({ id: t.id, name: t.name, controller: t.controller }))}
+        activeId={active.id}
+        onSelect={setActiveId}
+        onCreateWorktree={createWorktreeForAgent}
+        onCloseProject={closeProject}
+        onOpenStrategy={() => setStrategyOpen(true)}
+        width={eff.orchestrator}
+      />
+    ),
+  };
+
+  /** Which panel a handle resizes, and in which direction. `i` is the index of
+   *  the column to the handle's right. */
+  const handleTarget = (i: number): { panel: keyof PanelWidths; sign: 1 | -1 } | null => {
+    const before = columns[i - 1];
+    if (before !== "work") return { panel: before, sign: 1 };
+    const after = columns[i];
+    if (after !== "work") return { panel: after, sign: -1 };
+    return null; // cannot happen: only one column is the work panel
+  };
+
+  const resizeAt = (i: number, dx: number) => {
+    const t = handleTarget(i);
+    if (!t) return;
+    const [min, max] = WIDTH_BOUNDS[t.panel];
+    setLayout((l) => ({ ...l, [t.panel]: clamp(l[t.panel] + t.sign * dx, min, max) }));
+  };
+
+  const resetAt = (i: number) => {
+    const t = handleTarget(i);
+    if (t) setLayout((l) => ({ ...l, [t.panel]: DEFAULT_WIDTHS[t.panel] }));
+  };
+
+  // Strategy Mode covers the side the work panel is on and leaves the
+  // orchestrator column visible beside it, whichever side that now is. Each
+  // column counted here is preceded by a handle, and the workspace has its own
+  // padding, which is what the two constants add up.
+  const strategyInset = (() => {
+    const orchAt = columns.indexOf("orchestrator");
+    const px = (ids: ColumnId[]) =>
+      EDGE_PX + ids.reduce((n, id) => n + (id === "work" ? 0 : eff[id]) + HANDLE_PX, 0);
+    return columns.indexOf("work") < orchAt
+      ? { left: EDGE_PX, right: px(columns.slice(orchAt)) }
+      : { left: px(columns.slice(0, orchAt + 1)), right: EDGE_PX };
+  })();
+
   return (
     <div className="flex h-full flex-col">
       <ThemeApplier />
@@ -782,81 +935,22 @@ export function App({ initial }: { initial: ShellController }) {
       <Titlebar />
       <div className="relative flex flex-1 flex-col overflow-hidden bg-well">
         <div className="relative flex flex-1 overflow-hidden p-2">
-        <ProjectSidebar
-          tabs={projects.map((t) => ({ id: t.id, name: t.name, parentId: t.worktree?.parentId, controller: t.controller }))}
-          activeId={active.id}
-          onSelect={setActiveId}
-          onClose={closeProject}
-          onNew={newProject}
-          onNewWorktree={newWorktree}
-          onOpenSettings={() => { setSettingsInit(null); setSettingsOpen(true); }}
-          onOpenProjectScripts={(cwd) => { setSettingsInit({ tab: "projects", focusCwd: cwd }); setSettingsOpen(true); }}
-          unopened={unopened}
-          onOpenWorktree={async (w) => {
-            const tab = await adoptWorktree(w.path, w.name, w.repoRoot, w.parentId);
-            setActiveId(tab.id);
-          }}
-          onRemoveWorktree={(w) =>
-            setPendingRemove({
-              kind: "unopened",
-              path: w.path,
-              name: w.name,
-              repoRoot: w.repoRoot,
-              parentId: w.parentId,
-            })
-          }
-          stats={gitStats}
-          groups={groupsState.groups}
-          assign={groupsState.assign}
-          onAssign={assignGroup}
-          onCreateGroup={createGroup}
-          onReorder={reorderProject}
-          onReorderGroup={reorderGroup}
-          onSetGroupColor={setGroupColor}
-          onRenameGroup={renameGroup}
-          onDeleteGroup={deleteGroup}
-          palette={GROUP_COLORS}
-          width={effLeft}
-        />
-        <ResizeHandle
-          onDrag={(dx) => setLayout((l) => ({ ...l, left: clamp(l.left + dx, 160, 460) }))}
-          onReset={() => setLayout((l) => ({ ...l, left: 216 }))}
-        />
-
-        {/* Every project's center panel stays mounted (so switching back doesn't
-            rebuild it), but inactive ones use display:none so they're excluded
-            from layout — otherwise the browser reflows every project's blocks on
-            any DOM change, which froze the UI. Each panel virtualizes its own
-            feed, so the live laid-out DOM stays ≈ one viewport. */}
-        <div className="relative flex-1 overflow-hidden rounded-xl border border-edge bg-panel">
-          {projects.length === 0 ? (
-            <EmptyWorkspace onNew={newProject} />
-          ) : (
-            projects.map((t) => (
-              <CenterPanel key={t.id} controller={t.controller} active={t.id === active.id} />
-            ))
-          )}
-        </div>
-
-        <ResizeHandle
-          onDrag={(dx) => setLayout((l) => ({ ...l, right: clamp(l.right - dx, 232, 760) }))}
-          onReset={() => setLayout((l) => ({ ...l, right: 344 }))}
-        />
-        <AiSidebar
-          tabs={projects.map((t) => ({ id: t.id, name: t.name, controller: t.controller }))}
-          activeId={active.id}
-          onSelect={setActiveId}
-          onCreateWorktree={createWorktreeForAgent}
-          onCloseProject={closeProject}
-          onOpenStrategy={() => setStrategyOpen(true)}
-          width={effRight}
-        />
+          {columns.map((id, i) => (
+            <Fragment key={id}>
+              {/* A handle sits between two columns and resizes whichever of them is
+                  a sidebar: the one on its left grows with the drag, the one on its
+                  right shrinks. With two sidebars side by side the left one wins,
+                  which keeps the direction of a drag predictable. */}
+              {i > 0 && <ResizeHandle onDrag={(dx) => resizeAt(i, dx)} onReset={() => resetAt(i)} />}
+              {panels[id]}
+            </Fragment>
+          ))}
         {strategyOpen && (
           <StrategyPanel
             projects={tabs
               .filter((t) => t.id !== initial.sessionId)
               .map((t) => ({ id: t.id, name: t.name, controller: t.controller }))}
-            rightWidth={effRight}
+            inset={strategyInset}
             onClose={() => setStrategyOpen(false)}
           />
         )}
@@ -953,21 +1047,43 @@ function StartupOverlay({ progress, count }: { progress: number; count: number }
   );
 }
 
-/** Applies the Appearance settings to the document root: the monospace font CSS
- *  variable (terminal/feed pick it up) and the PCB trace-speed class. */
+/** Applies the Appearance settings to the document root: the colour theme, the
+ *  root font size everything else scales from, the monospace font CSS variable
+ *  (terminal/feed pick it up) and the PCB trace-speed class. */
 function ThemeApplier() {
   const { appearance } = useSettings();
   useEffect(() => {
     const root = document.documentElement;
-    root.style.setProperty(
-      "--octo-mono",
-      appearance.fontFamily
-        ? `"${appearance.fontFamily}", "JetBrains Mono", "Cascadia Code", Consolas, monospace`
-        : "",
-    );
+    // `--font-mono` is the Tailwind theme key behind the `font-mono` class on
+    // <body>, so overriding it here is what actually changes the whole UI.
+    // Setting it on the root element beats the @theme declaration (same
+    // property, higher specificity), and removing it falls back to that.
+    if (appearance.fontFamily) {
+      root.style.setProperty(
+        "--font-mono",
+        `"${appearance.fontFamily}", "JetBrains Mono", "Cascadia Code", Consolas, monospace`,
+      );
+    } else {
+      root.style.removeProperty("--font-mono");
+    }
     root.classList.remove("trace-fast", "trace-normal", "trace-stealth", "trace-static");
     if (appearance.traceSpeed !== "normal") root.classList.add(`trace-${appearance.traceSpeed}`);
   }, [appearance.fontFamily, appearance.traceSpeed]);
+
+  // The root font size: every rem in the app (and so nearly every size and gap
+  // in it) is relative to this, which is why one number can resize the whole UI.
+  useEffect(() => {
+    document.documentElement.style.fontSize = `${appearance.fontSize}px`;
+  }, [appearance.fontSize]);
+
+  // The palette, and the code highlighting that came from the same theme file.
+  // Both are async (a theme is a lazy chunk) and both are best-effort: a theme
+  // that fails to load leaves the current colours alone rather than clearing
+  // them, so a bad load is a no-op instead of an unstyled window.
+  useEffect(() => {
+    void applyTheme(appearance.theme);
+    void setHighlightTheme(appearance.theme);
+  }, [appearance.theme]);
   return null;
 }
 

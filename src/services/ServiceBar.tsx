@@ -36,7 +36,7 @@ export function ServiceBar() {
           return (
             <div
               key={s.id}
-              className={`flex shrink-0 items-center gap-1.5 rounded border px-1.5 py-0.5 ${
+              className={`flex shrink-0 items-center gap-1.5 rounded-sm border px-1.5 py-0.5 ${
                 active ? "border-accent/50 bg-accent/10" : "border-edge"
               }`}
             >
