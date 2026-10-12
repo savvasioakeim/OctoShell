@@ -63,8 +63,14 @@ export interface Palette {
   text: string;
   textSoft: string;
   textDim: string;
-  /** Readable text on top of `accent` (accent-filled buttons). White is
-   *  right on most accents and wrong on a pale one. */
+  /** The accent as a filled surface: buttons, the selected row, a toggle that
+   *  is on. On a dark window it is the accent itself. On a light one it is
+   *  deeper, because the same colour that glows pleasantly against near-black
+   *  is the loudest thing on a white page, and a page with one fluorescent
+   *  rectangle on it reads as a warning rather than as a button. */
+  accentFill: string;
+  /** Readable text on top of `accentFill`. White is right on most accents and
+   *  wrong on a pale one. */
   onAccent: string;
   /** The terminal's 16 ANSI colours, standard 0-7 then bright 8-15. A light
    *  background needs dark ink here or half of any command's output goes
@@ -75,7 +81,7 @@ export interface Palette {
 /** Palette keys holding a single colour: everything but `mode` and `ansi`. */
 const COLOUR_KEYS = [
   "chrome", "ink", "panel", "card", "well", "edge", "accent", "muted", "fg",
-  "textStrong", "text", "textSoft", "textDim", "onAccent",
+  "textStrong", "text", "textSoft", "textDim", "accentFill", "onAccent",
 ] as const;
 
 /** The terminal's 16 colours when a theme states none of its own.
@@ -132,6 +138,9 @@ export const OCTO_PALETTE: Palette = {
   muted: "#8087a8",
   fg: "#babed8",
   mode: "dark",
+  // The same violet: on a dark window a fill and an outline want the same
+  // colour, and this palette is the one the app was drawn against.
+  accentFill: "#7c5cff",
   // Tailwind grey 100/200/300/400 spelled out. The app was written against
   // these exact values, so the default theme keeps them to the digit and
   // choosing it changes nothing about the shipped look.
@@ -407,14 +416,24 @@ export function paletteFrom(colors: ThemeColors): Palette {
   // as a filled button rather than a pastel one.
   accent ??= light ? shade(parseHex(OCTO_PALETTE.accent)!, -0.3) : parseHex(OCTO_PALETTE.accent)!;
 
-  // Text on an accent-filled button: whichever of white and near-black reads
-  // better on this particular accent. A lightness threshold got this wrong in
-  // the middle of the range, where Kanagawa and Tokyo Night sit: both are dark
-  // enough to look like they want white and muted enough that white on them is
-  // 1.8:1. Comparing the two candidates has no middle to get wrong.
+  // The accent as a fill. Darkened on a light window, towards a near-black
+  // neutral rather than towards pure black, so it loses a little chroma with
+  // the lightness: #6d4aff is a fine colour for a word and a klaxon for a
+  // 120px rectangle. On a dark window the fill is the accent, unchanged.
+  const accentFill = light ? mix(accent, { r: 0x1a, g: 0x1a, b: 0x1c, a: 1 }, 0.24) : accent;
+
+  // Text on an accent-filled button: white unless the dark ink is clearly
+  // better. A lightness threshold got this wrong in the middle of the range,
+  // where a colour is dark enough to look like it wants white and muted enough
+  // that white on it is 1.8:1. Comparing the two candidates has no middle to
+  // get wrong, but a bare comparison has its own failure: Sand came out at
+  // 2.91 against 2.84, a difference that is noise, and put brown lettering on
+  // a terracotta button. White on a filled button is also the convention, so it
+  // should lose to a real margin and not to a rounding error.
   const white: Rgb = { r: 255, g: 255, b: 255, a: 1 };
   const darkInk: Rgb = { r: 0x12, g: 0x14, b: 0x18, a: 1 };
-  const onAccent = contrast(white, accent) >= contrast(darkInk, accent) ? white : darkInk;
+  const onAccent =
+    contrast(darkInk, accentFill) > contrast(white, accentFill) * 1.3 ? darkInk : white;
 
   // The text ramp, Tailwind grey 100/200/300/400 as the app uses them:
   // headings, body, secondary, and the dimmest labels.
@@ -467,6 +486,7 @@ export function paletteFrom(colors: ThemeColors): Palette {
     well: toHex(well),
     edge: toHex(edge),
     accent: toHex(accent),
+    accentFill: toHex(accentFill),
     muted: toHex(muted),
     fg: toHex(fg),
     mode: light ? "light" : "dark",
@@ -683,7 +703,16 @@ export function loadThemeFile(id: string): Promise<ShikiTheme | null> {
 }
 
 /** Our own eight surfaces, as styles.css declares them under `@theme`. */
-const SURFACE_VARS = ["chrome", "ink", "panel", "card", "well", "edge", "accent", "muted"] as const;
+const SURFACE_VARS = [
+  "chrome", "ink", "panel", "card", "well", "edge", "accent", "accentfill", "muted",
+] as const;
+
+/** `accentfill` is spelled without a hyphen as a Tailwind colour key, so the
+ *  utility is `bg-accentfill`; the palette spells it `accentFill`. */
+const PALETTE_KEY: Record<(typeof SURFACE_VARS)[number], keyof Palette> = {
+  chrome: "chrome", ink: "ink", panel: "panel", card: "card", well: "well",
+  edge: "edge", accent: "accent", accentfill: "accentFill", muted: "muted",
+};
 
 /** Tailwind's grey scale, mapped onto the text ramp.
  *
@@ -705,7 +734,7 @@ const GREY_MAP: [string, keyof Palette][] = [
  *  them. Setting them on the root overrides the `@theme` defaults, so every
  *  `bg-card` / `border-edge` / `text-muted` in the app follows. */
 export function applyPalette(p: Palette, root: HTMLElement = document.documentElement): void {
-  for (const n of SURFACE_VARS) root.style.setProperty(`--color-${n}`, p[n]);
+  for (const n of SURFACE_VARS) root.style.setProperty(`--color-${n}`, p[PALETTE_KEY[n]] as string);
   for (const [v, k] of GREY_MAP) root.style.setProperty(v, p[k] as string);
   root.style.setProperty("--octo-fg", p.fg);
   root.style.setProperty("--color-onaccent", p.onAccent);

@@ -2608,7 +2608,7 @@ function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (v: 
     >
       <span
         className={`relative inline-flex h-[18px] w-8 items-center rounded-full transition-colors ${
-          checked ? "bg-accent" : "bg-edge"
+          checked ? "bg-accentfill" : "bg-edge"
         }`}
       >
         <span

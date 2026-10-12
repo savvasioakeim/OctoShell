@@ -2373,7 +2373,7 @@ function ActionCard({
       <div className="mt-2 flex gap-2">
         <button
           onClick={onConfirm}
-          className="rounded-sm bg-accent px-2.5 py-1 text-xs font-medium text-onaccent hover:bg-accent/80"
+          className="rounded-sm bg-accentfill px-2.5 py-1 text-xs font-medium text-onaccent hover:bg-accent/80"
         >
           ✓ Confirm
         </button>

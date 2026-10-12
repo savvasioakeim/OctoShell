@@ -225,7 +225,7 @@ function SetupView({
           disabled={!canStart}
           className={`rounded-lg px-4 py-2 text-sm font-semibold ${
             canStart
-              ? "bg-accent text-onaccent hover:bg-accent/80"
+              ? "bg-accentfill text-onaccent hover:bg-accentfill/80"
               : "cursor-not-allowed border border-edge text-muted/50"
           }`}
         >
@@ -474,7 +474,7 @@ function DiscussionView({
           className={`rounded-sm px-3 py-1.5 text-xs font-semibold ${
             session.busy || round === 0
               ? "cursor-not-allowed border border-edge text-muted/50"
-              : "bg-accent text-onaccent hover:bg-accent/80"
+              : "bg-accentfill text-onaccent hover:bg-accentfill/80"
           }`}
           title="Synthesize the discussion into a Final Strategy Report"
         >
@@ -565,7 +565,7 @@ function ModeratorNote({ round, busy }: { round: number; busy: boolean }) {
           className={`rounded-sm px-3 py-1 text-[11px] font-semibold ${
             busy || !dirty
               ? "cursor-not-allowed border border-edge text-muted/50"
-              : "bg-accent text-onaccent hover:bg-accent/80"
+              : "bg-accentfill text-onaccent hover:bg-accentfill/80"
           }`}
         >
           Save note
@@ -752,7 +752,7 @@ function ReportView({
             title={orchestratorReady() ? "Hand this plan to the coding orchestrator" : "Orchestrator not available"}
             className={`rounded-sm px-3 py-1.5 text-xs font-semibold ${
               orchestratorReady()
-                ? "bg-accent text-onaccent hover:bg-accent/80"
+                ? "bg-accentfill text-onaccent hover:bg-accentfill/80"
                 : "cursor-not-allowed border border-edge text-muted/50"
             }`}
           >
@@ -836,7 +836,7 @@ function PlanLibrary({
                 }}
                 disabled={!orchestratorReady()}
                 className={`rounded-sm px-2 py-1 text-[11px] font-semibold ${
-                  orchestratorReady() ? "bg-accent/80 text-onaccent hover:bg-accent" : "cursor-not-allowed border border-edge text-muted/50"
+                  orchestratorReady() ? "bg-accentfill/80 text-onaccent hover:bg-accentfill" : "cursor-not-allowed border border-edge text-muted/50"
                 }`}
                 title="Execute in a new orchestrator chat"
               >

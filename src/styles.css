@@ -19,6 +19,11 @@
   --color-accent: #7c5cff; /* neon violet, the worktree gradient's violet stop */
   --color-muted: #8087a8; /* secondary text */
 
+  /* The accent as a filled surface: buttons, the selected row, a toggle that
+     is on. The same violet here, and deeper than --color-accent on any light
+     theme, where a fully saturated fill is the loudest thing on the page. */
+  --color-accentfill: #7c5cff;
+
   /* Text drawn on top of an accent fill. White on our violet, and set from
      the palette for any other theme, because a pale accent needs dark ink.
      Buttons say `text-onaccent` instead of `text-white`. */
@@ -104,7 +109,7 @@ html {
    used to be a hardcoded #663399 commented "accent", which was not even our
    accent, and the ink used to be white, which a pale accent cannot carry. */
 .btn-grad {
-  background-color: var(--color-accent);
+  background-color: var(--color-accentfill);
   color: var(--color-onaccent);
   border: none;
 }
