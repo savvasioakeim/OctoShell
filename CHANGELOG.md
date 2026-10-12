@@ -8,7 +8,7 @@ each starting with `- `. Write what a person would notice, not what the commit
 did. An `Unreleased` heading holds the changes that are in the code but not yet
 in a release; it becomes the next version's heading when that release is cut.
 
-## Unreleased
+## 0.4.0 (2026-10-12)
 
 - Themes. Six palettes, three dark and three light: OctoShell, Slate and Ember,
   then Paper, Daylight and Sand. Each one sets the window, the code blocks and
