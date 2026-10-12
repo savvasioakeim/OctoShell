@@ -32,6 +32,7 @@ import { memoryStore, useMemoryStats } from "../memory/memoryStore";
 import { projectConfigStore, useProjectScripts } from "../projects/projectConfig";
 import { effectiveShell, isWindows, platform } from "../platform/platform";
 import { updateStore, useUpdate } from "../updates/updateStore";
+import { RELEASES } from "../updates/changelog";
 import { THEMES } from "../util/theme";
 
 type TabId = "ai" | "local" | "roles" | "skills" | "projects" | "workspace" | "appearance" | "system";
@@ -1520,6 +1521,69 @@ function UpdatesSection() {
   );
 }
 
+/** The changelog. The newest release is open, the older ones are a list you
+ *  can unfold, and whichever one you are running is marked.
+ *
+ *  It sits next to the updater on purpose: "there is a new version" is only
+ *  half a message, and the half that decides whether anyone installs it is
+ *  what the new version does. */
+function ChangelogSection() {
+  const u = useUpdate();
+  // Open the newest entry, which is the one a reader came for. An entry the
+  // reader opens is added to this set rather than replacing it, so two
+  // releases can be compared side by side.
+  const [open, setOpen] = useState<string[]>(() => (RELEASES[0] ? [RELEASES[0].version] : []));
+  const toggle = (v: string) =>
+    setOpen((o) => (o.includes(v) ? o.filter((x) => x !== v) : [...o, v]));
+
+  if (RELEASES.length === 0) return null;
+
+  return (
+    <Section
+      title="What's new"
+      desc="Every release and what changed in it. This list ships inside the app, so it is the history of the version you are running and it works with no network."
+    >
+      <div className="flex flex-col gap-1.5">
+        {RELEASES.map((r) => {
+          const isOpen = open.includes(r.version);
+          const running = u.current != null && r.version === u.current;
+          return (
+            <div key={r.version} className="overflow-hidden rounded-md border border-edge/60">
+              <button
+                type="button"
+                onClick={() => toggle(r.version)}
+                className="flex w-full items-center gap-2 bg-panel/40 px-3 py-1.5 text-left hover:bg-edge/30"
+              >
+                <span className={`text-[10px] transition-transform ${isOpen ? "rotate-90" : ""}`}>▶</span>
+                <span className="text-xs font-semibold text-gray-100">{r.version}</span>
+                {r.date && <span className="text-[11px] text-muted">{r.date}</span>}
+                {running && (
+                  <span className="rounded-sm bg-accent/20 px-1.5 py-0.5 text-[10px] font-medium text-accent">
+                    you are on this
+                  </span>
+                )}
+                <span className="ml-auto text-[11px] text-muted">
+                  {r.changes.length} {r.changes.length === 1 ? "change" : "changes"}
+                </span>
+              </button>
+              {isOpen && (
+                <ul className="flex flex-col gap-1.5 px-3 py-2.5">
+                  {r.changes.map((c, i) => (
+                    <li key={i} className="flex gap-2 text-xs leading-relaxed text-gray-300">
+                      <span className="mt-[7px] h-1 w-1 shrink-0 rounded-full bg-accent/60" />
+                      <span>{c}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </Section>
+  );
+}
+
 function SystemTab({ onSandboxLogin, onShowOnboarding }: { onSandboxLogin: () => void; onShowOnboarding: () => void }) {
   const { system } = useSettings();
   const [busy, setBusy] = useState(false);
@@ -1540,6 +1604,7 @@ function SystemTab({ onSandboxLogin, onShowOnboarding }: { onSandboxLogin: () =>
   return (
     <>
       <UpdatesSection />
+      <ChangelogSection />
       <EnvVarsSection />
 
       <Section title="Scrollback buffer" desc="How many lines of terminal output each terminal keeps in memory (bigger = more history, a bit more RAM). Applies to new terminals.">
