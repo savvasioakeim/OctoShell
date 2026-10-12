@@ -15,7 +15,7 @@ function renderInline(text: string): ReactNode[] {
       nodes.push(<strong key={key++} className="font-medium text-gray-100">{tok.slice(2, -2)}</strong>);
     } else {
       nodes.push(
-        <code key={key++} className="rounded-sm bg-edge px-1 text-[0.9em] text-accent">
+        <code key={key++} className="rounded-sm bg-well px-1 text-[0.9em] text-accentfill">
           {tok.slice(1, -1)}
         </code>,
       );
