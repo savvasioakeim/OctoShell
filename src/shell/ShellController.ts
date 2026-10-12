@@ -222,6 +222,19 @@ export interface ShellSnapshot {
 
 const MAX_ROWS = 24;
 
+/** True once the window is going away (quit, reload, an update installing).
+ *  The backend dies with it, so every open shell reports an exit at the same
+ *  moment. Those exits are the app closing, not a shell that cannot run, and
+ *  respawning into a backend that is already gone only produces more of them. */
+let unloading = false;
+if (typeof window !== "undefined") {
+  const stop = () => {
+    unloading = true;
+  };
+  window.addEventListener("beforeunload", stop);
+  window.addEventListener("pagehide", stop);
+}
+
 /**
  * Owns one PTY session and renders the "feed" of semantic blocks.
  *
@@ -610,7 +623,7 @@ export class ShellController {
    *  way a terminal app reopens its prompt — unless the shell keeps dying on
    *  startup, in which case stop and say so instead of looping. */
   private async onShellExit(): Promise<void> {
-    if (this.disposed) return;
+    if (this.disposed || unloading) return;
     if (this.current) {
       const block = this.current;
       // The shell died before sending the end marker, so there is no exit code.
@@ -631,6 +644,13 @@ export class ShellController {
     this.respawns.push(now);
     if (this.respawns.length > 3) {
       this.busy = false;
+      // One note is the whole message; a loop that writes it four times a
+      // second fills the feed and the stored history with the same sentence.
+      const last = this.blocks[this.blocks.length - 1];
+      if (last?.kind === "command" && last.command === "shell" && last.status === "error") {
+        this.emit();
+        return;
+      }
       this.blocks.push({
         id: crypto.randomUUID(),
         kind: "command",
