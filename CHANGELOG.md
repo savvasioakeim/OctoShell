@@ -10,10 +10,11 @@ in a release; it becomes the next version's heading when that release is cut.
 
 ## Unreleased
 
-- Themes. The window takes its colours from a VS Code theme, the same file that
-  colours the code blocks and the terminal, so OctoShell can look like the
-  editor you already use. Every theme Shiki bundles is there, 44 dark and 21
-  light, and the label says which is which.
+- Themes. Six palettes, three dark and three light: OctoShell, Slate and Ember,
+  then Paper, Daylight and Sand. Each one sets the window, the code blocks and
+  the terminal together.
+- Light themes, which the app could not do before: every colour in it was
+  written for a dark background, down to a couple of hundred text classes.
 - Interface size. One slider scales the whole window, not just the text.
 - Column order. The three columns can be put in any order, so the orchestrator
   can sit on the left. Each panel remembers its own width wherever it is.

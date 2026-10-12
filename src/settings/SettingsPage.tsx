@@ -1264,7 +1264,7 @@ function AppearanceTab() {
     <>
       <Section
         title="Theme"
-        desc="The window takes its colours from a VS Code theme, the same file that colours the code blocks and the terminal, so OctoShell can look like the editor you already use. Every theme Shiki bundles is here, light ones included; the label says which is which."
+        desc="Six palettes, three dark and three light. Each one sets the window, the code blocks and the terminal together, and the label says which kind it is."
       >
         <Field label="Colour theme">
           <Select

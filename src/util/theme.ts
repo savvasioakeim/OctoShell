@@ -1,10 +1,12 @@
-// The app's colour theme, taken from a VS Code theme.
+// The app's colour theme.
 //
-// We already ship Shiki for code highlighting, and a Shiki theme is a real VS
-// Code theme: a `colors` map with a couple of hundred editor keys. So the same
-// file that colours a code block can colour the whole window, and someone
-// arriving from VS Code can have OctoShell look like the editor they already
-// know.
+// Six palettes of our own, three dark and three light, each stated as the few
+// decisions that matter and expanded into a full palette by the derivation
+// below. That derivation reads a VS Code theme's shape because that is where
+// it started: Shiki, which we already ship to colour code, bundles real VS
+// Code themes, and for a while all 65 were on offer. They are not any more
+// (see THEMES), but the machinery is unchanged and still takes any theme file,
+// which is what makes our six and a file someone brings the same kind of thing.
 //
 // We do NOT read those keys one by one. A theme fills in whichever of the 200
 // keys its author cared about, so `panel.background` or `editorGroup.border` is
@@ -19,7 +21,21 @@
 // background in whichever direction there is room, and the text ramp below
 // carries the rest of the app with it.
 
-import { bundledThemesInfo } from "shiki/themes";
+/** The Shiki themes we actually load, one per built-in palette, each as its
+ *  own lazy chunk.
+ *
+ *  Spelled out rather than looked up in Shiki's `bundledThemesInfo`. That map
+ *  holds a dynamic import for all 65 bundled themes, and a bundler cannot know
+ *  which of them an id will select, so every one of them was emitted into the
+ *  build: 59 chunks that could never be fetched. */
+const SHIKI_THEMES: Record<string, () => Promise<{ default: unknown }>> = {
+  "material-theme-palenight": () => import("shiki/themes/material-theme-palenight.mjs"),
+  "github-dark-dimmed": () => import("shiki/themes/github-dark-dimmed.mjs"),
+  vesper: () => import("shiki/themes/vesper.mjs"),
+  "vitesse-light": () => import("shiki/themes/vitesse-light.mjs"),
+  "github-light": () => import("shiki/themes/github-light.mjs"),
+  "everforest-light": () => import("shiki/themes/everforest-light.mjs"),
+};
 
 /** Our palette: the eight `@theme` colours in styles.css, in the same words.
  *  Surfaces darkest first: well · chrome · card · panel · ink. */
@@ -516,8 +532,11 @@ interface BuiltinSpec {
   accent: string;
   /** The bundled Shiki theme that colours code blocks under this one. Our
    *  palettes are not Shiki themes, so the highlighter needs a nearby one;
-   *  what it must share is the background, or code sits in a hole. */
-  shiki: string;
+   *  what it must share is the background, or code sits in a hole.
+   *
+   *  Typed as a key of SHIKI_THEMES, so a theme naming one we do not bundle
+   *  fails to compile rather than silently losing its highlighting. */
+  shiki: keyof typeof SHIKI_THEMES;
 }
 
 const BUILTIN_SPECS: BuiltinSpec[] = [
@@ -612,37 +631,25 @@ export function builtin(id: string): Builtin | undefined {
   return BUILTINS.find((b) => b.id === id);
 }
 
-/** Every dark VS Code theme Shiki bundles, under the name its author gave it.
+/** The themes on offer: ours, and only ours.
  *
- *  The list comes from Shiki rather than from us, so a Shiki upgrade that adds
- *  themes adds them here too. `bundledThemesInfo` is only ids, names and a lazy
- *  import per theme, so holding it costs nothing: no theme's colours load until
- *  one is picked.
+ *  Shiki bundles 65 editor themes and all of them were listed here for a
+ *  while. A palette derived from one is a window tinted like that theme rather
+ *  than a window designed in it: the hues are whatever its author picked for
+ *  syntax, the accent is whatever key happened to hold something usable, and
+ *  the result reads as a filter laid over an interface drawn for other
+ *  colours. Three rounds of tuning the derivation improved that and were never
+ *  going to fix it, because what is wrong with it is the input.
  *
- *  Both kinds are offered. The label carries which one a theme is, because a
- *  name alone does not say it ("Vitesse", "Rose Pine Dawn") and picking a light
- *  theme by accident is a jarring thing to undo.
- *
- *  Ours come first, because they are the ones designed against this window
- *  rather than approximated from an editor. */
-const BUNDLED: ThemeOption[] = bundledThemesInfo
-  .map((t) => ({
-    id: t.id,
-    label: `${t.displayName} — ${t.type === "light" ? "light" : "dark"}`,
-    mode: t.type === "light" ? ("light" as const) : ("dark" as const),
-  }))
-  .sort((a, b) =>
-    a.mode !== b.mode ? (a.mode === "dark" ? -1 : 1) : a.label.localeCompare(b.label),
-  );
-
-export const THEMES: ThemeOption[] = [
-  ...BUILTINS.map((b) => ({
-    id: b.id,
-    label: `${b.label}${b.id === DEFAULT_THEME ? " (default)" : ""} — ${b.palette.mode}`,
-    mode: b.palette.mode,
-  })),
-  ...BUNDLED,
-];
+ *  The derivation stays: it is what builds these six out of their specs, and
+ *  loading a theme file someone brings themselves is the obvious next thing to
+ *  want. What is gone is a list of other people's themes offered as though we
+ *  had designed around each of them. */
+export const THEMES: ThemeOption[] = BUILTINS.map((b) => ({
+  id: b.id,
+  label: `${b.label}${b.id === DEFAULT_THEME ? " (default)" : ""} — ${b.palette.mode}`,
+  mode: b.palette.mode,
+}));
 
 /** Which bundled Shiki theme colours the code blocks for a theme id. Ours say
  *  so in their spec; a Shiki theme is its own answer. */
@@ -660,16 +667,15 @@ interface ShikiTheme {
 
 const loaded = new Map<string, Promise<ShikiTheme | null>>();
 
-/** Load one theme's colours, through the lazy import Shiki ships with it. Each
- *  theme is its own chunk, so picking one costs a single small load and the
- *  other forty never arrive. Cached, because the highlighter asks for the same
- *  file the palette just used. */
+/** Load one Shiki theme's file, for the code highlighter. Each is its own
+ *  chunk, so a theme change costs one small load. Cached, because the
+ *  highlighter asks for the same file more than once. */
 export function loadThemeFile(id: string): Promise<ShikiTheme | null> {
   let p = loaded.get(id);
   if (!p) {
-    const entry = bundledThemesInfo.find((t) => t.id === id);
-    p = entry
-      ? entry.import().then((m) => m.default as ShikiTheme).catch(() => null)
+    const load = SHIKI_THEMES[id];
+    p = load
+      ? load().then((m) => m.default as ShikiTheme).catch(() => null)
       : Promise.resolve(null);
     loaded.set(id, p);
   }
