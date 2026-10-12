@@ -172,6 +172,8 @@ export function ProjectSidebar(props: Props) {
   // draws one (label, chevron, tint, spine trace, node fill, menu dot). On a
   // dark theme `adapt` returns them unchanged.
   const adapt = useAdapt();
+  const adaptText = (hex: string) => adapt(hex, 4);
+  const lightWindow = usePalette().mode === "light";
   const groups = useMemo(
     () => rawGroups.map((g) => ({ ...g, color: adapt(g.color, 2.2) })),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- adapt is new on every palette change, which is the point
@@ -421,13 +423,19 @@ export function ProjectSidebar(props: Props) {
       className={`flex cursor-grab items-center gap-1 rounded-sm py-1 pr-1 ${dragGroup === g.id ? "opacity-50" : ""}`}
       title="Drag to reorder · right-click for options"
     >
-      <span className="min-w-0 truncate text-[10px] font-semibold uppercase tracking-wider" style={{ color: g.color }}>
+      <span
+        className="min-w-0 truncate text-[10px] font-semibold uppercase tracking-wider"
+        // 2.2:1 is enough for the dot beside it and nowhere near enough for
+        // 10px letters; `adapt` only ever moves further, so asking twice is
+        // safe and this is the one place that knows it is drawing text.
+        style={{ color: adaptText(g.color) }}
+      >
         {g.name}
       </span>
       <button
         onClick={(e) => { e.stopPropagation(); onToggle(); }}
         className="ml-0.5 flex shrink-0 items-center hover:opacity-80"
-        style={{ color: g.color }}
+        style={{ color: adaptText(g.color) }}
         title={isCollapsed ? "Expand group" : "Collapse group"}
       >
         <Chevron open={!isCollapsed} />
@@ -576,7 +584,14 @@ export function ProjectSidebar(props: Props) {
                   className="rounded-lg pt-2 pb-1 transition-colors"
                   // Whole group softly tinted in ITS color; a bit stronger while
                   // one of its projects is active.
-                  style={{ background: hexToRgba(g.color, activeGroupId === g.id ? 0.1 : 0.05) }}
+                  style={{
+                    // Half strength on a light window: the same wash that is a
+                    // hint over near-black is a stripe over white.
+                    background: hexToRgba(
+                      g.color,
+                      (activeGroupId === g.id ? 0.1 : 0.05) * (lightWindow ? 0.5 : 1),
+                    ),
+                  }}
                 >
                   {renderGroupHeader(g, isCollapsed, () => toggleGroup(g.id))}
                   {!isCollapsed && members.map((t) => renderProject(t, 2))}

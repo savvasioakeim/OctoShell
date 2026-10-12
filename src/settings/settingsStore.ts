@@ -333,9 +333,16 @@ class SettingsStore {
         // Validate what came off disk: a theme id that no longer exists (Shiki
         // dropped it, or the file was edited) would leave the app with the
         // stylesheet palette and no way to tell why.
+        //
+        // The default theme also changed name. It used to be stored as the VS
+        // Code theme the app was drawn alongside, while what it actually painted
+        // was our own palette; now that we ship themes under our own names it is
+        // "octo". Without this line everyone already running the app would be
+        // moved onto the derived Palenight instead, which is a different window.
+        const theme = saved.theme === "material-theme-palenight" ? DEFAULT_THEME : saved.theme;
         return {
           ...saved,
-          theme: isKnownTheme(saved.theme) ? saved.theme : DEFAULT_THEME,
+          theme: isKnownTheme(theme) ? theme : DEFAULT_THEME,
           fontSize: clampFontSize(saved.fontSize),
           columns: normalizeColumns(saved.columns),
         };

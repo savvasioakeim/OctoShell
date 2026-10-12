@@ -10,11 +10,13 @@
 // Any failure falls back to plain text — highlighting is never load-bearing.
 
 import type { HighlighterCore, LanguageInput, ThemeInput } from "shiki/core";
-import { DEFAULT_THEME, loadThemeFile } from "./theme";
+import { DEFAULT_THEME, loadThemeFile, shikiThemeFor } from "./theme";
 
 /** The theme the highlighter is currently colouring with. Shiki needs the
  *  theme's own name when highlighting, and it has to be one it has loaded. */
-let theme = DEFAULT_THEME;
+// The Shiki theme in force. Not the same string as the app theme: ours are
+// not Shiki themes, so each names a bundled one to highlight code with.
+let theme = shikiThemeFor(DEFAULT_THEME);
 /** Bumped on every theme change, so a mounted code block can notice that what
  *  it is showing was coloured by the previous theme. */
 let generation = 0;
@@ -40,9 +42,14 @@ export function highlightGeneration(): number {
  * because half-recoloured code is worse than code in the previous theme.
  */
 export async function setHighlightTheme(id: string): Promise<void> {
-  if (id === theme) return;
+  // The app theme, mapped to the Shiki theme that goes with it. One of ours
+  // is not a Shiki theme at all, so asking for it by name would load nothing
+  // and leave code blocks in the previous theme, which on a light window means
+  // a dark hole where the code is.
+  const shiki = shikiThemeFor(id);
+  if (shiki === theme) return;
   if (highlighter) {
-    const file = await loadThemeFile(id);
+    const file = await loadThemeFile(shiki);
     if (!file) return;
     try {
       await highlighter.loadTheme(file as ThemeInput);
@@ -50,7 +57,7 @@ export async function setHighlightTheme(id: string): Promise<void> {
       return;
     }
   }
-  theme = id;
+  theme = shiki;
   cache.clear();
   generation++;
   themeListeners.forEach((l) => l());

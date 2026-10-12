@@ -1943,7 +1943,9 @@ export function AiSidebar({ tabs, activeId, onSelect, onCreateWorktree, onCloseP
                     👁
                   </span>
                 )}
-                <span className="text-[10px]" style={{ color: adapt(STATUS_COLOR[status]) }}>
+                {/* 10px text, so it asks for the ratio text needs rather than
+                    the lower one that suits the dot above. */}
+                <span className="text-[10px]" style={{ color: adapt(STATUS_COLOR[status], 4) }}>
                   {STATUS_SHORT[status]}
                 </span>
                 {running && (

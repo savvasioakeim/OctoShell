@@ -94,8 +94,11 @@ export interface ThemeOption {
   mode: "dark" | "light";
 }
 
-/** The theme the app ships with. */
-export const DEFAULT_THEME = "material-theme-palenight";
+/** The theme the app ships with: ours, not the VS Code theme it was drawn
+ *  alongside. It used to be called "material-theme-palenight", which was
+ *  honest about where the colours came from and misleading about what it
+ *  resolved to; settingsStore migrates that saved value to this one. */
+export const DEFAULT_THEME = "octo";
 
 /** OctoShell's own palette, the one written by hand in styles.css against
  *  Palenight. The default theme resolves to exactly this rather than to a
@@ -123,37 +126,6 @@ export const OCTO_PALETTE: Palette = {
   onAccent: "#ffffff",
   ansi: [...DARK_ANSI],
 };
-
-/** Every dark VS Code theme Shiki bundles, under the name its author gave it.
- *
- *  The list comes from Shiki rather than from us, so a Shiki upgrade that adds
- *  themes adds them here too. `bundledThemesInfo` is only ids, names and a lazy
- *  import per theme, so holding it costs nothing: no theme's colours load until
- *  one is picked.
- *
- *  Both kinds are offered. The label carries which one a theme is, because a
- *  name alone does not say it ("Vitesse", "Rose Pine Dawn") and picking a light
- *  theme by accident is a jarring thing to undo. */
-export const THEMES: ThemeOption[] = bundledThemesInfo
-  .map((t) => ({
-    id: t.id,
-    label:
-      t.id === DEFAULT_THEME
-        ? `${t.displayName} (default)`
-        : `${t.displayName} — ${t.type === "light" ? "light" : "dark"}`,
-    mode: t.type === "light" ? ("light" as const) : ("dark" as const),
-  }))
-  .sort((a, b) =>
-    a.id === DEFAULT_THEME
-      ? -1
-      : b.id === DEFAULT_THEME
-        ? 1
-        : a.mode !== b.mode
-          ? a.mode === "dark"
-            ? -1
-            : 1
-          : a.label.localeCompare(b.label),
-  );
 
 export function isKnownTheme(id: string): boolean {
   return THEMES.some((t) => t.id === id);
@@ -236,6 +208,56 @@ function saturation(c: Rgb): number {
   return (max - min) / (l > 0.5 ? 2 - max - min : max + min);
 }
 
+/** A shade of `base` that sits at `ratio` contrast from it, `dir` deciding
+ *  which side: +1 lighter, -1 darker.
+ *
+ *  The hue is kept (this only mixes towards white or black) and the search is
+ *  a bisection on the mix amount, because luma is not linear in it. When the
+ *  ratio is out of reach -- 1.4:1 lighter than an almost-white editor -- it
+ *  returns the furthest it got, which is the right answer: as separate as this
+ *  background allows.
+ */
+function atRatio(base: Rgb, ratio: number, dir: 1 | -1): Rgb {
+  let lo = 0;
+  let hi = 1;
+  for (let i = 0; i < 18; i++) {
+    const mid = (lo + hi) / 2;
+    if (contrast(shade(base, dir * mid), base) < ratio) lo = mid;
+    else hi = mid;
+  }
+  return shade(base, dir * hi);
+}
+
+/** How far each surface sits from the reading surface, as a contrast ratio,
+ *  and on which side of it. All of them are measured against `card`, the
+ *  border included -- it is judged against the panel it is drawn on when the
+ *  theme offers one of its own, but derived from the card like the rest.
+ *
+ *  The dark figures are the app's own palette measured: card to panel is
+ *  1.22:1 there, card to the code well 1.32:1, and those relationships are
+ *  what makes the window read as layers rather than as one sheet. Every
+ *  derived theme is given the same relationships instead of the same
+ *  percentages.
+ *
+ *  Light is not a mirror of it, in direction or in size. On a dark theme the
+ *  frame sits above the editor in lightness and the code well below; on a
+ *  light one the editor is already the brightest thing there, so everything
+ *  structural sits under it and only the order among them is kept: titlebar
+ *  closest to the content, then the bars, then the code wells, then the outer
+ *  frame.
+ *
+ *  And they sit much closer together. A dark window is built out of layers of
+ *  near-black, where 1.3:1 apart is a subtle step; the same 1.3:1 under white
+ *  is a mid-grey, and a window of mid-greys reads as greyed out rather than
+ *  as structured. Light interfaces are built the other way round, with
+ *  surfaces close together and the lines between them doing the work, so the
+ *  surfaces here are within 1.2:1 of the page and the border is the one thing
+ *  that goes further. */
+const LAYERS = {
+  dark: { chrome: [1.054, -1], well: [1.323, -1], panel: [1.221, 1], ink: [1.416, 1], edge: [1.847, 1] },
+  light: { chrome: [1.05, -1], panel: [1.09, -1], well: [1.14, -1], ink: [1.2, -1], edge: [1.45, -1] },
+} as const;
+
 /** Push `c` away from `on` until it reaches `target` contrast, or until the
  *  surface allows no better. `dir` is which way away is: +1 towards white,
  *  -1 towards black.
@@ -289,41 +311,34 @@ export function paletteFrom(colors: ThemeColors): Palette {
   const fg = parseHex(colors["editor.foreground"]) ?? { r: 0xba, g: 0xbe, b: 0xd8, a: 1 };
   const light = luma(editorBg) > 0.5;
 
-  // Which way the surfaces step away from the reading surface. In a dark theme
-  // the frame sits ABOVE the editor in lightness and the code well below it; a
-  // light theme mirrors that, the editor being the brightest surface and
-  // everything structural sitting a little under it. `sign` is that mirror, so
-  // the ramp below is written once.
+  // Which way "away from the background" is for text: towards white on a dark
+  // theme, towards black on a light one. The surfaces state their own
+  // directions in LAYERS.
   const sign = light ? -1 : 1;
 
   // A near-black editor (Vitesse Black) cannot be darkened: #000 darkened is
   // still #000, and all five surfaces collapse into one. There the editor colour
   // becomes the code well, the darkest layer, and the ramp is built one step up
-  // from it so the surfaces above still separate. Pure white has the same
-  // problem from the other end, and takes the same way out.
+  // from it so the surfaces above still separate.
+  //
+  // White needs no such escape, and must not be given one. An almost-white
+  // editor was being dimmed by 4% here so the surfaces had room above it, from
+  // when they still went upwards on a light theme; they go downwards now, and
+  // all that dimming did was leave a light window with no white in it, which is
+  // most of what made the first attempt look like a filter over the app.
   const floored = luma(editorBg) < 0.04;
-  const ceiled = luma(editorBg) > 0.97;
-  const base = floored ? shade(editorBg, 0.07) : ceiled ? shade(editorBg, -0.04) : editorBg;
-  // How much room there is to move. A dark base has little below it and a light
-  // one has little above, so both ends take the smaller steps and the roomy
-  // middle (Nord, Gruvbox Soft) takes the larger ones. Light themes are tighter
-  // throughout: white to mid-grey is a shorter trip than black to mid-grey, and
-  // the percentages that read as layers on dark read as mud on light.
-  const deep = light ? luma(base) > 0.88 : luma(base) < 0.12;
-  const step = light
-    ? { well: 0.05, chrome: 0.1, panel: 0.035, ink: 0.075, edge: 0.2 }
-    : deep
-      ? { well: 0.35, chrome: 0.18, panel: 0.07, ink: 0.14, edge: 0.26 }
-      : { well: 0.45, chrome: 0.28, panel: 0.05, ink: 0.1, edge: 0.2 };
+  const base = floored ? shade(editorBg, 0.07) : editorBg;
+  const layer = LAYERS[light ? "light" : "dark"];
+  const at = (k: keyof typeof layer) => atRatio(base, layer[k][0], layer[k][1]);
 
   const card = base;
-  // The code well is the one surface that goes the other way from the frame: it
-  // reads as sunken, which on either kind of theme means further from the
-  // reading surface than anything else.
-  const well = floored ? editorBg : shade(base, -sign * step.well);
-  const chrome = shade(base, -sign * step.chrome);
-  const panel = shade(base, sign * step.panel);
-  const ink = shade(base, sign * step.ink);
+  // A near-black editor keeps its own colour for the code well: it is already
+  // the darkest thing we could produce, and the ramp was built one step up from
+  // it precisely so this surface could be the original.
+  const well = floored ? editorBg : at("well");
+  const chrome = at("chrome");
+  const panel = at("panel");
+  const ink = at("ink");
 
   // Borders: the theme's own if it states one that reads as a border, otherwise
   // a step away from the base. The upper bound matters as much as the lower one:
@@ -340,12 +355,12 @@ export function paletteFrom(colors: ThemeColors): Palette {
     // Contrast rather than raw lightness for the lower bound: 0.02 of luma is
     // a visible step on a dark panel and nothing at all on a light one, which
     // is how the light themes first came out with borders you could not see.
-    if (d < 0.2 && contrast(flat, panel) >= 1.12 && saturation(flat) < 0.55) {
+    if (d < 0.2 && contrast(flat, panel) >= 1.25 && saturation(flat) < 0.55) {
       edge = flat;
       break;
     }
   }
-  edge ??= shade(base, sign * step.edge);
+  edge ??= atRatio(base, layer.edge[0], layer.edge[1]);
 
   // Accent: the colour the theme uses to say "this one". Taken from the first
   // key that holds something usable, where usable means colourful enough to read
@@ -473,6 +488,166 @@ export function adapt(hex: string, target = 2.6, p: Palette = current): string {
   const card = parseHex(p.card);
   if (!card) return hex;
   return toHex(toContrast(flatten(c, card), card, target, p.mode === "light" ? -1 : 1));
+}
+
+// --- OctoShell's own themes -------------------------------------------------
+//
+// Deriving a palette from someone else's editor theme gets you a window that
+// is tinted like that theme, which is not the same as a window designed in it.
+// The hues are whatever the author chose for syntax, the accent is whatever
+// key happened to hold something usable, and on a light background the whole
+// thing reads as a wash laid over a dark interface. That path is still here,
+// because someone arriving from VS Code wanting their editor's colours is a
+// real thing to want, but it should not be the only thing on offer.
+//
+// These are ours. Each one states the four decisions that matter -- the
+// surface you read on, the text, the accent, and which way round it is -- and
+// goes through the same derivation as everything else, so the layering, the
+// text ramp and the contrast floors are identical to a borrowed theme's and
+// the same checks cover them.
+
+interface BuiltinSpec {
+  id: string;
+  label: string;
+  /** The reading surface. Everything else is derived from it. */
+  bg: string;
+  /** Body text, before the ramp adjusts it for legibility. */
+  fg: string;
+  accent: string;
+  /** The bundled Shiki theme that colours code blocks under this one. Our
+   *  palettes are not Shiki themes, so the highlighter needs a nearby one;
+   *  what it must share is the background, or code sits in a hole. */
+  shiki: string;
+}
+
+const BUILTIN_SPECS: BuiltinSpec[] = [
+  {
+    id: "octo",
+    label: "OctoShell",
+    // The palette the app was drawn against. Kept to the digit: this one is
+    // not derived at all (see BUILTINS below), it is OCTO_PALETTE itself.
+    bg: "#15181f",
+    fg: "#babed8",
+    accent: "#7c5cff",
+    shiki: "material-theme-palenight",
+  },
+  {
+    id: "octo-slate",
+    label: "OctoShell Slate",
+    // Cooler and plainer than the default: a neutral blue-grey with an azure
+    // accent, for a window that is meant to recede.
+    bg: "#16191e",
+    fg: "#c3c9d4",
+    accent: "#4cc2ff",
+    shiki: "github-dark-dimmed",
+  },
+  {
+    id: "octo-ember",
+    label: "OctoShell Ember",
+    // Warm dark. The same structure with the temperature turned round, for
+    // anyone who finds blue-black screens cold at night.
+    bg: "#17140f",
+    fg: "#ded5c3",
+    accent: "#e0a458",
+    shiki: "vesper",
+  },
+  {
+    id: "octo-paper",
+    label: "OctoShell Paper",
+    // Light, warm white, the brand violet kept as the accent so the app is
+    // recognisably itself with the lights on.
+    bg: "#faf8f3",
+    fg: "#2b2a26",
+    accent: "#6d4aff",
+    shiki: "vitesse-light",
+  },
+  {
+    id: "octo-daylight",
+    label: "OctoShell Daylight",
+    // Light and neutral: plain white, a working blue. The one to pick for a
+    // bright room or a projector.
+    bg: "#ffffff",
+    fg: "#1f2430",
+    accent: "#0b69d4",
+    shiki: "github-light",
+  },
+  {
+    id: "octo-sand",
+    label: "OctoShell Sand",
+    // Light and warm, off a cream page rather than a white one, which is
+    // easier on the eyes over a long day than paper white.
+    bg: "#f6f1e7",
+    fg: "#332e24",
+    accent: "#b4531f",
+    shiki: "everforest-light",
+  },
+];
+
+/** A spec, put through the ordinary derivation. Stating it as the three keys
+ *  a VS Code theme would have is not a trick: those are the only keys the
+ *  derivation reads anyway, so writing them out means our themes and borrowed
+ *  ones go down one path, with one set of invariants over both. */
+function builtinPalette(spec: BuiltinSpec): Palette {
+  return paletteFrom({
+    "editor.background": spec.bg,
+    "editor.foreground": spec.fg,
+    "textLink.foreground": spec.accent,
+  });
+}
+
+export interface Builtin extends BuiltinSpec {
+  palette: Palette;
+}
+
+export const BUILTINS: Builtin[] = BUILTIN_SPECS.map((spec) => ({
+  ...spec,
+  // The default is the hand-written palette rather than a derivation of its
+  // own numbers. The two are close, but "close" is not what the app was built
+  // against, and the shipped look should not move because the derivation was
+  // improved.
+  palette: spec.id === DEFAULT_THEME ? OCTO_PALETTE : builtinPalette(spec),
+}));
+
+export function builtin(id: string): Builtin | undefined {
+  return BUILTINS.find((b) => b.id === id);
+}
+
+/** Every dark VS Code theme Shiki bundles, under the name its author gave it.
+ *
+ *  The list comes from Shiki rather than from us, so a Shiki upgrade that adds
+ *  themes adds them here too. `bundledThemesInfo` is only ids, names and a lazy
+ *  import per theme, so holding it costs nothing: no theme's colours load until
+ *  one is picked.
+ *
+ *  Both kinds are offered. The label carries which one a theme is, because a
+ *  name alone does not say it ("Vitesse", "Rose Pine Dawn") and picking a light
+ *  theme by accident is a jarring thing to undo.
+ *
+ *  Ours come first, because they are the ones designed against this window
+ *  rather than approximated from an editor. */
+const BUNDLED: ThemeOption[] = bundledThemesInfo
+  .map((t) => ({
+    id: t.id,
+    label: `${t.displayName} — ${t.type === "light" ? "light" : "dark"}`,
+    mode: t.type === "light" ? ("light" as const) : ("dark" as const),
+  }))
+  .sort((a, b) =>
+    a.mode !== b.mode ? (a.mode === "dark" ? -1 : 1) : a.label.localeCompare(b.label),
+  );
+
+export const THEMES: ThemeOption[] = [
+  ...BUILTINS.map((b) => ({
+    id: b.id,
+    label: `${b.label}${b.id === DEFAULT_THEME ? " (default)" : ""} — ${b.palette.mode}`,
+    mode: b.palette.mode,
+  })),
+  ...BUNDLED,
+];
+
+/** Which bundled Shiki theme colours the code blocks for a theme id. Ours say
+ *  so in their spec; a Shiki theme is its own answer. */
+export function shikiThemeFor(id: string): string {
+  return builtin(id)?.shiki ?? id;
 }
 
 // --- loading and applying --------------------------------------------------
@@ -636,9 +811,10 @@ export function onPalette(cb: (p: Palette) => void): () => void {
 /** Load a theme and paint it. Resolves to the palette actually applied, or null
  *  when the theme could not be loaded (the current look is then left alone). */
 export async function applyTheme(id: string): Promise<Palette | null> {
-  const palette =
-    // The default is the app's own palette, not a derivation of it.
-    id === DEFAULT_THEME ? OCTO_PALETTE : paletteOf(await loadThemeFile(id));
+  // One of ours is already a palette; a bundled one has to be loaded and
+  // derived.
+  const ours = builtin(id);
+  const palette = ours ? ours.palette : paletteOf(await loadThemeFile(id));
   if (!palette) return null;
   applyPalette(palette);
   current = palette;
