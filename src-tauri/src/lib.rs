@@ -23,6 +23,7 @@ mod skills;
 mod sysstats;
 mod timezone;
 mod tunnel;
+mod mic;
 mod whisper;
 
 use acp::AcpManager;
@@ -257,6 +258,10 @@ pub fn run() {
             whisper::whisper_models,
             whisper::whisper_download,
             whisper::whisper_delete,
+            whisper::whisper_record_start,
+            whisper::whisper_record_stop,
+            whisper::whisper_record_cancel,
+            whisper::whisper_recording,
             memory::memory_chunk,
             memory::memory_embed,
             memory::memory_index_put,

@@ -170,6 +170,9 @@ export interface SettingsState {
   spendLimitUsd: number | null;
   /** Speech-to-text engine for the mic button (default: free Web Speech API). */
   sttEngine: SttEngine;
+  /** Which downloaded Whisper model dictation runs on, when the engine is
+   *  Whisper. Only meaningful once that model is actually on disk. */
+  whisperModel: string;
   workspace: WorkspaceSettings;
   appearance: AppearanceSettings;
   system: SystemSettings;
@@ -326,6 +329,9 @@ class SettingsStore {
       globalRules: loadJSON<string>(KEY.globalRules, ""),
       spendLimitUsd: loadJSON<number | null>(KEY.spendLimit, null),
       sttEngine: loadJSON<SttEngine>(KEY.sttEngine, "web"),
+      // "small" is the smallest size that holds up outside English, which is the
+      // trade-off most people want without having to think about it.
+      whisperModel: loadJSON<string>(KEY.whisperModel, "small"),
       // Merge persisted over defaults so a new field added later is filled in.
       workspace: { ...DEFAULT_WORKSPACE, ...loadJSON<Partial<WorkspaceSettings>>(KEY.workspaceSettings, {}) },
       appearance: (() => {
@@ -394,6 +400,7 @@ class SettingsStore {
     saveJSON(KEY.globalRules, next.globalRules);
     saveJSON(KEY.spendLimit, next.spendLimitUsd);
     saveJSON(KEY.sttEngine, next.sttEngine);
+    saveJSON(KEY.whisperModel, next.whisperModel);
     saveJSON(KEY.workspaceSettings, next.workspace);
     saveJSON(KEY.appearanceSettings, next.appearance);
     saveJSON(KEY.systemSettings, next.system);
@@ -464,6 +471,9 @@ class SettingsStore {
   }
   setSttEngine(engine: SttEngine): void {
     this.commit({ ...this.state, sttEngine: engine });
+  }
+  setWhisperModel(id: string): void {
+    this.commit({ ...this.state, whisperModel: id });
   }
   setWorkspace(patch: Partial<WorkspaceSettings>): void {
     this.commit({ ...this.state, workspace: { ...this.state.workspace, ...patch } });

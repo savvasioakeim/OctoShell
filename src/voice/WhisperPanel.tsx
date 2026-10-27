@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { settingsStore, useSettings } from "../settings/settingsStore";
 import {
   formatBytes,
   formatMb,
@@ -19,6 +20,7 @@ import {
  * not after.
  */
 export function WhisperPanel() {
+  const { whisperModel } = useSettings();
   const [models, setModels] = useState<WhisperModel[] | null>(null);
   const [progress, setProgress] = useState<Record<string, WhisperProgress>>({});
   const [err, setErr] = useState<string | null>(null);
@@ -105,8 +107,18 @@ export function WhisperPanel() {
                   <span className="text-[11px] tabular-nums text-muted">
                     {m.installed ? formatBytes(m.bytes) : formatMb(m.approxMb)}
                   </span>
-                  {m.installed && !busy && (
-                    <span className="text-[10px] text-emerald-300">on this machine</span>
+                  {m.installed && !busy && m.id === whisperModel && (
+                    <span className="rounded-sm bg-accent/15 px-1.5 py-0.5 text-[10px] text-accent">
+                      in use
+                    </span>
+                  )}
+                  {m.installed && !busy && m.id !== whisperModel && (
+                    <button
+                      onClick={() => settingsStore.setWhisperModel(m.id)}
+                      className="rounded-sm px-1.5 py-0.5 text-[10px] text-muted underline decoration-dotted hover:text-gray-200"
+                    >
+                      use this one
+                    </button>
                   )}
                 </div>
                 <p className="mt-0.5 text-[11px] leading-snug text-muted">{m.note}</p>

@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useSettings } from "../settings/settingsStore";
+import { whisperRecordStart, whisperRecordStop } from "./whisperModels";
 
 /* The Web Speech API has no entry in TypeScript's DOM lib and is still shipped
    under a vendor prefix, so the slice of it we touch is typed by hand. */
@@ -68,10 +70,13 @@ function reason(code: string | undefined): string {
 export interface Dictation {
   /** The microphone is live. */
   recording: boolean;
-  /** This webview exposes the API at all. */
+  /** The selected engine can run at all. */
   supported: boolean;
   /** The last failure, cleared when a new run starts. */
   error: string | null;
+  /** Whisper only: recording has stopped and the model is still working. Web
+   *  never reaches this state, because it transcribes while you speak. */
+  thinking: boolean;
   /** Start if idle, stop if live. */
   toggle: () => void;
 }
@@ -85,7 +90,9 @@ export interface Dictation {
  * render that started it.
  */
 export function useDictation(append: (text: string) => void): Dictation {
+  const { sttEngine, whisperModel } = useSettings();
   const [recording, setRecording] = useState(false);
+  const [thinking, setThinking] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const recRef = useRef<Recognition | null>(null);
   const appendRef = useRef(append);
@@ -103,7 +110,42 @@ export function useDictation(append: (text: string) => void): Dictation {
     [],
   );
 
+  // Whisper is a different shape of engine: it hears nothing until recording
+  // stops, then thinks for a while and returns the whole passage at once. The
+  // button therefore has three states here and two on the web engine.
+  const toggleWhisper = useCallback(async () => {
+    if (recording) {
+      setRecording(false);
+      setThinking(true);
+      try {
+        const t = await whisperRecordStop(whisperModel);
+        if (t.text.trim()) appendRef.current(t.text.trim());
+        if (t.truncated) setError("The recording hit the five-minute limit and was cut short.");
+        else if (!t.text.trim()) setError("Nothing was recognised in that recording.");
+      } catch (e) {
+        setError(`${e}`);
+      } finally {
+        setThinking(false);
+      }
+      return;
+    }
+    setError(null);
+    try {
+      await whisperRecordStart(whisperModel);
+      setRecording(true);
+    } catch (e) {
+      // Start fails fast when the model is missing, so nobody speaks a whole
+      // note only to be told afterwards that nothing could read it.
+      setError(`${e}`);
+    }
+  }, [recording, whisperModel]);
+
   const toggle = useCallback(() => {
+    if (sttEngine === "whisper") {
+      if (thinking) return; // let it finish; cancelling mid-decode just loses the audio
+      void toggleWhisper();
+      return;
+    }
     if (recRef.current) {
       try {
         recRef.current.stop(); // `onend` clears the state
@@ -148,7 +190,11 @@ export function useDictation(append: (text: string) => void): Dictation {
       setRecording(false);
       setError(`Couldn't start the microphone: ${err}`);
     }
-  }, []);
+  }, [sttEngine, thinking, toggleWhisper]);
 
-  return { recording, supported: recognitionCtor() !== undefined, error, toggle };
+  // Whisper is "supported" whenever it is the chosen engine: whether the model
+  // is actually downloaded is answered by start(), with a message naming the
+  // model, which is more useful than a disabled button with no explanation.
+  const supported = sttEngine === "whisper" || recognitionCtor() !== undefined;
+  return { recording, supported, error, thinking, toggle };
 }

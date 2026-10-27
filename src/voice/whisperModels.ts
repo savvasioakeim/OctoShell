@@ -73,3 +73,47 @@ export function formatMb(mb: number): string {
 export function formatBytes(bytes: number): string {
   return formatMb(Math.round(bytes / 1_000_000));
 }
+
+/** What one dictation produced, with the numbers needed to judge whether this
+ *  model size is usable on this machine. */
+export interface Transcript {
+  text: string;
+  /** The language token Whisper chose, e.g. `<|el|>`. */
+  language: string;
+  audioSeconds: number;
+  tookMs: number;
+  /** The recording hit the cap and was cut short. */
+  truncated: boolean;
+}
+
+interface RawTranscript {
+  text: string;
+  language: string;
+  audio_seconds: number;
+  took_ms: number;
+  truncated: boolean;
+}
+
+export function whisperRecordStart(id: string): Promise<void> {
+  return invoke<void>("whisper_record_start", { id });
+}
+
+export async function whisperRecordStop(id: string): Promise<Transcript> {
+  const r = await invoke<RawTranscript>("whisper_record_stop", { id });
+  return {
+    text: r.text,
+    language: r.language,
+    audioSeconds: r.audio_seconds,
+    tookMs: r.took_ms,
+    truncated: r.truncated,
+  };
+}
+
+export function whisperRecordCancel(): Promise<void> {
+  return invoke<void>("whisper_record_cancel");
+}
+
+/** Strip Whisper's `<|el|>` wrapper down to the bare language code. */
+export function languageCode(token: string): string {
+  return token.replace(/^<\|/, "").replace(/\|>$/, "");
+}

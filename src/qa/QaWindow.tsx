@@ -335,26 +335,36 @@ export function QaWindow() {
           <div className="mt-1.5 flex items-center gap-2">
             <button
               onClick={dictation.toggle}
-              disabled={!dictation.supported}
+              disabled={!dictation.supported || dictation.thinking}
               title={
-                dictation.supported
-                  ? dictation.recording
-                    ? "Stop dictating"
-                    : "Dictate the note"
-                  : "Dictation isn't available in this webview"
+                !dictation.supported
+                  ? "Dictation isn't available in this webview"
+                  : dictation.thinking
+                  ? "Transcribing what you said"
+                  : dictation.recording
+                  ? "Stop dictating"
+                  : "Dictate the note"
               }
-              className={`flex shrink-0 items-center gap-1.5 rounded-md border px-2 py-1 text-[11px] transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+              className={`flex shrink-0 items-center gap-1.5 rounded-md border px-2 py-1 text-[11px] transition-colors disabled:cursor-not-allowed ${
                 dictation.recording
                   ? "border-pink-400 text-pink-200 ring-1 ring-pink-400/50"
-                  : "border-edge text-muted hover:bg-edge hover:text-gray-200"
+                  : dictation.thinking
+                  ? "border-accent/60 text-accent"
+                  : "border-edge text-muted hover:bg-edge hover:text-gray-200 disabled:opacity-40"
               }`}
             >
               <img
                 src={micIcon}
                 alt=""
-                className={`h-4 w-4 rounded-sm ${dictation.recording ? "animate-pulse" : ""}`}
+                className={`h-4 w-4 rounded-sm ${
+                  dictation.recording || dictation.thinking ? "animate-pulse" : ""
+                }`}
               />
-              {dictation.recording ? "Listening… click to stop" : "Dictate"}
+              {dictation.thinking
+                ? "Transcribing…"
+                : dictation.recording
+                ? "Listening… click to stop"
+                : "Dictate"}
             </button>
           </div>
 

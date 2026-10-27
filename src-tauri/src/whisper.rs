@@ -286,3 +286,364 @@ pub fn whisper_delete(app: AppHandle, id: String) -> Result<(), String> {
     }
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Recognition
+// ---------------------------------------------------------------------------
+
+pub use candle_transformers::models::whisper::SAMPLE_RATE;
+
+use candle_core::{Device, IndexOp, Tensor};
+use candle_nn::VarBuilder;
+use candle_transformers::models::whisper::{self as w, audio, model::Whisper, Config};
+
+/// The mel filter bank, vendored from candle's whisper example (80 bins x 201
+/// frequencies of f32). It is a fixed table, not a model weight, so baking the
+/// 64KB into the binary keeps it out of the download and out of the user's way.
+const MEL_FILTERS: &[u8] = include_bytes!("../assets/melfilters.bytes");
+
+fn mel_filters() -> Vec<f32> {
+    MEL_FILTERS
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|b| f32::from_le_bytes(*b))
+        .collect()
+}
+
+/// A model held in memory between dictations.
+///
+/// Loading `small` off disk and into tensors takes seconds, which would be paid
+/// on every single phrase. The cache holds one model: switching size evicts the
+/// previous one rather than keeping both, because the whole point of the size
+/// choice is that someone's machine cannot afford both.
+struct Loaded {
+    id: String,
+    model: Whisper,
+    tokenizer: tokenizers::Tokenizer,
+}
+
+fn cache() -> &'static Mutex<Option<Loaded>> {
+    static CACHE: OnceLock<Mutex<Option<Loaded>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(None))
+}
+
+fn load(dir: &Path, id: &str) -> Result<(), String> {
+    let mut slot = cache().lock().map_err(|_| "model lock poisoned")?;
+    if slot.as_ref().is_some_and(|l| l.id == id) {
+        return Ok(());
+    }
+    if !installed(dir) {
+        return Err(format!("{} is not downloaded yet", spec(id).map(|s| s.label).unwrap_or(id)));
+    }
+
+    // Drop the previous model before building the next, so two sets of weights
+    // are never resident at once on a machine that chose a size to avoid that.
+    *slot = None;
+
+    let cfg: Config = serde_json::from_str(
+        &std::fs::read_to_string(dir.join("config.json"))
+            .map_err(|e| format!("could not read config.json: {e}"))?,
+    )
+    .map_err(|e| format!("config.json is not a Whisper config: {e}"))?;
+    let tokenizer = tokenizers::Tokenizer::from_file(dir.join("tokenizer.json"))
+        .map_err(|e| format!("could not read tokenizer.json: {e}"))?;
+    let vb = unsafe {
+        VarBuilder::from_mmaped_safetensors(&[dir.join("model.safetensors")], w::DTYPE, &Device::Cpu)
+            .map_err(|e| format!("could not read the weights: {e}"))?
+    };
+    let model = Whisper::load(&vb, cfg).map_err(|e| format!("could not build the model: {e}"))?;
+    *slot = Some(Loaded { id: id.to_string(), model, tokenizer });
+    Ok(())
+}
+
+fn token_id(tk: &tokenizers::Tokenizer, s: &str) -> Result<u32, String> {
+    tk.token_to_id(s).ok_or_else(|| format!("the tokenizer has no {s} token"))
+}
+
+/// Greedy decode of one 30-second window.
+///
+/// Greedy rather than candle's full temperature-fallback loop: dictation is a
+/// person speaking deliberately into a microphone, not noisy found audio, and
+/// the fallback costs up to six decodes per window for cases that barely arise
+/// here. If transcripts come back degenerate on real use, that is the knob.
+fn decode_window(
+    model: &mut Whisper,
+    tk: &tokenizers::Tokenizer,
+    features: &Tensor,
+    sot: u32,
+    lang: u32,
+    suppress: &[u32],
+) -> Result<Vec<u32>, String> {
+    let transcribe = token_id(tk, w::TRANSCRIBE_TOKEN)?;
+    let no_ts = token_id(tk, w::NO_TIMESTAMPS_TOKEN)?;
+    let eot = token_id(tk, w::EOT_TOKEN)?;
+    let mut tokens = vec![sot, lang, transcribe, no_ts];
+    let limit = model.config.max_target_positions / 2;
+
+    for i in 0..limit {
+        let input = Tensor::new(tokens.as_slice(), &Device::Cpu)
+            .and_then(|t| t.unsqueeze(0))
+            .map_err(|e| e.to_string())?;
+        // The kv-cache is flushed only on the first pass; afterwards the decoder
+        // reuses it, which is what keeps the loop from being quadratic.
+        let out = model
+            .decoder
+            .forward(&input, features, i == 0)
+            .map_err(|e| format!("decoding failed: {e}"))?;
+        let (_, seq, _) = out.dims3().map_err(|e| e.to_string())?;
+        let last = out.i((0, seq - 1)).map_err(|e| e.to_string())?;
+        let mut logits = model
+            .decoder
+            .final_linear(&last.unsqueeze(0).map_err(|e| e.to_string())?)
+            .and_then(|t| t.squeeze(0))
+            .and_then(|t| t.squeeze(0))
+            .map_err(|e| e.to_string())?
+            .to_vec1::<f32>()
+            .map_err(|e| e.to_string())?;
+        for &s in suppress {
+            if let Some(v) = logits.get_mut(s as usize) {
+                *v = f32::NEG_INFINITY;
+            }
+        }
+        let next = argmax(&logits);
+        if next == eot {
+            break;
+        }
+        tokens.push(next);
+    }
+    // Drop the prompt: only what the model produced is transcript.
+    Ok(tokens.split_off(4))
+}
+
+fn argmax(v: &[f32]) -> u32 {
+    v.iter()
+        .enumerate()
+        .max_by(|a, b| a.1.total_cmp(b.1))
+        .map(|(i, _)| i as u32)
+        .unwrap_or(0)
+}
+
+/// Pick the spoken language from the first window.
+///
+/// Whisper's language tokens sit in one contiguous run straight after
+/// `<|startoftranscript|>`, so masking the logits to that range and taking the
+/// best one identifies the language without this code having to carry a list of
+/// 99 language codes that could drift out of step with the vocabulary.
+fn detect_language(
+    model: &mut Whisper,
+    features: &Tensor,
+    sot: u32,
+    translate: u32,
+) -> Result<u32, String> {
+    let input = Tensor::new(&[sot], &Device::Cpu)
+        .and_then(|t| t.unsqueeze(0))
+        .map_err(|e| e.to_string())?;
+    let out = model
+        .decoder
+        .forward(&input, features, true)
+        .map_err(|e| format!("language detection failed: {e}"))?;
+    let logits = model
+        .decoder
+        .final_linear(&out.i((0, 0)).and_then(|t| t.unsqueeze(0)).map_err(|e| e.to_string())?)
+        .and_then(|t| t.squeeze(0))
+        .and_then(|t| t.squeeze(0))
+        .map_err(|e| e.to_string())?
+        .to_vec1::<f32>()
+        .map_err(|e| e.to_string())?;
+
+    // The run is sot+1 .. translate: `<|startoftranscript|>`, then the 99
+    // language tokens, then the task tokens. Note eot CANNOT bound this — it
+    // sits below sot in the vocabulary, not above it.
+    let first = sot as usize + 1;
+    let last = (translate as usize).min(logits.len());
+    if first >= last {
+        return Err("the vocabulary has no language tokens".into());
+    }
+    let best = argmax(&logits[first..last]) as usize + first;
+    Ok(best as u32)
+}
+
+/// What one dictation produced, with the numbers needed to judge whether this
+/// model size is usable on this machine.
+#[derive(Serialize)]
+pub struct Transcript {
+    pub text: String,
+    /// The language token Whisper chose, e.g. `<|el|>`, as text.
+    pub language: String,
+    /// Seconds of audio captured.
+    pub audio_seconds: f64,
+    /// Wall-clock milliseconds spent recognising it.
+    pub took_ms: u64,
+    /// The recording hit [`crate::mic::MAX_SECONDS`] and was cut short.
+    pub truncated: bool,
+}
+
+/// Run the model over captured audio. Blocking and CPU-bound.
+fn transcribe(dir: &Path, id: &str, pcm: Vec<f32>, truncated: bool) -> Result<Transcript, String> {
+    let started = std::time::Instant::now();
+    let audio_seconds = pcm.len() as f64 / SAMPLE_RATE as f64;
+    load(dir, id)?;
+
+    let mut slot = cache().lock().map_err(|_| "model lock poisoned")?;
+    let loaded = slot.as_mut().ok_or("the model was unloaded mid-transcription")?;
+    let Loaded { model, tokenizer, .. } = loaded;
+
+    let sot = token_id(tokenizer, w::SOT_TOKEN)?;
+    let translate = token_id(tokenizer, w::TRANSLATE_TOKEN)?;
+    let suppress = model.config.suppress_tokens.clone();
+    let n_mels = model.config.num_mel_bins;
+
+    let mel = audio::pcm_to_mel(&model.config, &pcm, &mel_filters());
+    let frames = mel.len() / n_mels;
+    let mel = Tensor::from_vec(mel, (1, n_mels, frames), &Device::Cpu)
+        .map_err(|e| format!("could not build the spectrogram: {e}"))?;
+
+    let mut language: Option<u32> = None;
+    let mut out = String::new();
+    // Whisper only ever sees 30 seconds at a time, so longer dictation is walked
+    // window by window. A final short window is zero-padded, which is what the
+    // model was trained on, rather than skipped.
+    let mut start = 0usize;
+    while start < frames {
+        let end = (start + w::N_FRAMES).min(frames);
+        let mut window = mel
+            .narrow(2, start, end - start)
+            .map_err(|e| format!("could not slice the spectrogram: {e}"))?;
+        if end - start < w::N_FRAMES {
+            let pad = Tensor::zeros((1, n_mels, w::N_FRAMES - (end - start)), w::DTYPE, &Device::Cpu)
+                .map_err(|e| e.to_string())?;
+            window = Tensor::cat(&[&window, &pad], 2).map_err(|e| e.to_string())?;
+        }
+
+        model.reset_kv_cache();
+        let features = model
+            .encoder
+            .forward(&window, true)
+            .map_err(|e| format!("the encoder failed: {e}"))?;
+
+        // Detect once, on the first window, then hold it: re-detecting per
+        // window lets a quiet stretch flip mid-sentence into another language.
+        let lang = match language {
+            Some(l) => l,
+            None => {
+                let l = detect_language(model, &features, sot, translate)?;
+                language = Some(l);
+                l
+            }
+        };
+
+        let tokens = decode_window(model, tokenizer, &features, sot, lang, &suppress)?;
+        let piece = tokenizer
+            .decode(&tokens, true)
+            .map_err(|e| format!("could not read the transcript back: {e}"))?;
+        if !piece.trim().is_empty() {
+            if !out.is_empty() {
+                out.push(' ');
+            }
+            out.push_str(piece.trim());
+        }
+        start = end;
+    }
+
+    let language = language
+        .and_then(|l| tokenizer.id_to_token(l))
+        .unwrap_or_else(|| "unknown".to_string());
+    Ok(Transcript {
+        text: out,
+        language,
+        audio_seconds,
+        took_ms: started.elapsed().as_millis() as u64,
+        truncated,
+    })
+}
+
+/// Begin capturing. Fails fast when the chosen model is missing, so nobody
+/// speaks a whole note only to be told afterwards that nothing could read it.
+#[tauri::command]
+pub fn whisper_record_start(app: AppHandle, id: String) -> Result<(), String> {
+    let spec = spec(&id)?;
+    if !installed(&model_dir(&app, &id)?) {
+        return Err(format!("Download {} first", spec.label));
+    }
+    crate::mic::start()
+}
+
+/// Stop capturing and transcribe what was said.
+#[tauri::command]
+pub async fn whisper_record_stop(app: AppHandle, id: String) -> Result<Transcript, String> {
+    let (pcm, truncated) = crate::mic::stop()?;
+    if pcm.len() < SAMPLE_RATE / 10 {
+        return Err("that was too short to transcribe".into());
+    }
+    // Recognition saturates a core for seconds; on the async runtime it would
+    // stall every other command, including the UI's own.
+    let dir = model_dir(&app, &id)?;
+    tauri::async_runtime::spawn_blocking(move || transcribe(&dir, &id, pcm, truncated))
+        .await
+        .map_err(|e| format!("transcription task failed: {e}"))?
+}
+
+/// Throw away a recording without transcribing it.
+#[tauri::command]
+pub fn whisper_record_cancel() -> Result<(), String> {
+    let _ = crate::mic::stop();
+    Ok(())
+}
+
+/// Whether a capture is in progress, so the UI can recover its own state after
+/// a reload rather than showing a stopped button over a live microphone.
+#[tauri::command]
+pub fn whisper_recording() -> bool {
+    crate::mic::is_recording()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// End-to-end through the real model: mel → encoder → language detection →
+    /// greedy decode. Ignored because it needs a downloaded model, and pointed
+    /// at one with `OCTOSHELL_WHISPER_DIR`.
+    ///
+    /// The decode loop is the part of this file that cannot be checked by
+    /// reading it: every step is a tensor reshape that compiles whatever the
+    /// dimensions are, and a wrong one surfaces as a runtime shape error or, far
+    /// worse, as fluent nonsense. So this drives a real tensor all the way
+    /// through and prints the timing, which is also the only honest way to say
+    /// how slow a given model size is on a given machine.
+    ///
+    ///   cargo test --manifest-path src-tauri/Cargo.toml whisper -- --ignored --nocapture
+    #[test]
+    #[ignore = "needs a downloaded model (set OCTOSHELL_WHISPER_DIR)"]
+    fn runs_the_whole_pipeline() {
+        let dir = std::env::var("OCTOSHELL_WHISPER_DIR")
+            .expect("set OCTOSHELL_WHISPER_DIR to a folder holding the three model files");
+        let dir = std::path::PathBuf::from(dir);
+        let id = dir.file_name().unwrap().to_string_lossy().to_string();
+        assert!(installed(&dir), "{} has no model files", dir.display());
+
+        // Five seconds of a 220Hz tone under an envelope. It is not speech, so
+        // the text is not the point: what is being proved is that the shapes
+        // line up and a transcript comes back at all.
+        let n = SAMPLE_RATE * 5;
+        let pcm: Vec<f32> = (0..n)
+            .map(|i| {
+                let t = i as f32 / SAMPLE_RATE as f32;
+                (t * 220.0 * std::f32::consts::TAU).sin() * 0.3 * (1.0 - t / 5.0)
+            })
+            .collect();
+
+        let out = transcribe(&dir, &id, pcm, false).expect("transcription failed");
+        println!(
+            "model={id} audio={:.1}s took={}ms ratio={:.2}x language={}",
+            out.audio_seconds,
+            out.took_ms,
+            out.took_ms as f64 / 1000.0 / out.audio_seconds,
+            out.language
+        );
+        println!("text: {:?}", out.text);
+        assert!(out.language.starts_with("<|"), "language token looks wrong: {}", out.language);
+        assert!(out.took_ms > 0);
+    }
+}

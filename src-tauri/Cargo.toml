@@ -75,6 +75,26 @@ tauri-plugin-process = "2.3.1"
 # can't be a DOM keydown in our own window — it has to be an OS-level shortcut.
 tauri-plugin-global-shortcut = "2"
 
+# Local speech-to-text (whisper.rs). The webview's own Web Speech API stopped
+# working in WebView2 Runtime 153 and is not ours to fix, so recognition runs
+# here instead.
+#
+# candle rather than whisper-rs, and the reason is the build, not the quality:
+# whisper-rs compiles whisper.cpp through cmake and then needs real bindgen,
+# which means cmake + Ninja + LLVM/libclang and a build path short enough to
+# stay under MAX_PATH. That would land on every contributor and on CI for an
+# optional feature. candle is pure Rust and needs none of it.
+candle-core = "0.11"
+candle-nn = "0.11"
+candle-transformers = "0.11"
+# Reads the `tokenizer.json` that ships beside the weights. Default features
+# pull in a C-compiled suffix-array crate we have no use for.
+tokenizers = { version = "0.23", default-features = false }
+# The microphone is captured here rather than through getUserMedia: the webview
+# has already proved it cannot be relied on for audio, and a native device also
+# avoids a second permission prompt per window.
+cpal = "0.18"
+
 # Unix process groups: the counterpart of the Job Object below. Every child is a
 # group leader and `platform::kill_tree` signals the whole group (see jobctl.rs).
 [target.'cfg(unix)'.dependencies]

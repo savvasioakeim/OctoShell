@@ -448,11 +448,17 @@ export function InputBar({ controller, cwd, busy, value, altScreen, interacting,
           onClick={dictation.toggle}
           title={
             dictation.error ??
-            (dictation.recording ? "Stop dictation" : "Dictate (speech-to-text)")
+            (dictation.thinking
+              ? "Transcribing what you said…"
+              : dictation.recording
+              ? "Stop dictation"
+              : "Dictate (speech-to-text)")
           }
           className={`shrink-0 rounded-md transition-opacity hover:opacity-80 ${
             dictation.recording ? "ring-2 ring-pink-400 animate-pulse" : ""
-          } ${dictation.error ? "ring-2 ring-red-400" : ""}`}
+          } ${dictation.thinking ? "ring-2 ring-accent animate-pulse" : ""} ${
+            dictation.error ? "ring-2 ring-red-400" : ""
+          }`}
         >
           <img src={micIcon} alt="Speech to text" className="h-6 w-6 rounded-md" />
         </button>
