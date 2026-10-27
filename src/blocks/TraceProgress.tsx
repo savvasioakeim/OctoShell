@@ -19,11 +19,24 @@ function traceHex(t: number): string {
 
 /**
  * Task progress as a PCB trace: one node per planned step (the agent's task list),
- * connected by trace segments. Three node states, shading purple → blue along the
- * route: completed `●` (solid, lit), the active step `◉` (larger, brighter glow,
- * pulsing), and pending `○` (hollow ring, dim). Hidden when there are no steps.
+ * connected by trace segments. Node states shade purple → blue along the route:
+ * completed `●` (solid, lit), the focal step `◉` (larger, brighter), and pending
+ * `○` (hollow ring, dim). Hidden when there are no steps.
+ *
+ * `busy` drives the pulse, and it has to, because "a step is marked in_progress"
+ * and "the agent is working" are not the same thing in either direction. An agent
+ * that finishes a step and then waits — on CI, on an approval — leaves every step
+ * either completed or pending, so keying the pulse off `in_progress` alone made
+ * the bar go still exactly when the reviewer most needed to know it was alive.
+ * The reverse happens too: a stopped agent leaves its last step in_progress
+ * forever, and that pulsed on regardless.
+ *
+ * So the focal node is the step in progress, or, when none is, the step the agent
+ * is about to reach — the same index the title already names. It pulses only
+ * while the agent is actually busy, and a focal step that has not started yet
+ * stays hollow, because it is where we are waiting, not what is done.
  */
-export function TraceProgress({ steps }: { steps: AgentStep[] | null }) {
+export function TraceProgress({ steps, busy }: { steps: AgentStep[] | null; busy: boolean }) {
   const adapt = useAdapt();
   const traceColor = (t: number) => adapt(traceHex(t), 2.2);
   if (!steps || steps.length === 0) return null;
@@ -40,6 +53,9 @@ export function TraceProgress({ steps }: { steps: AgentStep[] | null }) {
   const curIdx = activeIdx >= 0 ? activeIdx : allDone ? total - 1 : Math.min(completed, total - 1);
   const curText = steps[curIdx]?.text?.trim() || `Step ${curIdx + 1}`;
   const curLabel = allDone ? `✓ ${curText}` : curText;
+  // The node that carries the eye. Once everything is done nothing is focal —
+  // the ✓ in the title says it instead.
+  const focusIdx = allDone ? -1 : curIdx;
 
   return (
     <div className="flex min-w-0 flex-col gap-1">
@@ -55,7 +71,8 @@ export function TraceProgress({ steps }: { steps: AgentStep[] | null }) {
         <div className="flex min-w-0 flex-1 items-center">
           {steps.map((s, i) => {
             const col = traceColor(fracAt(i));
-            const active = s.status === "in_progress";
+            const focal = i === focusIdx;
+            const started = s.status === "in_progress";
             const done = s.status === "completed";
             return (
               <Fragment key={i}>
@@ -71,12 +88,16 @@ export function TraceProgress({ steps }: { steps: AgentStep[] | null }) {
                   />
                 )}
                 <span
-                  className={`shrink-0 rounded-full transition-all ${
-                    active ? "h-3 w-3 animate-pulse" : "h-2 w-2"
+                  className={`shrink-0 rounded-full transition-all ${focal ? "h-3 w-3" : "h-2 w-2"} ${
+                    focal && busy ? "animate-pulse" : ""
                   }`}
                   style={
-                    active
-                      ? { background: col, boxShadow: `0 0 12px 3px ${col}` } // ◉ focal point
+                    focal && started
+                      ? { background: col, boxShadow: `0 0 12px 3px ${col}` } // ◉ running
+                      : focal
+                      ? // Focal but not started: the agent is waiting to reach it.
+                        // Hollow, so it never reads as work already done.
+                        { background: "transparent", border: `1.5px solid ${col}`, boxShadow: `0 0 10px 1px ${col}` }
                       : done
                       ? { background: col, boxShadow: `0 0 6px ${col}` } // ● solid + glow
                       : { background: "transparent", border: `1.5px solid ${TRACE_PENDING}` } // ○ hollow
