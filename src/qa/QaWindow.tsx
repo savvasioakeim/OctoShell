@@ -1,6 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { stepsOf } from "./parseQa";
 import { dragHasFiles, filesFromDrop, isImageFile, saveDroppedFile } from "../util/drop";
+import { CAPTURE_HINT, CAPTURE_SHORTCUT, capturePointer } from "./captureShot";
+import { useDictation } from "../voice/useDictation";
+import micIcon from "../assets/mic.png";
+import { register, unregister } from "@tauri-apps/plugin-global-shortcut";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { emit, listen } from "@tauri-apps/api/event";
 import {
@@ -33,6 +37,9 @@ export function QaWindow() {
   const [previews, setPreviews] = useState<Record<string, string>>({});
   const resultsRef = useRef(results);
   resultsRef.current = results;
+  // Brief confirmation after a capture. The reviewer is looking at the app under
+  // test, not at us, so this is only for when they glance back.
+  const [flash, setFlash] = useState<string | null>(null);
 
   // Receive the items (ask for them on mount) + live server status updates.
   useEffect(() => {
@@ -76,15 +83,83 @@ export function QaWindow() {
     if (!item) return;
     setResults((r) => ({ ...r, [item.id]: { ...r[item.id], id: item.id, verdict: r[item.id]?.verdict ?? null, notes } }));
   };
-  /** Replace this item's screenshots and tell the main window right away, so a
-   *  crash or a force-close cannot lose them. */
+  /** Write a result through: the ref the handlers read, the state, and the main
+   *  window, so a crash or a force-close cannot lose it. Screenshots and
+   *  dictated phrases both arrive outside a render, so the ref has to move with
+   *  the state rather than trail a render behind it. */
+  const commitResult = (next: QaResult) => {
+    resultsRef.current = { ...resultsRef.current, [next.id]: next };
+    setResults((r) => ({ ...r, [next.id]: next }));
+    void emit(QA.result, next);
+  };
+  /** Replace this item's screenshots. */
   const setImages = (images: string[]) => {
     if (!item) return;
     const cur = resultsRef.current[item.id];
-    const next: QaResult = { ...cur, id: item.id, verdict: cur?.verdict ?? null, notes: cur?.notes ?? "", images };
-    setResults((r) => ({ ...r, [item.id]: next }));
-    void emit(QA.result, next);
+    commitResult({ ...cur, id: item.id, verdict: cur?.verdict ?? null, notes: cur?.notes ?? "", images });
   };
+  /** Dictation appends to this item's notes. There is no blur to flush spoken
+   *  text, so each settled phrase is committed as it lands. */
+  const dictation = useDictation((txt) => {
+    if (!item) return;
+    const cur = resultsRef.current[item.id];
+    const notes = cur?.notes ? `${cur.notes} ${txt}` : txt;
+    commitResult({ ...cur, id: item.id, verdict: cur?.verdict ?? null, notes });
+  });
+
+  /** Capture what the reviewer is pointing at and attach it to THIS item. */
+  const captureNow = async () => {
+    if (!item) return;
+    try {
+      const shot = await capturePointer();
+      setPreviews((p) => {
+        const n = { ...p };
+        for (const sh of shot.shots) n[sh.path] = sh.thumb;
+        return n;
+      });
+      const existing = resultsRef.current[item.id]?.images ?? [];
+      setImages([...existing, ...shot.shots.map((sh) => sh.path)]);
+      setDropErr(null);
+      setFlash(`Captured at ${shot.x},${shot.y}`);
+    } catch (err) {
+      setDropErr(`Couldn't capture the screen: ${err}`);
+    }
+  };
+  // Registered once, but must always act on the item currently on screen — so
+  // the shortcut calls through a ref that every render refreshes.
+  const captureRef = useRef(captureNow);
+  captureRef.current = captureNow;
+
+  // A global shortcut, because the reviewer is in the app under test when they
+  // want the shot; a keydown here would need this window focused first, which
+  // defeats the point. Unregistered on unmount so a reopened QA doesn't stack
+  // handlers, and so the combo goes back to the OS when QA isn't running.
+  const [shortcutErr, setShortcutErr] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    void register(CAPTURE_SHORTCUT, (e) => {
+      // Fires for press AND release; without this every capture happens twice.
+      if (e.state !== "Pressed") return;
+      void captureRef.current();
+    })
+      .then(() => { if (live) setShortcutErr(null); })
+      .catch((err) => {
+        // Another app owns the combo. Say so: a silent no-op would look like the
+        // capture itself is broken.
+        if (live) setShortcutErr(`${CAPTURE_HINT} is taken by another app (${err})`);
+      });
+    return () => {
+      live = false;
+      void unregister(CAPTURE_SHORTCUT).catch(() => { /* never registered */ });
+    };
+  }, []);
+
+  // Clear the confirmation on its own; it is a glance, not a message.
+  useEffect(() => {
+    if (!flash) return;
+    const t = setTimeout(() => setFlash(null), 2200);
+    return () => clearTimeout(t);
+  }, [flash]);
 
   const onDropImages = async (e: React.DragEvent) => {
     if (!dragHasFiles(e.dataTransfer)) return; // dragged text: let the textarea have it
@@ -250,11 +325,39 @@ export function QaWindow() {
             }}
             onDragLeave={() => setDropping(false)}
             onDrop={(e) => void onDropImages(e)}
-            placeholder="Notes (optional · kept even if you close) — drop screenshots here…"
+            placeholder={`Notes (optional · kept even if you close) — talk instead of typing, drop screenshots here, or press ${CAPTURE_HINT} to capture what you're pointing at…`}
             className={`mt-3 min-h-[72px] flex-1 resize-none rounded-lg border bg-card px-3 py-2 text-xs leading-relaxed text-gray-100 outline-hidden transition-colors placeholder:text-muted/60 focus:border-accent/60 focus:ring-1 focus:ring-accent/30 ${
               dropping ? "border-accent bg-accent/5" : "border-edge"
             }`}
           />
+
+          {/* Talk the note instead of typing it: hands stay on the app under test. */}
+          <div className="mt-1.5 flex items-center gap-2">
+            <button
+              onClick={dictation.toggle}
+              disabled={!dictation.supported}
+              title={
+                dictation.supported
+                  ? dictation.recording
+                    ? "Stop dictating"
+                    : "Dictate the note"
+                  : "Dictation isn't available in this webview"
+              }
+              className={`flex shrink-0 items-center gap-1.5 rounded-md border px-2 py-1 text-[11px] transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                dictation.recording
+                  ? "border-pink-400 text-pink-200 ring-1 ring-pink-400/50"
+                  : "border-edge text-muted hover:bg-edge hover:text-gray-200"
+              }`}
+            >
+              <img
+                src={micIcon}
+                alt=""
+                className={`h-4 w-4 rounded-sm ${dictation.recording ? "animate-pulse" : ""}`}
+              />
+              {dictation.recording ? "Listening… click to stop" : "Dictate"}
+            </button>
+          </div>
+
           {(result?.images?.length ?? 0) > 0 && (
             <div className="mt-2 flex flex-wrap gap-1.5">
               {result!.images!.map((path) => {
@@ -285,6 +388,9 @@ export function QaWindow() {
             </div>
           )}
           {dropErr && <p className="mt-1 text-[11px] text-red-300">{dropErr}</p>}
+          {shortcutErr && <p className="mt-1 text-[11px] text-amber-300">{shortcutErr}</p>}
+          {dictation.error && <p className="mt-1 text-[11px] text-amber-300">🎤 {dictation.error}</p>}
+          {flash && <p className="mt-1 text-[11px] text-emerald-300">📸 {flash}</p>}
 
           <div className="mt-3 grid grid-cols-2 gap-2">
             <VerdictBtn active={result?.verdict === "approve"} tone="approve" onClick={() => decide("approve")}>

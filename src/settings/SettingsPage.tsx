@@ -1385,7 +1385,7 @@ function AppearanceTab() {
 
       <Section
         title="Speech-to-text (dictation)"
-        desc="The 🎤 button in the input. “Web” uses the browser’s free speech engine. Whisper (local/API) is coming soon."
+        desc="The 🎤 button in the input and in QA notes. “Web” is the webview’s own engine: free, and text appears as you speak, but it sends audio to the browser vendor’s service — and that service has been rejecting WebView2 since Runtime 153, so it currently fails on most machines. Whisper will run on this machine instead: nothing leaves it, no connection needed, at the cost of a one-off model download and a wait after you stop talking."
       >
         <Field label="Engine">
           <Select
@@ -1393,10 +1393,17 @@ function AppearanceTab() {
             onChange={(v) => settingsStore.setSttEngine(v as SttEngine)}
             options={[
               { label: "Web (free)", value: "web" },
-              { label: "Whisper (soon)", value: "whisper" },
+              { label: "Whisper (local · not available yet)", value: "whisper" },
             ]}
           />
         </Field>
+        {sttEngine === "whisper" && (
+          <p className="text-[11px] text-amber-300">
+            The Whisper engine isn’t built yet, so dictation still uses Web. Your choice is saved and will
+            take effect once it lands; it will ask before downloading a model, and no model ships in the
+            installer.
+          </p>
+        )}
       </Section>
     </>
   );
