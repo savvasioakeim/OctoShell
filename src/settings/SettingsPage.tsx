@@ -7,6 +7,7 @@ import { EXPIRY_CHOICES, fmtCountdown, mobileStore, useMobile } from "../mobile/
 import { modStore, useMods } from "../mods/modStore";
 import { PERMISSION_LABELS } from "../mods/modTypes";
 import { exportWorkspace, importWorkspace, peekWorkspace, type Snapshot } from "../util/workspaceTransfer";
+import { WhisperPanel } from "../voice/WhisperPanel";
 import {
   modelsFor,
   settingsStore,
@@ -1398,11 +1399,15 @@ function AppearanceTab() {
           />
         </Field>
         {sttEngine === "whisper" && (
-          <p className="text-[11px] text-amber-300">
-            The Whisper engine isn’t built yet, so dictation still uses Web. Your choice is saved and will
-            take effect once it lands; it will ask before downloading a model, and no model ships in the
-            installer.
-          </p>
+          <>
+            <p className="text-[11px] text-amber-300">
+              Recognition isn’t wired up yet, so dictation still uses Web. Downloading a model here is
+              safe and is what the engine will use once it lands.
+            </p>
+            <Field label="Model">
+              <WhisperPanel />
+            </Field>
+          </>
         )}
       </Section>
     </>

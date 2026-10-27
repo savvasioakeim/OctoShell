@@ -23,6 +23,7 @@ mod skills;
 mod sysstats;
 mod timezone;
 mod tunnel;
+mod whisper;
 
 use acp::AcpManager;
 use agent::AgentManager;
@@ -253,6 +254,9 @@ pub fn run() {
             ollama::ollama_delete,
             ollama::ollama_library,
             ollama::opencode_config,
+            whisper::whisper_models,
+            whisper::whisper_download,
+            whisper::whisper_delete,
             memory::memory_chunk,
             memory::memory_embed,
             memory::memory_index_put,
