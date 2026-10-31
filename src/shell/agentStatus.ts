@@ -11,6 +11,11 @@ export type AgentStatus = "idle" | "active" | "done" | "error";
 export function statusOf(s?: ShellSnapshot): AgentStatus {
   if (!s) return "idle";
   if (s.agentBusy || s.busy) return "active";
+  // Restored history is not this session's outcome. A project you have not
+  // worked in since the app started is idle, whatever its last block says: the
+  // alternative paints every project red on launch, because quitting the app
+  // kills every shell and the exit lands in the history as a failure.
+  if (!s.touched) return "idle";
   for (let i = s.blocks.length - 1; i >= 0; i--) {
     const b = s.blocks[i];
     if (b.kind === "command" || b.kind === "agentTool") {

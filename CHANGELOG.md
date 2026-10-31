@@ -8,6 +8,17 @@ each starting with `- `. Write what a person would notice, not what the commit
 did. An `Unreleased` heading holds the changes that are in the code but not yet
 in a release; it becomes the next version's heading when that release is cut.
 
+## Unreleased
+
+- Projects no longer come up red after an update or a restart. Closing the app
+  ends every shell at once, which the app used to record as a shell that could
+  not start, and then showed you that record the next morning. It no longer
+  writes the note on a normal quit, and a project you have not worked in since
+  opening the app reads as idle rather than as whatever it last did.
+- Inline code inside a message is readable on every theme. It used to sit on the
+  lightest surface on a dark theme and the darkest on a light one, which left it
+  as grey on grey in Paper, Daylight and Sand.
+
 ## 0.4.0 (2026-10-12)
 
 - Themes. Six palettes, three dark and three light: OctoShell, Slate and Ember,
