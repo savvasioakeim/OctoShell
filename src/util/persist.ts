@@ -48,7 +48,7 @@ export const KEY = {
   workspaceSettings: "octoshell.settings.workspace",
   appearanceSettings: "octoshell.settings.appearance",
   systemSettings: "octoshell.settings.system",
-  sttEngine: "octoshell.settings.sttEngine",
+  dictationLanguage: "octoshell.settings.dictationLanguage",
   reviewAgent: "octoshell.settings.reviewAgent",
   ollamaSettings: "octoshell.settings.ollama",
   orchestratorMcp: "octoshell.settings.orchestratorMcp",
