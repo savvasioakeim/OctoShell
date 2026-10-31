@@ -20,7 +20,6 @@ import {
   FONT_SIZE_MAX,
   FONT_SIZE_MIN,
   type NotifyScope,
-  type SttEngine,
   type TraceSpeed,
 } from "./settingsStore";
 import { PROVIDERS, supportsProfile, type AgentProvider } from "../agents/providers";
@@ -1253,7 +1252,7 @@ function WorkspaceTab() {
 // Tab 3 — Appearance
 // ---------------------------------------------------------------------------
 function AppearanceTab() {
-  const { appearance, sttEngine, notifications } = useSettings();
+  const { appearance, dictationLanguage, notifications } = useSettings();
   const set = (patch: Parameters<typeof settingsStore.setAppearance>[0]) => settingsStore.setAppearance(patch);
   // Probed once per visit to this tab: a font installed while the app is open
   // is rare, and probing on every render would run the check two dozen times a
@@ -1385,25 +1384,29 @@ function AppearanceTab() {
 
       <Section
         title="Speech-to-text (dictation)"
-        desc="The 🎤 button in the input and in QA notes. “Web” is the webview’s own engine: free, and text appears as you speak, but it sends audio to the browser vendor’s service — and that service has been rejecting WebView2 since Runtime 153, so it currently fails on most machines. Whisper will run on this machine instead: nothing leaves it, no connection needed, at the cost of a one-off model download and a wait after you stop talking."
+        desc="The 🎤 button in the input and in QA notes. Recognition runs through the webview’s own speech service: free, with text appearing as you speak, and nothing to install."
       >
-        <Field label="Engine">
+        <Field label="Language">
           <Select
-            value={sttEngine}
-            onChange={(v) => settingsStore.setSttEngine(v as SttEngine)}
+            value={dictationLanguage}
+            onChange={(v) => settingsStore.setDictationLanguage(v)}
             options={[
-              { label: "Web (free)", value: "web" },
-              { label: "Whisper (local · not available yet)", value: "whisper" },
+              { label: "Same as this computer", value: "auto" },
+              { label: "English", value: "en" },
+              { label: "Greek — Ελληνικά", value: "el" },
+              { label: "German — Deutsch", value: "de" },
+              { label: "French — Français", value: "fr" },
+              { label: "Spanish — Español", value: "es" },
+              { label: "Italian — Italiano", value: "it" },
             ]}
           />
-        </Field>
-        {sttEngine === "whisper" && (
-          <p className="text-[11px] text-amber-300">
-            The Whisper engine isn’t built yet, so dictation still uses Web. Your choice is saved and will
-            take effect once it lands; it will ask before downloading a model, and no model ships in the
-            installer.
+          <p className="mt-1 text-[11px] leading-snug text-muted">
+            What you intend to speak, which is not always what the computer is set to: running an
+            English Windows is no reason to dictate in English. The recogniser is told this language
+            outright rather than left to guess, and guessing wrong returns the right sounds spelled
+            in the wrong language.
           </p>
-        )}
+        </Field>
       </Section>
     </>
   );

@@ -49,8 +49,10 @@ export type TraceSpeed = "fast" | "normal" | "stealth" | "static";
 export type ColumnId = "projects" | "work" | "orchestrator";
 /** Left to right. Always a permutation of the three, never fewer. */
 export type ColumnOrder = [ColumnId, ColumnId, ColumnId];
-/** Speech-to-text backend: the browser's free Web Speech API, or Whisper. */
-export type SttEngine = "web" | "whisper";
+/** Language to dictate in: a bare ISO code, or "auto" to follow the computer.
+ *  Not the interface language — an English Windows is no reason to assume
+ *  English speech, and the recogniser has to be told which one to expect. */
+export type DictationLanguage = string;
 /** Which side may interrupt you. "agents" is every dispatched agent (each
  *  one finishing, and each approval it waits on); "orchestrator" is the turn
  *  in the sidebar landing, which on a fanned-out run is one ping instead of
@@ -169,7 +171,7 @@ export interface SettingsState {
   /** Session $ spend brake (null = off). Stops everything when exceeded. */
   spendLimitUsd: number | null;
   /** Speech-to-text engine for the mic button (default: free Web Speech API). */
-  sttEngine: SttEngine;
+  dictationLanguage: DictationLanguage;
   workspace: WorkspaceSettings;
   appearance: AppearanceSettings;
   system: SystemSettings;
@@ -325,7 +327,7 @@ class SettingsStore {
       },
       globalRules: loadJSON<string>(KEY.globalRules, ""),
       spendLimitUsd: loadJSON<number | null>(KEY.spendLimit, null),
-      sttEngine: loadJSON<SttEngine>(KEY.sttEngine, "web"),
+      dictationLanguage: loadJSON<DictationLanguage>(KEY.dictationLanguage, "auto"),
       // Merge persisted over defaults so a new field added later is filled in.
       workspace: { ...DEFAULT_WORKSPACE, ...loadJSON<Partial<WorkspaceSettings>>(KEY.workspaceSettings, {}) },
       appearance: (() => {
@@ -393,7 +395,7 @@ class SettingsStore {
     saveJSON(KEY.orchestratorDefaults, next.orchestrator);
     saveJSON(KEY.globalRules, next.globalRules);
     saveJSON(KEY.spendLimit, next.spendLimitUsd);
-    saveJSON(KEY.sttEngine, next.sttEngine);
+    saveJSON(KEY.dictationLanguage, next.dictationLanguage);
     saveJSON(KEY.workspaceSettings, next.workspace);
     saveJSON(KEY.appearanceSettings, next.appearance);
     saveJSON(KEY.systemSettings, next.system);
@@ -462,8 +464,8 @@ class SettingsStore {
   setSpendLimit(usd: number | null): void {
     this.commit({ ...this.state, spendLimitUsd: usd });
   }
-  setSttEngine(engine: SttEngine): void {
-    this.commit({ ...this.state, sttEngine: engine });
+  setDictationLanguage(code: DictationLanguage): void {
+    this.commit({ ...this.state, dictationLanguage: code });
   }
   setWorkspace(patch: Partial<WorkspaceSettings>): void {
     this.commit({ ...this.state, workspace: { ...this.state.workspace, ...patch } });

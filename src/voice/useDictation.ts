@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useSettings } from "../settings/settingsStore";
 
 /* The Web Speech API has no entry in TypeScript's DOM lib and is still shipped
    under a vendor prefix, so the slice of it we touch is typed by hand. */
@@ -40,7 +41,25 @@ function recognitionCtor(): RecognitionCtor | undefined {
 /** Turn an error code into something the person can act on. `not-allowed` is
  *  the one to watch: each webview asks for the microphone separately, so the
  *  QA window can be refused even after the main window was allowed. */
-function reason(code: string | undefined): string {
+/**
+ * Widen a bare language code into the region-qualified tag the Web Speech API
+ * expects. The service rejects a bare "el", and which region it is paired with
+ * barely moves recognition, so one sensible default per language is enough.
+ */
+function bcp47(code: string): string {
+  if (code === "auto") return navigator.language || "en-US";
+  const region: Record<string, string> = {
+    en: "en-US",
+    el: "el-GR",
+    de: "de-DE",
+    fr: "fr-FR",
+    es: "es-ES",
+    it: "it-IT",
+  };
+  return region[code] ?? code;
+}
+
+function reason(code: string | undefined, lang: string): string {
   switch (code) {
     case "not-allowed":
     case "service-not-allowed":
@@ -50,14 +69,13 @@ function reason(code: string | undefined): string {
     case "no-speech":
       return "Didn't catch anything — try again closer to the mic.";
     case "network":
-      // Not usually the person's connection. The Web Speech API recognises
-      // nothing locally: it ships the audio to the browser vendor's service,
-      // and WebView2 lost access to that service in Runtime 153 (it worked in
-      // 152). Nothing on our side fixes it, so say so instead of blaming the
-      // network and sending someone to check their wifi.
-      return "The webview's speech service rejected the request. This is a known WebView2 fault from Runtime 153 on, not your connection.";
+      // The Web Speech API recognises nothing locally: it ships the audio to
+      // the browser vendor's service, so this covers both a real outage and a
+      // refusal by that service. Name both rather than send someone to check
+      // their wifi for a fault that may not be theirs.
+      return "Couldn't reach the speech service. Check the connection, and try again — the service also refuses a request now and then.";
     case "language-not-supported":
-      return `Dictation doesn't cover ${navigator.language}.`;
+      return `Dictation doesn't cover ${lang}.`;
     case "aborted":
       return ""; // the person stopped it, or the window went away
     default:
@@ -92,6 +110,8 @@ export function useDictation(append: (text: string) => void): Dictation {
   appendRef.current = append;
 
   // Closing the window must not leave the microphone open.
+  const { dictationLanguage } = useSettings();
+
   useEffect(
     () => () => {
       try {
@@ -119,7 +139,11 @@ export function useDictation(append: (text: string) => void): Dictation {
       return;
     }
     const rec = new SR();
-    rec.lang = navigator.language || "el-GR";
+    // Asking for the operating system's language would be the wrong question
+    // whenever someone runs an English Windows and dictates in their own: the
+    // service answers in the language it was asked for, so a Greek sentence
+    // requested as English comes back as English spelling of Greek sounds.
+    rec.lang = bcp47(dictationLanguage);
     rec.continuous = true; // one press covers a whole explanation, not one phrase
     rec.interimResults = false; // only settled text is worth writing down
     rec.onresult = (e) => {
@@ -135,7 +159,7 @@ export function useDictation(append: (text: string) => void): Dictation {
       setRecording(false);
     };
     rec.onerror = (e) => {
-      const msg = reason(e.error);
+      const msg = reason(e.error, rec.lang);
       if (msg) setError(msg);
     };
     recRef.current = rec;
@@ -148,7 +172,7 @@ export function useDictation(append: (text: string) => void): Dictation {
       setRecording(false);
       setError(`Couldn't start the microphone: ${err}`);
     }
-  }, []);
+  }, [dictationLanguage]);
 
   return { recording, supported: recognitionCtor() !== undefined, error, toggle };
 }

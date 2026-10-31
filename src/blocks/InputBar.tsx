@@ -141,10 +141,8 @@ export function InputBar({ controller, cwd, busy, value, altScreen, interacting,
     ref.current?.focus();
   };
 
-  // Speech-to-text: dictate into the input. The engine is the webview's own, via
-  // the Web Speech API — see useDictation, which the QA notes share. The
-  // `settings.sttEngine` "whisper" option has no backend behind it, so every
-  // choice lands on the same path for now.
+  // Speech-to-text: dictate into the input, through the webview's own Web
+  // Speech API — see useDictation, which the QA notes share.
   const dictation = useDictation((txt) => {
     const cur = controller.getSnapshot().input ?? "";
     controller.setInput(cur ? `${cur} ${txt}` : txt);
