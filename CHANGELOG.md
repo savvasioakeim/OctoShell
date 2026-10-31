@@ -8,8 +8,22 @@ each starting with `- `. Write what a person would notice, not what the commit
 did. An `Unreleased` heading holds the changes that are in the code but not yet
 in a release; it becomes the next version's heading when that release is cut.
 
-## Unreleased
+## 0.4.1 (2026-10-31)
 
+- Dictation in QA notes, and a point-and-capture button beside it: drag a box
+  over what is wrong and it lands in the note with the shot attached, instead of
+  describing a corner of the screen in words.
+- Dictation asks for the language you choose rather than the one Windows is set
+  to. An English Windows used to mean English recognition whatever you spoke, so
+  a Greek sentence came back as English spelling of Greek sounds. The setting
+  sits under Settings, Speech-to-text.
+- The progress bar keeps pulsing while an agent waits on its last step. It went
+  still at exactly the moment the run looked finished, so a run that was waiting
+  for you read as a run that had died.
+- The review agent checks what the code does rather than reading the diff: it
+  works from the task's acceptance criteria, opens whole functions and their
+  callers in risky places, and has to show where a finding bites before it
+  reports it.
 - Projects no longer come up red after an update or a restart. Closing the app
   ends every shell at once, which the app used to record as a shell that could
   not start, and then showed you that record the next morning. It no longer
