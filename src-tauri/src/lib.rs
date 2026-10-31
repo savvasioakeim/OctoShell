@@ -3,6 +3,7 @@ mod agent;
 mod ai;
 mod approval;
 mod badge;
+mod capture;
 mod completion;
 mod docker;
 mod embed;
@@ -157,6 +158,7 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(
             tauri_plugin_sql::Builder::default()
                 .add_migrations("sqlite:octoshell.db", db_migrations())
@@ -272,6 +274,7 @@ pub fn run() {
             push::push_notify,
             mods::mods_list,
             mods::mods_dir_path,
+            capture::capture_pointer,
             write_text_file,
             save_dropped_file,
         ])

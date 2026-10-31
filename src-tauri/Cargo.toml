@@ -60,8 +60,20 @@ agent-client-protocol = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "io-util", "process", "time"] }
 fastembed = "7"
 sysinfo = { version = "0.39", default-features = false, features = ["system", "disk"] }
+# Screen capture for QA Mode (capture.rs). `image` is already in the tree via
+# other dependencies, so naming it here costs the build nothing and lets us crop
+# and draw the pointer marker without a second imaging stack.
+# `wgc` = Windows Graphics Capture. Without it xcap falls back to GDI BitBlt,
+# which returns an all-black frame for anything the compositor draws on the GPU
+# (i.e. every modern window). The geometry is identical either way, so the
+# failure is silent: a correctly marked screenshot of nothing.
+xcap = { version = "0.9", features = ["wgc"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
 tauri-plugin-updater = "2.11.0"
 tauri-plugin-process = "2.3.1"
+# A QA screenshot has to fire while the app UNDER TEST has focus, so the trigger
+# can't be a DOM keydown in our own window — it has to be an OS-level shortcut.
+tauri-plugin-global-shortcut = "2"
 
 # Unix process groups: the counterpart of the Job Object below. Every child is a
 # group leader and `platform::kill_tree` signals the whole group (see jobctl.rs).
@@ -76,6 +88,8 @@ windows-sys = { version = "0.61", features = [
     "Win32_Security",
     "Win32_System_JobObjects",
     "Win32_System_Threading",
+    # GetCursorPos: where the reviewer is pointing (capture.rs).
+    "Win32_UI_WindowsAndMessaging",
 ] }
 
 [profile.release]

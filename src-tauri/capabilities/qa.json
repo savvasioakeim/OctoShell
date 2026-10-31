@@ -1,14 +1,19 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "qa",
-  "description": "Permissions for the floating QA Mode window.",
-  "windows": ["qa"],
+  "description": "Permissions for the floating QA Mode window. The global shortcut is what lets a capture fire while the app under test has focus.",
+  "windows": [
+    "qa"
+  ],
   "permissions": [
     "core:default",
     "core:event:default",
     "core:window:allow-set-always-on-top",
     "core:window:allow-close",
     "core:window:allow-destroy",
-    "core:window:allow-start-dragging"
+    "core:window:allow-start-dragging",
+    "global-shortcut:allow-register",
+    "global-shortcut:allow-unregister",
+    "global-shortcut:allow-is-registered"
   ]
 }

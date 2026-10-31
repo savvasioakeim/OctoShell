@@ -8,6 +8,7 @@ import { serviceStore } from "../services/serviceStore";
 import { settingsStore, useSettings } from "../settings/settingsStore";
 import { open } from "@tauri-apps/plugin-dialog";
 import { dragHasFiles, filesFromDrop, saveDroppedFile } from "../util/drop";
+import { useDictation } from "../voice/useDictation";
 import shellIcon from "../assets/shell.png";
 import agentIcon from "../assets/agent.png";
 import attachIcon from "../assets/attach.png";
@@ -140,46 +141,14 @@ export function InputBar({ controller, cwd, busy, value, altScreen, interacting,
     ref.current?.focus();
   };
 
-  // Speech-to-text: dictate into the input. Default engine is the browser's free
-  // Web Speech API (settings.sttEngine); Whisper is a planned alternative and for
-  // now falls back to the same path. Stops automatically on unmount.
-  const [recording, setRecording] = useState(false);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const recRef = useRef<any>(null);
-  useEffect(() => () => { try { recRef.current?.stop(); } catch { /* noop */ } }, []);
-  const stopStt = () => { try { recRef.current?.stop(); } catch { /* noop */ } setRecording(false); };
-  const startStt = () => {
-    const w = window as unknown as { SpeechRecognition?: new () => any; webkitSpeechRecognition?: new () => any };
-    const SR = w.SpeechRecognition ?? w.webkitSpeechRecognition;
-    if (!SR) {
-      controller.setInput("# (speech-to-text is not supported in this WebView)");
-      return;
-    }
-    const rec = new SR();
-    rec.lang = navigator.language || "el-GR";
-    rec.continuous = true;
-    rec.interimResults = false;
-    rec.onresult = (e: any) => {
-      let txt = "";
-      for (let i = e.resultIndex; i < e.results.length; i++) {
-        if (e.results[i].isFinal) txt += e.results[i][0].transcript;
-      }
-      txt = txt.trim();
-      if (txt) {
-        const cur = controller.getSnapshot().input ?? "";
-        controller.setInput(cur ? `${cur} ${txt}` : txt);
-      }
-    };
-    rec.onend = () => { setRecording(false); recRef.current = null; };
-    rec.onerror = () => { setRecording(false); recRef.current = null; };
-    recRef.current = rec;
-    try { rec.start(); setRecording(true); } catch { setRecording(false); }
-  };
-  const toggleStt = () => {
-    if (recording) { stopStt(); return; }
-    // Whisper isn't wired to a backend yet → use the free web engine meanwhile.
-    startStt();
-  };
+  // Speech-to-text: dictate into the input. The engine is the webview's own, via
+  // the Web Speech API — see useDictation, which the QA notes share. The
+  // `settings.sttEngine` "whisper" option has no backend behind it, so every
+  // choice lands on the same path for now.
+  const dictation = useDictation((txt) => {
+    const cur = controller.getSnapshot().input ?? "";
+    controller.setInput(cur ? `${cur} ${txt}` : txt);
+  });
 
   // Drag & drop a file/image onto the bar → attach it. The window runs with
   // `dragDropEnabled: false` (the sidebar needs HTML5 drag & drop for
@@ -476,11 +445,14 @@ export function InputBar({ controller, cwd, busy, value, altScreen, interacting,
         </button>
         {/* Speech-to-text — dictate into the input. */}
         <button
-          onClick={toggleStt}
-          title={recording ? "Stop dictation" : "Dictate (speech-to-text)"}
+          onClick={dictation.toggle}
+          title={
+            dictation.error ??
+            (dictation.recording ? "Stop dictation" : "Dictate (speech-to-text)")
+          }
           className={`shrink-0 rounded-md transition-opacity hover:opacity-80 ${
-            recording ? "ring-2 ring-pink-400 animate-pulse" : ""
-          }`}
+            dictation.recording ? "ring-2 ring-pink-400 animate-pulse" : ""
+          } ${dictation.error ? "ring-2 ring-red-400" : ""}`}
         >
           <img src={micIcon} alt="Speech to text" className="h-6 w-6 rounded-md" />
         </button>
