@@ -1139,7 +1139,7 @@ const CenterPanel = memo(function CenterPanel({
             its planned steps. Empty when there's no active plan (the cwd path now
             lives under the Shell/Agent switch in the input bar). */}
         <div className="min-w-0 flex-1">
-          {agentProgress && agentProgress.length > 0 && <TraceProgress steps={agentProgress} />}
+          {agentProgress && agentProgress.length > 0 && <TraceProgress steps={agentProgress} busy={agentBusy} />}
         </div>
       </div>
       {/* Chat panel — the conversation feed with the command input pinned below.
