@@ -8,7 +8,7 @@ each starting with `- `. Write what a person would notice, not what the commit
 did. An `Unreleased` heading holds the changes that are in the code but not yet
 in a release; it becomes the next version's heading when that release is cut.
 
-## 0.4.1 (2026-10-31)
+## 0.4.1 (2026-11-03)
 
 - Dictation in QA notes, and a point-and-capture button beside it: drag a box
   over what is wrong and it lands in the note with the shot attached, instead of
